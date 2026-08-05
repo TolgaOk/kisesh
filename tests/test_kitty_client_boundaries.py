@@ -25,6 +25,7 @@ from kitty_workbench.kitty_client import (
 from kitty_workbench.model import (
     CAPTURE_VAR,
     SESSION_ID_VAR,
+    SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
 )
@@ -230,7 +231,7 @@ class KittyClientBoundaryTests(unittest.TestCase):
         client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
 
         self.assertEqual([tab.tab_id for tab in client.tabs_for_session(session_id, state)], [2])
-        client.restamp_session(session_id, "renamed")
+        client.restamp_session(session_id, "renamed", "Renamed Session")
         client.focus_tab(2)
         client.open_snapshot(Path("/tmp/session.kitty-session"))
 
@@ -238,6 +239,7 @@ class KittyClientBoundaryTests(unittest.TestCase):
         self.assertEqual(len(set_commands), 1)
         self.assertIn("id:3 or id:4", set_commands[0])
         self.assertIn(f"{SESSION_SLUG_VAR}=renamed", set_commands[0])
+        self.assertIn(f"{SESSION_NAME_VAR}=Renamed Session", set_commands[0])
         self.assertIn("focus-tab", runner.commands[-2])
         self.assertIn("goto_session", runner.commands[-1])
 

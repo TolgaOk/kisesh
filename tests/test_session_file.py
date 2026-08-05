@@ -7,6 +7,7 @@ from pathlib import Path
 
 from kitty_workbench.model import (
     SESSION_ID_VAR,
+    SESSION_NAME_VAR,
     SESSION_SLUG_VAR,
     SessionManifest,
 )
@@ -72,6 +73,7 @@ class SessionFileTests(unittest.TestCase):
             tokens = shlex.split(line)
             self.assertIn(f"--var={SESSION_ID_VAR}={self.manifest.id}", tokens)
             self.assertIn(f"--var={SESSION_SLUG_VAR}=workbench", tokens)
+            self.assertIn(f"--var={SESSION_NAME_VAR}=Workbench", tokens)
         self.assertEqual(sanitize_session(safe, self.manifest), safe)
 
     def test_unreadable_serialization_blob_is_dropped(self) -> None:

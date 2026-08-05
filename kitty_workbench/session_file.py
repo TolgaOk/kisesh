@@ -8,11 +8,14 @@ from enum import Enum, auto
 from pathlib import Path
 
 from .model import (
+    AGENT_VAR,
     CAPTURE_VAR,
     SESSION_ID_VAR,
+    SESSION_NAME_VAR,
     SESSION_SLUG_VAR,
     SessionManifest,
     SnapshotSummary,
+    session_marker_name,
 )
 
 
@@ -58,7 +61,9 @@ _OPTION_POLICIES = {
 }
 
 _MANAGED_VARIABLES = {
+    AGENT_VAR,
     SESSION_ID_VAR,
+    SESSION_NAME_VAR,
     SESSION_SLUG_VAR,
     CAPTURE_VAR,
 }
@@ -94,11 +99,12 @@ def _sanitize_blob(token: str) -> str:
     return prefix + json.dumps(safe_payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def _ownership_arguments(manifest: SessionManifest) -> tuple[str, str]:
+def _ownership_arguments(manifest: SessionManifest) -> tuple[str, str, str]:
     """Return current ownership markers for a launch line."""
     return (
         f"--var={SESSION_ID_VAR}={manifest.id}",
         f"--var={SESSION_SLUG_VAR}={manifest.slug}",
+        f"--var={SESSION_NAME_VAR}={session_marker_name(manifest.name, manifest.slug)}",
     )
 
 

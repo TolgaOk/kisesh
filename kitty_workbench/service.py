@@ -761,7 +761,11 @@ class WorkbenchService:
                 snapshot_summary(safe),
             )
         try:
-            self._kitty().restamp_session(renamed.manifest.id, renamed.manifest.slug)
+            self._kitty().restamp_session(
+                renamed.manifest.id,
+                renamed.manifest.slug,
+                renamed.manifest.name,
+            )
         except KittyError:
             return renamed
         return renamed

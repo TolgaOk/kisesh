@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import unittest
 
-from kitty_workbench.model import SCHEMA_VERSION, SessionManifest, SnapshotSummary, slugify
+from kitty_workbench.model import (
+    SCHEMA_VERSION,
+    SessionManifest,
+    SnapshotSummary,
+    session_marker_name,
+    slugify,
+)
 
 
 class ModelTests(unittest.TestCase):
+    def test_session_marker_name_preserves_display_text_without_multiline_controls(self) -> None:
+        self.assertEqual(
+            session_marker_name("  Research\n\x1b Team  ", "fallback"), "Research Team"
+        )
+        self.assertEqual(session_marker_name("\n\t", "fallback"), "fallback")
+
     def test_slugify_is_stable_and_filesystem_safe(self) -> None:
         self.assertEqual(slugify("  Réçit Q2 / Main  "), "recit-q2-main")
         self.assertEqual(slugify("___"), "session")

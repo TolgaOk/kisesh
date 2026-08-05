@@ -16,10 +16,12 @@ from .domain import KittyOsWindowState, KittyWindow
 from .model import (
     CAPTURE_VAR,
     SESSION_ID_VAR,
+    SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
     WORKBENCH_UI_VAR,
     SessionManifest,
+    session_marker_name,
 )
 
 
@@ -162,8 +164,8 @@ class KittyController(Protocol):
     def clear_tab_session(self, tab: LiveTab) -> None:
         """Clear session ownership without closing a tab."""
 
-    def restamp_session(self, session_id: str, slug: str) -> None:
-        """Update live slug markers after a rename."""
+    def restamp_session(self, session_id: str, slug: str, name: str) -> None:
+        """Update live display markers after a rename."""
 
     def capture_session(self, session_id: str, destination: Path) -> None:
         """Capture all matching live tabs into a Kitty session file."""
@@ -393,6 +395,7 @@ class KittyClient:
         desired: dict[str, str | None] = {
             SESSION_ID_VAR: manifest.id,
             SESSION_SLUG_VAR: manifest.slug,
+            SESSION_NAME_VAR: session_marker_name(manifest.name, manifest.slug),
         }
         window_ids = [
             window["id"]
@@ -406,18 +409,18 @@ class KittyClient:
         """Clear every current ownership variable without closing panes."""
         self.set_user_vars(
             (window["id"] for window in tab.windows),
-            {SESSION_ID_VAR: None, SESSION_SLUG_VAR: None},
+            {SESSION_ID_VAR: None, SESSION_SLUG_VAR: None, SESSION_NAME_VAR: None},
         )
 
-    def restamp_session(self, session_id: str, slug: str) -> None:
-        """Update slug markers for all live panes belonging to a session UUID."""
+    def restamp_session(self, session_id: str, slug: str, name: str) -> None:
+        """Update slug and display-name markers for all live session panes."""
         state = self.list_state()
         window_ids = [
             window["id"]
             for tab in self.tabs_for_session(session_id, state)
             for window in tab.windows
         ]
-        self.set_user_vars(window_ids, {SESSION_SLUG_VAR: slug})
+        self.set_user_vars(window_ids, {SESSION_SLUG_VAR: slug, SESSION_NAME_VAR: name})
 
     def capture_session(self, session_id: str, destination: Path) -> None:
         """Save all live tabs for a session and verify Kitty wrote content."""

@@ -67,6 +67,7 @@ class WindowMetadata:
     """Optional ownership metadata exposed by a fake Kitty pane."""
 
     session_slug: str | None = None
+    session_name: str | None = None
     session_scope: str | None = None
     native_session_name: str | None = None
     last_focused_at: float | None = None
@@ -96,6 +97,8 @@ class Window(watcher.WatcherWindow):
         metadata = metadata or WindowMetadata()
         if metadata.session_slug is not None:
             variables[watcher.SESSION_SLUG_VAR] = metadata.session_slug
+        if metadata.session_name is not None:
+            variables[watcher.SESSION_NAME_VAR] = metadata.session_name
         if metadata.session_scope is not None:
             variables[watcher.SESSION_SCOPE_VAR] = metadata.session_scope
         self.native_session_name = metadata.native_session_name
@@ -311,6 +314,7 @@ class WatcherTests(unittest.TestCase):
                         "id:3",
                         f"{watcher.SESSION_ID_VAR}=session-id",
                         f"{watcher.SESSION_SLUG_VAR}=current-project",
+                        f"{watcher.SESSION_NAME_VAR}=current-project",
                         f"{watcher.SESSION_SCOPE_VAR}=1",
                     ),
                 )
@@ -436,6 +440,64 @@ class WatcherTests(unittest.TestCase):
             self.assertEqual(event["command"], "pytest -q")
             self.assertEqual(event["cwd"], "/tmp/project")
             self.assertEqual(event["completed_at"], 1785843000.0)
+
+    def test_agent_commands_cache_only_native_bar_markers_without_polling(self) -> None:
+        """Set and clear agent markers through Kitty's in-process remote control."""
+        window = Window()
+        boss = Boss()
+        with mock.patch.object(watcher, "_schedule") as schedule:
+            watcher.on_cmd_startstop(
+                boss,
+                window,
+                {
+                    "is_start": True,
+                    "cmdline": ["env", "TOKEN=hidden", "/opt/bin/claude-nightly", "--resume"],
+                },
+            )
+
+            self.assertEqual(
+                boss.remote_calls[-1][1],
+                (
+                    "set-user-vars",
+                    "--match",
+                    "id:2",
+                    f"{watcher.AGENT_VAR}=claude",
+                ),
+            )
+            schedule.assert_not_called()
+
+            variables = cast(dict[str, str], window.user_vars)
+            variables[watcher.AGENT_VAR] = "claude"
+            watcher.on_cmd_startstop(
+                boss,
+                window,
+                {"is_start": False, "cmdline": "claude", "time": 1785843000.0},
+            )
+
+        self.assertEqual(boss.remote_calls[-1][1][-1], watcher.AGENT_VAR)
+        schedule.assert_called_once()
+
+    def test_agent_marker_recognition_and_failures_are_bounded(self) -> None:
+        """Handle wrappers, malformed commands, duplicate state, and Kitty failure."""
+        self.assertEqual(
+            watcher._command_arguments(["codex", "", "resume"]),
+            ("codex", "resume"),
+        )
+        self.assertEqual(
+            watcher._command_arguments("command exec codex-beta"),
+            ("command", "exec", "codex-beta"),
+        )
+        self.assertEqual(watcher._command_agent("command exec codex-beta"), "codex")
+        self.assertIsNone(watcher._command_agent("env -i TOKEN=one"))
+        self.assertIsNone(watcher._command_agent("'unterminated"))
+        self.assertIsNone(watcher._command_agent(42))
+
+        window = Window()
+        boss = Boss(remote_error=True)
+        watcher._update_agent_marker(boss, window, "codex")
+        cast(dict[str, str], window.user_vars)[watcher.AGENT_VAR] = "codex"
+        watcher._update_agent_marker(boss, window, "codex")
+        self.assertEqual(len(boss.remote_calls), 0)
 
     def test_autosave_uses_shared_launcher_and_receives_socket_before_subcommand(self) -> None:
         """Invoke the installed launcher with global options in Tyro order."""

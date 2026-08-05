@@ -7,6 +7,7 @@ from kitty_workbench.domain import KittyOsWindowState, KittyWindow
 from kitty_workbench.kitty_client import KittyClient, LiveTab
 from kitty_workbench.model import (
     SESSION_ID_VAR,
+    SESSION_NAME_VAR,
     SESSION_SLUG_VAR,
     WORKBENCH_UI_VAR,
     SessionManifest,
@@ -201,6 +202,7 @@ class KittyClientTests(unittest.TestCase):
         desired = {
             SESSION_ID_VAR: manifest.id,
             SESSION_SLUG_VAR: manifest.slug,
+            SESSION_NAME_VAR: manifest.name,
         }
         existing: KittyWindow = {"id": 3, "user_vars": dict(desired)}
         new: KittyWindow = {"id": 4, "user_vars": {}}
@@ -233,6 +235,7 @@ class KittyClientTests(unittest.TestCase):
         command = runner.commands[0]
         self.assertIn("id:3 or id:4", command)
         self.assertIn(SESSION_ID_VAR, command)
+        self.assertIn(SESSION_NAME_VAR, command)
         self.assertIn(SESSION_SLUG_VAR, command)
         self.assertNotIn(f"{SESSION_ID_VAR}=", command)
 

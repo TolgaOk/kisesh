@@ -11,9 +11,11 @@ from kitty_workbench.domain import KittyOsWindowState, KittyWindow
 from kitty_workbench.kitty_client import LiveTab
 from kitty_workbench.model import (
     SESSION_ID_VAR,
+    SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
     SessionManifest,
+    session_marker_name,
 )
 
 DEFAULT_CAPTURE = "new_tab Project\nlaunch --cwd=/tmp/project\n"
@@ -140,19 +142,22 @@ class FakeKitty:
                 {
                     SESSION_ID_VAR: manifest.id,
                     SESSION_SLUG_VAR: manifest.slug,
+                    SESSION_NAME_VAR: session_marker_name(manifest.name, manifest.slug),
                 }
             )
 
-    def restamp_session(self, session_id: str, slug: str) -> None:
-        """Update slug markers on every visible member of one session."""
+    def restamp_session(self, session_id: str, slug: str, name: str) -> None:
+        """Update display markers on every visible member of one session."""
         for tab in self.tabs_for_session(session_id):
             for window in tab.windows:
-                window.setdefault("user_vars", {}).update({SESSION_SLUG_VAR: slug})
+                window.setdefault("user_vars", {}).update(
+                    {SESSION_SLUG_VAR: slug, SESSION_NAME_VAR: name}
+                )
 
     def clear_tab_session(self, tab: LiveTab) -> None:
         """Remove membership markers without closing the tab."""
         for window in tab.windows:
-            for name in (SESSION_ID_VAR, SESSION_SLUG_VAR):
+            for name in (SESSION_ID_VAR, SESSION_SLUG_VAR, SESSION_NAME_VAR):
                 window.setdefault("user_vars", {}).pop(name, None)
 
     def capture_session(self, session_id: str, destination: Path) -> None:

@@ -15,8 +15,10 @@ from .domain import JsonObject
 SCHEMA_VERSION = 1
 SESSION_ID_VAR = "kitty_workbench_session"
 SESSION_SLUG_VAR = "kitty_workbench_slug"
+SESSION_NAME_VAR = "kitty_workbench_name"
 SESSION_SCOPE_VAR = "kitty_workbench_scope"
 CAPTURE_VAR = "kitty_workbench_capture"
+AGENT_VAR = "kitty_workbench_agent"
 WORKBENCH_UI_VAR = "kitty_workbench_ui"
 
 SessionStatus = Literal["active", "archived"]
@@ -33,6 +35,14 @@ def slugify(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9_-]+", "-", normalized.lower().strip())
     normalized = re.sub(r"[-_]{2,}", "-", normalized).strip("-_")
     return normalized or "session"
+
+
+def session_marker_name(name: str, fallback: str) -> str:
+    """Flatten a display name into one safe Kitty user-variable value."""
+    visible = "".join(
+        character for character in name if unicodedata.category(character) not in {"Cc", "Cf", "Cs"}
+    )
+    return " ".join(visible.split()) or fallback
 
 
 def _integer(value: object, default: int = 0) -> int:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import threading
 import time
@@ -14,7 +15,9 @@ from typing import Protocol
 
 SESSION_ID_VAR = "kitty_workbench_session"
 SESSION_SLUG_VAR = "kitty_workbench_slug"
+SESSION_NAME_VAR = "kitty_workbench_name"
 SESSION_SCOPE_VAR = "kitty_workbench_scope"
+AGENT_VAR = "kitty_workbench_agent"
 WORKBENCH_UI_VAR = "kitty_workbench_ui"
 DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
@@ -106,6 +109,7 @@ class WindowIdentity:
     window: WatcherWindow
     session_id: str | None
     session_slug: str | None
+    session_name: str | None
     session_scope: str | None
     native_session_name: str | None
     last_focused_at: float
@@ -152,6 +156,7 @@ def _window_identity(window: WatcherWindow) -> WindowIdentity:
         window=window,
         session_id=variables.get(SESSION_ID_VAR),
         session_slug=variables.get(SESSION_SLUG_VAR),
+        session_name=variables.get(SESSION_NAME_VAR),
         session_scope=variables.get(SESSION_SCOPE_VAR),
         native_session_name=(
             native_name.strip() if isinstance(native_name, str) and native_name.strip() else None
@@ -226,6 +231,7 @@ def _inherit_tab_ownership(boss: WatcherBoss, window: WatcherWindow) -> str | No
                 match,
                 f"{SESSION_ID_VAR}={owner.session_id}",
                 f"{SESSION_SLUG_VAR}={owner.session_slug}",
+                f"{SESSION_NAME_VAR}={owner.session_name or owner.session_slug}",
                 f"{SESSION_SCOPE_VAR}={owner.session_scope}",
             ),
         )
@@ -546,7 +552,7 @@ def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> Non
 
 def on_set_user_var(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
     """Schedule only ownership-variable changes and ignore unrelated metadata."""
-    if data.get("key") in {SESSION_ID_VAR, SESSION_SLUG_VAR}:
+    if data.get("key") in {SESSION_ID_VAR, SESSION_SLUG_VAR, SESSION_NAME_VAR}:
         _schedule(window, data, boss)
 
 
@@ -568,11 +574,71 @@ def _foreground_cwd(window: WatcherWindow) -> str | None:
     return str(cwd) if cwd else None
 
 
-def on_cmd_startstop(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
-    """Queue completed shell commands and ignore command-start notifications."""
-    if data.get("is_start"):
+def _command_arguments(value: object) -> tuple[str, ...]:
+    """Normalize shell-integration command metadata without executing it."""
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item) for item in value if str(item))
+    if not isinstance(value, str) or not value.strip():
+        return ()
+    try:
+        return tuple(shlex.split(value, posix=True))
+    except ValueError:
+        return ()
+
+
+def _command_agent(value: object) -> str | None:
+    """Recognize a direct Claude or Codex command including common wrappers."""
+    arguments = _command_arguments(value)
+    index = 0
+    while index < len(arguments):
+        executable = Path(arguments[index]).name.casefold()
+        if executable in {"command", "exec"}:
+            index += 1
+            continue
+        if executable == "env":
+            index += 1
+            while index < len(arguments) and (
+                arguments[index].startswith("-") or "=" in arguments[index]
+            ):
+                index += 1
+            continue
+        return next(
+            (
+                agent
+                for agent in ("claude", "codex")
+                if executable == agent or executable.startswith(f"{agent}-")
+            ),
+            None,
+        )
+    return None
+
+
+def _update_agent_marker(
+    boss: WatcherBoss,
+    window: WatcherWindow,
+    agent: str | None,
+) -> None:
+    """Cache a lightweight agent marker for the in-process native tab bar."""
+    current = _string_mapping(window.user_vars).get(AGENT_VAR)
+    if current == agent or (current is None and agent is None):
         return
+    assignment = f"{AGENT_VAR}={agent}" if agent is not None else AGENT_VAR
+    try:
+        boss.call_remote_control(
+            window,
+            ("set-user-vars", "--match", f"id:{window.id}", assignment),
+        )
+    except Exception:
+        return
+
+
+def on_cmd_startstop(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
+    """Update the agent marker and queue completed shell commands for saving."""
     raw_command = data.get("cmdline")
+    if data.get("is_start"):
+        _update_agent_marker(boss, window, _command_agent(raw_command))
+        return
+    _update_agent_marker(boss, window, None)
     command: object = (
         [str(item) for item in raw_command]
         if isinstance(raw_command, (list, tuple))
