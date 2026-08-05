@@ -49,17 +49,16 @@ class KittyClientTests(unittest.TestCase):
         )
         self.assertNotIn("--ansi", runner.commands[0])
 
-    def test_terminal_history_requests_plain_screen_and_scrollback(self) -> None:
+    def test_terminal_history_requests_styled_screen_and_scrollback(self) -> None:
         runner = RecordingCommandRunner(stdout="scrollback\nscreen\n")
 
         client = KittyClient(executable="/kitty", socket="/tmp/test.sock", runner=runner)
 
         self.assertEqual(client.terminal_history(42), "scrollback\nscreen\n")
         self.assertEqual(
-            runner.commands[0][-5:],
-            ["get-text", "--match", "id:42", "--extent", "all"],
+            runner.commands[0][-6:],
+            ["get-text", "--match", "id:42", "--extent", "all", "--ansi"],
         )
-        self.assertNotIn("--ansi", runner.commands[0])
 
     def test_send_text_prefills_without_an_enter_key(self) -> None:
         runner = RecordingCommandRunner()

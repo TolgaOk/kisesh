@@ -247,6 +247,7 @@ class CliTests(unittest.TestCase):
             "pane_index": 1,
             "window": {"id": 99, "cwd": "/tmp/project"},
             "terminal_history": "pwd\n/tmp/project\n",
+            "alternate_screen_text": "TOP FRAME\n",
             "last_command_output": "/tmp/project\n",
             "command_events": [event],
         }
@@ -314,6 +315,7 @@ class CliTests(unittest.TestCase):
                 "pane_index": 0,
                 "window": {"id": 99},
                 "terminal_history": "history",
+                "alternate_screen_text": "",
                 "last_command_output": "output",
                 "command_events": [],
             },

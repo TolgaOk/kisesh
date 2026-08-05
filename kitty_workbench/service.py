@@ -280,16 +280,23 @@ class WorkbenchService:
             safe,
             snapshot_summary(safe),
         )
-        context = build_context(
-            live_tabs,
-            self.store.read_context(updated.manifest.id),
-            command_events,
-            _capture_pane_texts(live_tabs, client.last_command_output),
-            _capture_pane_texts(live_tabs, client.terminal_history),
-        )
-        context["snapshot_revision"] = updated.manifest.revision
-        self.store.write_context(updated.manifest.id, context)
-        return self.store.get(updated.manifest.id)
+        events = list(command_events)
+        command_outputs = _capture_pane_texts(live_tabs, client.last_command_output)
+        terminal_histories = _capture_pane_texts(live_tabs, client.terminal_history)
+
+        def merge_latest(existing: SessionContext | None) -> SessionContext:
+            """Merge captures with any close update committed during remote reads."""
+            context = build_context(
+                live_tabs,
+                existing,
+                events,
+                command_outputs,
+                terminal_histories,
+            )
+            context["snapshot_revision"] = updated.manifest.revision
+            return context
+
+        return self.store.update_context(updated.manifest.id, merge_latest)
 
     def _capture_live_session(self, client: KittyController, session_id: str) -> str:
         """Capture a complete live session through an isolated temporary file."""

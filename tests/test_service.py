@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kitty_workbench.domain import ClosingPaneCapture, KittyWindow, SessionContext
+from kitty_workbench.domain import ClosingPaneCapture, CommandEvent, KittyWindow, SessionContext
 from kitty_workbench.kitty_client import LiveTab
 from kitty_workbench.model import (
     SESSION_ID_VAR,
@@ -97,7 +97,8 @@ class ServiceTests(unittest.TestCase):
         self.kitty.include_tab = False
         self.service.open(stored.manifest.id)
 
-        self.assertIn("claude --resume session-123", self.kitty.opened_contents[-1])
+        self.assertIn("restore-shell", self.kitty.opened_contents[-1])
+        self.assertNotIn("claude", self.kitty.opened_contents[-1])
         self.assertNotIn("dangerously-skip-permissions", self.kitty.opened_contents[-1])
         self.assertEqual(self.kitty.focused[-1], self.kitty.tab.tab_id)
         self.assertEqual(list(self.store.root.glob(".agent-work.restore.*")), [])
@@ -168,6 +169,7 @@ class ServiceTests(unittest.TestCase):
                 "last_cmd_exit_status": 0,
             },
             "terminal_history": "ls\nREADME.md\npwd\n/tmp/project\n",
+            "alternate_screen_text": "",
             "last_command_output": "/tmp/project\n",
             "command_events": [
                 {
@@ -193,6 +195,132 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(pane["terminal_history"], "ls\nREADME.md\npwd\n/tmp/project\n")
         self.assertEqual(pane["last_command_output"], "/tmp/project\n")
         self.assertIn("restore-shell", self.kitty.opened_contents[-1])
+
+    def test_inflight_autosave_merges_a_close_committed_during_remote_capture(self) -> None:
+        """Preserve the newer Cmd-W context when an older live save finishes later."""
+        self.kitty.window.update(
+            {
+                "last_reported_cmdline": "ls",
+                "last_cmd_exit_status": 0,
+                "at_prompt": True,
+            }
+        )
+        self.kitty.terminal_histories[11] = "INITIAL BUFFER\n"
+        stored = self.service.create_from_active("Concurrent Close")
+        pwd_event: CommandEvent = {
+            "window_id": 11,
+            "command": "pwd",
+            "completed_at": "2026-08-04T11:31:00Z",
+            "cwd": "/tmp/project",
+        }
+        close_capture: ClosingPaneCapture = {
+            "tab_index": 0,
+            "pane_index": 0,
+            "window": {
+                "id": 11,
+                "title": "top",
+                "cwd": "/tmp/project",
+                "user_vars": {SESSION_ID_VAR: stored.manifest.id},
+                "foreground_processes": [],
+                "at_prompt": False,
+                "in_alternate_screen": True,
+                "last_reported_cmdline": "top",
+            },
+            "terminal_history": "INITIAL BUFFER\nCLOSE-ONLY BUFFER\n",
+            "alternate_screen_text": "TOP AT CLOSE\n",
+            "last_command_output": "/tmp/project\n",
+            "command_events": [
+                pwd_event,
+                {
+                    "window_id": 11,
+                    "command": "echo close-only",
+                    "completed_at": "2026-08-04T11:31:01Z",
+                    "cwd": "/tmp/project",
+                },
+            ],
+        }
+
+        def commit_close(window_id: int) -> None:
+            """Commit the newer close payload during the older save's text read."""
+            self.assertEqual(window_id, 11)
+            self.kitty.terminal_history_hook = None
+            self.service.save_closing_pane(stored.manifest.id, close_capture)
+
+        self.kitty.window.update(close_capture["window"])
+        self.kitty.terminal_histories[11] = "ACTIVE TOP FRAME\n"
+        self.kitty.terminal_history_hook = commit_close
+        self.service.save(stored.manifest.id, [pwd_event])
+        context = self.store.read_context(stored.manifest.id)
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        pane = context["tabs"][0]["panes"][0]
+        self.assertEqual(
+            [entry["command"] for entry in pane["command_history"]],
+            ["ls", "pwd", "echo close-only", "top"],
+        )
+        self.assertEqual(pane["terminal_history"], "INITIAL BUFFER\nCLOSE-ONLY BUFFER\n")
+        self.assertEqual(pane["alternate_screen_text"], "ACTIVE TOP FRAME\n")
+
+    def test_xxx_cmd_w_restores_three_apps_through_history_backed_shells(self) -> None:
+        """Exercise the reported nvim, htop, and top teardown as one session."""
+        commands = (("nvim", "."), ("htop",), ("top",))
+        windows: list[KittyWindow] = []
+        for index, argv in enumerate(commands):
+            windows.append(
+                {
+                    "id": 31 + index,
+                    "title": argv[0],
+                    "cwd": "/tmp/project",
+                    "user_vars": {},
+                    "foreground_processes": ([] if argv == ("top",) else [{"cmdline": list(argv)}]),
+                    "last_reported_cmdline": " ".join(argv),
+                    "at_prompt": False,
+                    "in_alternate_screen": True,
+                }
+            )
+        self.kitty.window = windows[0]
+        self.kitty.tab.windows = windows
+        self.kitty.capture_session_text = "new_tab xxx\n" + "launch\n" * len(windows)
+        self.kitty.terminal_histories = {
+            window["id"]: f"{window['title'].upper()} FRAME\n" for window in windows
+        }
+        stored = self.service.create_from_active("xxx")
+
+        for pane_index, (window, argv) in enumerate(zip(windows, commands, strict=True)):
+            self.service.save_closing_pane(
+                stored.manifest.id,
+                {
+                    "tab_index": 0,
+                    "pane_index": pane_index,
+                    "window": {
+                        **window,
+                        "foreground_processes": [],
+                        "last_reported_cmdline": " ".join(argv),
+                    },
+                    "terminal_history": f"history before {argv[0]}\n",
+                    "alternate_screen_text": f"{argv[0].upper()} AT CLOSE\n",
+                    "last_command_output": "",
+                    "command_events": [],
+                },
+            )
+
+        self.kitty.include_tab = False
+        self.service.open(stored.manifest.id)
+        restored = self.kitty.opened_contents[-1]
+        context = self.store.read_context(stored.manifest.id)
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(restored.count("restore-shell"), len(commands))
+        self.assertEqual(
+            [pane["last_command"] for pane in context["tabs"][0]["panes"]],
+            ["nvim .", "htop", "top"],
+        )
+        self.assertEqual(
+            [candidate["argv"] for candidate in context["restore_commands"]],
+            [["nvim", "."], ["htop"], ["top"]],
+        )
 
     def test_non_allowlisted_foreground_command_is_prefilled_without_enter(self) -> None:
         self.kitty.window.update(

@@ -156,5 +156,6 @@ class ClosingPaneCapture(TypedDict):
     pane_index: int
     window: KittyWindow
     terminal_history: str
+    alternate_screen_text: str
     last_command_output: str
     command_events: list[CommandEvent]

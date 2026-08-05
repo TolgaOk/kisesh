@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -20,6 +21,46 @@ class Child(watcher.WatcherChild):
     foreground_cwd: object = "/tmp/project"
 
 
+class LineBuffer(watcher.WatcherLineBuffer):
+    """Expose the hidden main lines behind an alternate-screen application."""
+
+    def __init__(self, history: str) -> None:
+        """Store the fake main-line buffer."""
+        self.text = history
+        self.ansi_requests: list[bool] = []
+
+    def as_text(
+        self,
+        callback: Callable[[str], object],
+        as_ansi: bool,
+        add_wrap_markers: bool,
+    ) -> None:
+        """Return the fake main-line buffer."""
+        del add_wrap_markers
+        self.ansi_requests.append(as_ansi)
+        callback(self.text)
+
+
+class Screen(watcher.WatcherScreen):
+    """Expose main history separately from the visible alternate screen."""
+
+    def __init__(self, history: str) -> None:
+        """Store history in the main line buffer for this fake."""
+        self.main_linebuf: watcher.WatcherLineBuffer = LineBuffer(history)
+        self.ansi_requests: list[bool] = []
+
+    def as_text_for_history_buf(
+        self,
+        callback: Callable[[str], object],
+        as_ansi: bool,
+        add_wrap_markers: bool,
+    ) -> None:
+        """Leave the fake scrollback portion empty."""
+        del add_wrap_markers
+        self.ansi_requests.append(as_ansi)
+        del callback
+
+
 class Window(watcher.WatcherWindow):
     """Provide a controllable Kitty window for watcher scenarios."""
 
@@ -31,6 +72,7 @@ class Window(watcher.WatcherWindow):
         history: str = "",
         output: str = "",
         alternate_screen: bool = False,
+        alternate_text: str = "",
     ) -> None:
         """Initialize identity, terminal text, and close-time metadata."""
         self.id = window_id
@@ -41,7 +83,9 @@ class Window(watcher.WatcherWindow):
         self.history = history
         self.output = output
         self.alternate_screen = alternate_screen
-        self.history_requests: list[bool] = []
+        self.alternate_text = alternate_text
+        self.screen: watcher.WatcherScreen = Screen(history)
+        self.history_requests: list[tuple[bool, bool, bool]] = []
 
     def as_dict(self) -> Mapping[str, object]:
         """Return the pane state available immediately before destruction."""
@@ -50,6 +94,7 @@ class Window(watcher.WatcherWindow):
             "title": "Shell",
             "cwd": "/tmp/project",
             "user_vars": self.user_vars,
+            "env": {"TOKEN": "must-not-cross-the-watcher-boundary"},
             "foreground_processes": [{"cmdline": ["top"]}],
             "at_prompt": False,
             "in_alternate_screen": self.alternate_screen,
@@ -64,9 +109,9 @@ class Window(watcher.WatcherWindow):
         add_cursor: bool = False,
     ) -> str:
         """Return terminal history while recording the requested capture mode."""
-        del as_ansi, add_wrap_markers, alternate_screen, add_cursor
-        self.history_requests.append(add_history)
-        return self.history
+        del add_wrap_markers, add_cursor
+        self.history_requests.append((as_ansi, add_history, alternate_screen))
+        return self.alternate_text if self.alternate_screen else self.history
 
     def cmd_output(self) -> str:
         """Return the most recent completed command output."""
@@ -156,12 +201,14 @@ class WatcherTests(unittest.TestCase):
     def setUp(self) -> None:
         """Reset process-global watcher queues before each scenario."""
         watcher._timers.clear()
+        watcher._timer_generations.clear()
         watcher._pending_commands.clear()
         FakeTimer.instances.clear()
 
     def tearDown(self) -> None:
         """Prevent watcher state from leaking into later scenarios."""
         watcher._timers.clear()
+        watcher._timer_generations.clear()
         watcher._pending_commands.clear()
 
     def test_environment_prefers_foreground_path_and_keeps_socket(self) -> None:
@@ -214,12 +261,15 @@ class WatcherTests(unittest.TestCase):
             self.assertEqual(event["window_id"], 2)
             self.assertEqual(event["command"], "pytest -q")
             self.assertEqual(event["cwd"], "/tmp/project")
+            self.assertEqual(event["completed_at"], 1785843000.0)
 
     def test_autosave_uses_shared_launcher_and_receives_socket_before_subcommand(self) -> None:
         """Invoke the installed launcher with global options in Tyro order."""
         environment = {"PATH": "/fresh", "KITTY_LISTEN_ON": "unix:/tmp/kitty"}
+        watcher._timer_generations["session-id"] = 1
         with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
-            watcher._run_autosave("session-id", environment)
+            popen.return_value.wait.return_value = 0
+            watcher._run_autosave("session-id", environment, 1)
 
         command = popen.call_args.args[0]
         self.assertTrue(command[0].endswith("/bin/kitty-workbench"))
@@ -244,6 +294,7 @@ class WatcherTests(unittest.TestCase):
 
         self.assertTrue(FakeTimer.instances[0].cancelled)
         with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+            popen.return_value.wait.return_value = 0
             FakeTimer.instances[-1].fire()
 
         payload = _written_payload(popen)
@@ -251,14 +302,153 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual([event["command"] for event in events], ["pytest -q", "git status"])
         self.assertNotIn("session-id", watcher._pending_commands)
 
+    def test_expired_debounce_callback_cannot_drain_newer_commands(self) -> None:
+        """Model a canceled timer that had already begun firing on Kitty's thread."""
+        boss = Boss()
+        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+            watcher.on_cmd_startstop(
+                boss,
+                Window(),
+                {"is_start": False, "cmdline": "echo first", "time": 1785843000.0},
+            )
+            stale = FakeTimer.instances[-1]
+            watcher.on_cmd_startstop(
+                boss,
+                Window(),
+                {"is_start": False, "cmdline": "echo second", "time": 1785843001.0},
+            )
+            current = FakeTimer.instances[-1]
+
+            with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+                popen.return_value.wait.return_value = 0
+                stale.fire()
+                popen.assert_not_called()
+                self.assertEqual(
+                    [event["command"] for event in watcher._pending_commands["session-id"]],
+                    ["echo first", "echo second"],
+                )
+                current.fire()
+                events = cast(
+                    list[dict[str, object]],
+                    _written_payload(popen)["command_events"],
+                )
+                self.assertEqual(
+                    [event["command"] for event in events],
+                    ["echo first", "echo second"],
+                )
+
+                watcher.on_cmd_startstop(
+                    boss,
+                    Window(),
+                    {"is_start": False, "cmdline": "echo third", "time": 1785843002.0},
+                )
+                newest = FakeTimer.instances[-1]
+                popen.reset_mock()
+                stale.fire()
+                popen.assert_not_called()
+                newest.fire()
+
+        later_events = cast(
+            list[dict[str, object]],
+            _written_payload(popen)["command_events"],
+        )
+        self.assertEqual([event["command"] for event in later_events], ["echo third"])
+
+    def test_cmd_w_can_drain_commands_while_an_autosave_process_is_in_flight(self) -> None:
+        """Keep events queued until the isolated writer confirms persistence."""
+        boss = Boss()
+        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+            watcher.on_cmd_startstop(
+                boss,
+                Window(),
+                {"is_start": False, "cmdline": "pwd", "time": 1785843000.0},
+            )
+
+        drained: list[dict[str, object]] = []
+
+        def close_during_wait(timeout: float) -> int:
+            self.assertEqual(timeout, watcher.AUTOSAVE_COMPLETION_TIMEOUT_SECONDS)
+            drained.extend(watcher._drain_closing_events("session-id"))
+            return 0
+
+        with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+            popen.return_value.wait.side_effect = close_during_wait
+            FakeTimer.instances[-1].fire()
+
+        self.assertEqual([event["command"] for event in drained], ["pwd"])
+        self.assertNotIn("session-id", watcher._pending_commands)
+
+    def test_command_arriving_during_autosave_remains_queued(self) -> None:
+        """Remove only events handled by a successful in-flight writer."""
+        boss = Boss()
+        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+            watcher.on_cmd_startstop(
+                boss,
+                Window(),
+                {"is_start": False, "cmdline": "first", "time": 1785843000.0},
+            )
+
+        def append_new_event(timeout: float) -> int:
+            del timeout
+            watcher._pending_commands["session-id"].append(
+                {
+                    "window_id": 2,
+                    "command": "second",
+                    "completed_at": 1785843001.0,
+                }
+            )
+            return 0
+
+        with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+            popen.return_value.wait.side_effect = append_new_event
+            FakeTimer.instances[-1].fire()
+
+        self.assertEqual(
+            [event["command"] for event in watcher._pending_commands["session-id"]],
+            ["second"],
+        )
+
+    def test_failed_autosaves_leave_events_available_to_cmd_w(self) -> None:
+        """Retain completed commands across launch, timeout, wait, and exit failures."""
+        failures: tuple[object, ...] = (
+            None,
+            7,
+            subprocess.TimeoutExpired("autosave", 30),
+            OSError("wait failed"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                watcher._timers.clear()
+                watcher._timer_generations.clear()
+                watcher._pending_commands.clear()
+                FakeTimer.instances.clear()
+                with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+                    watcher.on_cmd_startstop(
+                        Boss(),
+                        Window(),
+                        {"is_start": False, "cmdline": "pwd", "time": 1785843000.0},
+                    )
+                process = mock.MagicMock()
+                if isinstance(failure, BaseException):
+                    process.wait.side_effect = failure
+                else:
+                    process.wait.return_value = failure
+                launched = None if failure is None else process
+                with mock.patch.object(watcher, "_launch_autosave", return_value=launched):
+                    FakeTimer.instances[-1].fire()
+
+                recovered = watcher._drain_closing_events("session-id")
+                self.assertEqual([event["command"] for event in recovered], ["pwd"])
+
     def test_cmd_w_captures_pending_history_before_kitty_destroys_the_screen(self) -> None:
         """Persist reopened-pane changes immediately when Cmd-W closes the pane."""
         old_lines = "".join(f"old-{index:04d}\n" for index in range(1998))
         closing = Window(
             99,
-            history=f"{old_lines}pwd\n/tmp/project\ntop\n",
+            history=f"{old_lines}pwd\n/tmp/project\n",
             output="/tmp/project\n",
             alternate_screen=True,
+            alternate_text="Processes: 412 total\nCPU usage: 8.4%\n",
         )
         foreign = Window(41, session_id="other-session")
         sibling = Window(98)
@@ -278,22 +468,40 @@ class WatcherTests(unittest.TestCase):
         self.assertTrue(pending_timer.cancelled)
         self.assertNotIn("session-id", watcher._timers)
         self.assertNotIn("session-id", watcher._pending_commands)
-        self.assertEqual(closing.history_requests, [True])
+        self.assertEqual(closing.history_requests, [(True, False, True)])
+        screen = cast(Screen, closing.screen)
+        self.assertEqual(screen.ansi_requests, [True])
+        self.assertEqual(cast(LineBuffer, screen.main_linebuf).ansi_requests, [True])
         payload = _written_payload(popen)
         capture = cast(dict[str, object], payload["closing_pane"])
         self.assertEqual((capture["tab_index"], capture["pane_index"]), (0, 1))
         self.assertEqual(capture["terminal_history"], closing.history)
+        self.assertEqual(capture["alternate_screen_text"], closing.alternate_text)
         self.assertEqual(capture["last_command_output"], "/tmp/project\n")
         events = cast(list[dict[str, object]], capture["command_events"])
         self.assertEqual([event["command"] for event in events], [["pwd"]])
-        self.assertEqual(cast(dict[str, object], capture["window"])["id"], 99)
+        captured_window = cast(dict[str, object], capture["window"])
+        self.assertEqual(captured_window["id"], 99)
+        self.assertNotIn("env", captured_window)
+
+    def test_shell_close_requests_ansi_scrollback_for_styled_prompts(self) -> None:
+        """Capture Spaceship prompt colors from a normal shell's main screen."""
+        history = "\x1b[38;2;245;130;65m ~/dotfiles \x1b[0m ls\n"
+        window = Window(history=history)
+
+        capture = watcher._closing_pane_capture(window, None, "session-id", [])
+
+        self.assertEqual(capture["terminal_history"], history)
+        self.assertEqual(capture["alternate_screen_text"], "")
+        self.assertEqual(window.history_requests, [(True, True, False)])
 
     def test_triggered_autosave_timer_is_one_shot_not_a_polling_loop(self) -> None:
         """Complete one scheduled save without creating another timer."""
         with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
             watcher.on_title_change(Boss(), Window(), {"title": "settled"})
             self.assertEqual(len(FakeTimer.instances), 1)
-            with mock.patch("kitty_workbench.watcher.subprocess.Popen"):
+            with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+                popen.return_value.wait.return_value = 0
                 FakeTimer.instances[0].fire()
 
         self.assertEqual(len(FakeTimer.instances), 1)
@@ -353,11 +561,16 @@ class WatcherTests(unittest.TestCase):
                 self.subTest(error=type(error).__name__),
                 mock.patch("kitty_workbench.watcher.subprocess.Popen", side_effect=error),
             ):
-                watcher._launch_autosave("session-id", {}, {"command_events": []})
+                self.assertIsNone(
+                    watcher._launch_autosave("session-id", {}, {"command_events": []})
+                )
 
         with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
             popen.return_value.stdin.write.side_effect = BrokenPipeError("closed")
-            watcher._launch_autosave("session-id", {}, {"command_events": []})
+            self.assertIs(
+                watcher._launch_autosave("session-id", {}, {"command_events": []}),
+                popen.return_value,
+            )
 
     def test_unstable_text_and_location_apis_never_break_close(self) -> None:
         self.assertEqual(watcher._read_window_text(lambda: 7), "")
@@ -367,6 +580,10 @@ class WatcherTests(unittest.TestCase):
 
         self.assertEqual(watcher._read_window_text(broken_reader), "")
         window = Window()
+        broken_screen = mock.MagicMock()
+        broken_screen.as_text_for_history_buf.side_effect = RuntimeError("screen destroyed")
+        window.screen = cast(watcher.WatcherScreen, broken_screen)
+        self.assertEqual(watcher._read_hidden_main_buffer(window), "")
         self.assertEqual(watcher._session_location(window, None, "session-id"), (-1, -1))
         self.assertEqual(
             watcher._session_location(window, BrokenBoss(), "session-id"),
@@ -417,7 +634,10 @@ class WatcherTests(unittest.TestCase):
         window = Window()
         assert window.child is not None
         window.child.foreground_cwd = lambda: "/tmp/callable"
-        with mock.patch.object(watcher, "_schedule") as schedule:
+        with (
+            mock.patch.object(watcher, "_schedule") as schedule,
+            mock.patch("kitty_workbench.watcher.time.time", return_value=1785843999.0),
+        ):
             watcher.on_cmd_startstop(
                 boss,
                 window,
@@ -426,6 +646,7 @@ class WatcherTests(unittest.TestCase):
         event = schedule.call_args.args[3]
         self.assertEqual(event["command"], ["git", "status"])
         self.assertEqual(event["cwd"], "/tmp/callable")
+        self.assertEqual(event["completed_at"], 1785843999.0)
 
         window.child.foreground_cwd = lambda: (_ for _ in ()).throw(RuntimeError("gone"))
         with mock.patch.object(watcher, "_schedule") as schedule:
@@ -434,6 +655,21 @@ class WatcherTests(unittest.TestCase):
 
         window.child = None
         self.assertIsNone(watcher._foreground_cwd(window))
+
+    def test_command_completion_replaces_each_invalid_kitty_clock_value(self) -> None:
+        """Convert Kitty's monotonic callback time to one stable wall-clock value."""
+        for reported in (None, True, 19.927957, "19.927957"):
+            with (
+                self.subTest(reported=reported),
+                mock.patch.object(watcher, "_schedule") as schedule,
+                mock.patch("kitty_workbench.watcher.time.time", return_value=1785843999.0),
+            ):
+                watcher.on_cmd_startstop(
+                    Boss(),
+                    Window(),
+                    {"is_start": False, "cmdline": "pwd", "time": reported},
+                )
+            self.assertEqual(schedule.call_args.args[3]["completed_at"], 1785843999.0)
 
 
 if __name__ == "__main__":

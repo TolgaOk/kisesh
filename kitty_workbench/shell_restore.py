@@ -7,13 +7,14 @@ import pwd
 import shlex
 import shutil
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NoReturn
 
 from .context import (
     COMMAND_HISTORY_LIMIT,
     ContextInput,
+    pane_auto_run_argv,
     pane_command_history,
     pane_terminal_history,
 )
@@ -21,6 +22,7 @@ from .filesystem import atomic_write_text
 from .store import StoredSession
 
 ZSH_HISTORY_SIZE = COMMAND_HISTORY_LIMIT + 1
+SGR_RESET = "\x1b[0m"
 
 
 def _history_line(command: str) -> str:
@@ -165,6 +167,7 @@ def shell_launch_command(
     tab_index: int,
     pane_index: int,
     environment: Mapping[str, str],
+    startup_argv: Sequence[str] = (),
 ) -> list[str]:
     """Build a kitten run-shell command with optional private zsh startup."""
     shell = _configured_shell(environment)
@@ -182,6 +185,8 @@ def shell_launch_command(
                 "--env=KITTY_WORKBENCH_RESTORING_SHELL=1",
             )
         )
+    if startup_argv:
+        command.extend(("--", *startup_argv))
     return command
 
 
@@ -195,10 +200,19 @@ def run_restored_shell(
     history = pane_terminal_history(context, tab_index, pane_index)
     if history:
         sys.stdout.write(history)
+        sys.stdout.write(SGR_RESET)
         if not history.endswith("\n"):
             sys.stdout.write("\n")
         sys.stdout.flush()
     environment = os.environ.copy()
-    command = shell_launch_command(stored, context, tab_index, pane_index, environment)
+    startup_argv = pane_auto_run_argv(context, tab_index, pane_index)
+    command = shell_launch_command(
+        stored,
+        context,
+        tab_index,
+        pane_index,
+        environment,
+        startup_argv,
+    )
     os.execvpe(command[0], command, environment)
     raise AssertionError("os.execvpe unexpectedly returned")

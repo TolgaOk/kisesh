@@ -221,10 +221,59 @@ class ShellRestoreUnitTests(unittest.TestCase):
         self.assertEqual(fish, [str(kitten), "run-shell", "--shell=/bin/fish"])
         self.assertEqual(malformed, [str(kitten), "run-shell", "--shell='"])
 
+    def test_approved_app_runs_before_a_history_backed_restored_shell(self) -> None:
+        kitten = self.root / "kitten"
+        kitten.write_text("binary", encoding="utf-8")
+        context = build_context(
+            [
+                LiveTab(
+                    1,
+                    7,
+                    0,
+                    "Monitor",
+                    "splits",
+                    [
+                        {
+                            "id": 11,
+                            "cwd": "/tmp/project",
+                            "foreground_processes": [],
+                            "last_reported_cmdline": "top",
+                            "at_prompt": False,
+                            "in_alternate_screen": True,
+                        }
+                    ],
+                )
+            ],
+            terminal_histories={11: "TOP FRAME\n"},
+        )
+        environment = {
+            "HOME": str(self.root),
+            "SHELL": "/bin/zsh",
+            "KITTY_WORKBENCH_KITTEN": str(kitten),
+        }
+
+        command = shell_restore.shell_launch_command(
+            self.stored,
+            context,
+            0,
+            0,
+            environment,
+            ["top"],
+        )
+
+        self.assertEqual(command[-2:], ["--", "top"])
+        self.assertTrue(any(item.startswith("--env=ZDOTDIR=") for item in command))
+        state = self.stored.directory / "shell-state" / "tab-0000-pane-0000"
+        self.assertEqual((state / "history").read_text(encoding="utf-8"), "top\n")
+
     def test_restored_shell_prints_scrollback_then_executes_normal_shell(self) -> None:
         scenarios = (
-            ("saved output", "saved output\n"),
-            ("already terminated\n", "already terminated\n"),
+            ("saved output", f"saved output{shell_restore.SGR_RESET}\n"),
+            (
+                "\x1b[48;2;245;130;65m ~/dotfiles \x1b[0m",
+                f"\x1b[48;2;245;130;65m ~/dotfiles \x1b[0m{shell_restore.SGR_RESET}\n",
+            ),
+            ("already terminated\n", f"already terminated\n{shell_restore.SGR_RESET}"),
             ("", ""),
         )
         for history, expected in scenarios:

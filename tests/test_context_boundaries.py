@@ -139,8 +139,13 @@ class ContextBoundaryTests(unittest.TestCase):
         self.assertEqual(history, [])
         event = {"command": "pwd", "completed_at": "2026-08-04T11:30:00Z"}
         _append_history(history, event, "")
+        _append_history(
+            history,
+            {"command": "ls", "completed_at": "2026-08-04T11:31:00Z"},
+            "",
+        )
         _append_history(history, event, "")
-        self.assertEqual(len(history), 1)
+        self.assertEqual([entry["command"] for entry in history], ["pwd", "ls"])
         self.assertNotIn("cwd", history[0])
 
     def test_agent_resume_variants_reduce_to_stable_safe_commands(self) -> None:
@@ -165,8 +170,8 @@ class ContextBoundaryTests(unittest.TestCase):
             _codex_resume(["codex", "resume", "--sandbox"]),
             ["codex", "resume", "--last"],
         )
-        self.assertIsNone(_restore_command(["-zsh"], agent=None, alternate_screen=False))
-        unknown = _restore_command(["python", "server.py"], agent=None, alternate_screen=False)
+        self.assertIsNone(_restore_command(["-zsh"], agent=None))
+        unknown = _restore_command(["python", "server.py"], agent=None)
         self.assertIsNotNone(unknown)
         assert unknown is not None
         self.assertFalse(unknown["auto_run"])
@@ -184,6 +189,27 @@ class ContextBoundaryTests(unittest.TestCase):
         self.assertTrue(single_line.truncated)
         self.assertEqual(len(single_line.text), TERMINAL_HISTORY_CHARACTER_LIMIT)
         self.assertEqual(_bounded_terminal_history(7).text, "")
+
+    def test_terminal_capture_keeps_spaceship_colors_but_drops_active_controls(self) -> None:
+        """Retain SGR prompt styling without replaying cursor or clipboard commands."""
+        orange = "\x1b[38;2;245;130;65m"
+        blue_background = "\x1b[48:2::90:170:215m"
+        reset = "\x1b[0m"
+        styled_prompt = f"{orange} ~/dotfiles{blue_background}  main {reset}\u276f"
+        hyperlink_open = "\x1b]8;;file:///Users/tok/dotfiles\x1b\\"
+        hyperlink_close = "\x1b]8;;\x1b\\"
+        captured = (
+            f"{hyperlink_open}{styled_prompt}{hyperlink_close}"
+            "\x1b[2J\x1b]52;c;must-not-reach-the-clipboard\x07\x01 ls\n"
+        )
+
+        bounded = _bounded_terminal_history(captured)
+
+        self.assertEqual(bounded.text, f"{styled_prompt} ls\n")
+        self.assertIn(orange, bounded.text)
+        self.assertIn(blue_background, bounded.text)
+        self.assertNotIn("must-not-reach-the-clipboard", bounded.text)
+        self.assertNotIn("\x1b[2J", bounded.text)
 
     def test_corrupt_prior_panes_are_ignored_while_valid_position_state_survives(self) -> None:
         prior: dict[str, object] = {
@@ -224,6 +250,11 @@ class ContextBoundaryTests(unittest.TestCase):
         layered_context = build_context([_tab(layered)])
         self.assertEqual(layered_context["tabs"][0]["panes"][0]["program"], "zsh")
 
+        empty_prompt = _shell(101)
+        empty_prompt["foreground_processes"] = []
+        empty_prompt_context = build_context([_tab(empty_prompt)])
+        self.assertIsNone(empty_prompt_context["tabs"][0]["panes"][0]["program"])
+
     def test_remap_and_close_use_identity_then_position_and_reject_missing_panes(self) -> None:
         original = build_context([_tab(_shell(11))])
         extra_live_tab = _tab(_shell(99), tab_id=8)
@@ -237,6 +268,7 @@ class ContextBoundaryTests(unittest.TestCase):
                 "pane_index": 0,
                 "window": {**_shell(77), "last_reported_cmdline": "pwd"},
                 "terminal_history": "pwd\n/tmp/project\n",
+                "alternate_screen_text": "",
                 "last_command_output": "/tmp/project\n",
                 "command_events": [],
             },

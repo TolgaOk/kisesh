@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from kitty_workbench.domain import KittyOsWindowState, KittyWindow
@@ -86,6 +86,7 @@ class FakeKitty:
         self.capture_tab_text = DEFAULT_CAPTURE
         self.command_outputs: dict[int, str] = {}
         self.terminal_histories: dict[int, str] = {}
+        self.terminal_history_hook: Callable[[int], None] | None = None
         self.sent_text: list[tuple[int, str]] = []
         self.next_open_window_id: int | None = None
 
@@ -165,6 +166,8 @@ class FakeKitty:
 
     def terminal_history(self, window_id: int) -> str | None:
         """Return configured plain scrollback for a pane."""
+        if self.terminal_history_hook is not None:
+            self.terminal_history_hook(window_id)
         return self.terminal_histories.get(window_id)
 
     def send_text(self, window_id: int, text: str) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -35,6 +36,18 @@ TERMINAL_HISTORY_CHARACTER_LIMIT = 1024 * 1024
 
 ContextInput = Mapping[str, object] | None
 PaneLocation = tuple[int, int]
+CommandIdentity = tuple[str, str]
+
+_ANSI_SEQUENCE = re.compile(
+    r"\x1b(?:"
+    r"\[[0-?]*[ -/]*[@-~]"
+    r"|\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    r"|[PX^_][^\x1b]*(?:\x1b\\)"
+    r"|[@-_]"
+    r")"
+)
+_SGR_SEQUENCE = re.compile(r"\x1b\[[0-9:;]*m")
+_UNSAFE_TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 _AGENTS = {
     "aider": "aider",
@@ -119,6 +132,22 @@ def _plain_terminal_text(value: object) -> str:
     )
 
 
+def _styled_terminal_text(value: object) -> str:
+    """Retain printable text and SGR styling while removing active controls."""
+    if not isinstance(value, str):
+        return ""
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    parts: list[str] = []
+    cursor = 0
+    for sequence in _ANSI_SEQUENCE.finditer(normalized):
+        parts.append(_UNSAFE_TERMINAL_CONTROL.sub("", normalized[cursor : sequence.start()]))
+        if _SGR_SEQUENCE.fullmatch(sequence.group()):
+            parts.append(sequence.group())
+        cursor = sequence.end()
+    parts.append(_UNSAFE_TERMINAL_CONTROL.sub("", normalized[cursor:]))
+    return "".join(parts)
+
+
 def _bounded_command_output(value: object) -> BoundedText:
     """Keep the useful tail of one completed command's inert output."""
     plain = _plain_terminal_text(value)
@@ -130,10 +159,10 @@ def _bounded_command_output(value: object) -> BoundedText:
 
 def _bounded_terminal_history(value: object) -> BoundedText:
     """Keep at most the newest 2,000 logical lines of inert terminal text."""
-    plain = _plain_terminal_text(value)
-    if not plain.strip():
+    styled = _styled_terminal_text(value)
+    if not styled.strip():
         return BoundedText("")
-    lines = plain.splitlines(keepends=True)
+    lines = styled.splitlines(keepends=True)
     truncated = len(lines) > TERMINAL_HISTORY_LINE_LIMIT
     bounded = "".join(lines[-TERMINAL_HISTORY_LINE_LIMIT:] if truncated else lines)
     if len(bounded) <= TERMINAL_HISTORY_CHARACTER_LIMIT:
@@ -177,11 +206,13 @@ def _command_name(value: object) -> str | None:
 
 
 def _foreground_argv(window: KittyWindow) -> list[str]:
-    """Return the deepest foreground process command reported for a pane."""
+    """Return the foreground process or an in-progress shell command."""
     for process in reversed(window.get("foreground_processes", [])):
         argv = _command_argv(process.get("cmdline"))
         if argv:
             return argv
+    if not bool(window.get("at_prompt")):
+        return _command_argv(window.get("last_reported_cmdline"))
     return []
 
 
@@ -273,8 +304,9 @@ def _append_history(
     history: list[CommandRecord],
     event: Mapping[str, object],
     fallback_cwd: str,
+    identities: set[CommandIdentity] | None = None,
 ) -> None:
-    """Append a normalized event unless it duplicates the latest captured event."""
+    """Append a normalized event unless its stable identity was already captured."""
     command = _command_text(event.get("command"))
     if not command:
         return
@@ -288,11 +320,14 @@ def _append_history(
         entry["cwd"] = cwd
     if status is not None:
         entry["exit_status"] = status
-    if history and all(
-        history[-1].get(key) == entry.get(key) for key in ("command", "completed_at")
-    ):
+    known = identities
+    if known is None:
+        known = {(item["command"], item["completed_at"]) for item in history}
+    identity = entry["command"], entry["completed_at"]
+    if identity in known:
         return
     history.append(entry)
+    known.add(identity)
     del history[:-COMMAND_HISTORY_LIMIT]
 
 
@@ -327,7 +362,6 @@ def _restore_command(
     argv: Sequence[str],
     *,
     agent: str | None,
-    alternate_screen: bool,
 ) -> RestoreSpec | None:
     """Build a safe foreground restore specification from live process metadata."""
     program = _command_name(argv)
@@ -344,7 +378,7 @@ def _restore_command(
         "argv": restore_argv,
         "command": shlex.join(restore_argv),
         "kind": kind,
-        "auto_run": bool(agent or alternate_screen or program.casefold() in _INTERACTIVE_PROGRAMS),
+        "auto_run": bool(agent or program.casefold() in _INTERACTIVE_PROGRAMS),
     }
 
 
@@ -425,6 +459,7 @@ class _ContextBuilder:
         command_events: Iterable[Mapping[str, object]],
         command_outputs: Mapping[int, object],
         terminal_histories: Mapping[int, object],
+        alternate_screen_texts: Mapping[int, object],
     ) -> None:
         """Index prior panes and normalized completion events once per capture."""
         self.captured_at = utc_now()
@@ -432,6 +467,7 @@ class _ContextBuilder:
         self.events_by_window: dict[int, list[CommandEvent]] = {}
         self.command_outputs = command_outputs
         self.terminal_histories = terminal_histories
+        self.alternate_screen_texts = alternate_screen_texts
         for raw_event in command_events:
             event = normalize_command_event(raw_event)
             if event is not None:
@@ -479,7 +515,6 @@ class _ContextBuilder:
             "restore": _restore_command(
                 argv,
                 agent=agent,
-                alternate_screen=alternate_screen,
             ),
             "at_prompt": bool(window.get("at_prompt")),
             "alternate_screen": alternate_screen,
@@ -512,28 +547,23 @@ class _ContextBuilder:
     ) -> list[CommandRecord]:
         """Merge prior history, watcher events, and prompt metadata without duplicates."""
         history = _history(old.get("command_history"))
+        identities = {(item["command"], item["completed_at"]) for item in history}
         for event_index, original in enumerate(events):
             event: Mapping[str, object] = original
             if "exit_status" not in original and event_index == len(events) - 1:
                 status = _exit_status(window.get("last_cmd_exit_status"))
                 if status is not None:
                     event = {**original, "exit_status": status}
-            _append_history(history, event, cwd)
+            _append_history(history, event, cwd, identities)
         last_reported = _command_text(window.get("last_reported_cmdline"))
-        if (
-            bool(window.get("at_prompt"))
-            and last_reported
-            and (not history or history[-1]["command"] != last_reported)
-        ):
-            _append_history(
-                history,
-                {
-                    "command": last_reported,
-                    "completed_at": self.captured_at,
-                    "exit_status": window.get("last_cmd_exit_status"),
-                },
-                cwd,
-            )
+        if last_reported and (not history or history[-1]["command"] != last_reported):
+            reported: dict[str, object] = {
+                "command": last_reported,
+                "completed_at": self.captured_at,
+            }
+            if bool(window.get("at_prompt")):
+                reported["exit_status"] = window.get("last_cmd_exit_status")
+            _append_history(history, reported, cwd, identities)
         return history
 
     def _last_output(
@@ -580,6 +610,15 @@ class _ContextBuilder:
             alternate.text,
             bool(old.get("alternate_screen_text_truncated")) or alternate.truncated,
         )
+        if window_id in self.alternate_screen_texts:
+            captured_normal = _bounded_terminal_history(self.terminal_histories.get(window_id))
+            captured_alternate = _bounded_terminal_history(
+                self.alternate_screen_texts.get(window_id)
+            )
+            return ScreenCapture(
+                captured_normal if captured_normal.text else normal,
+                captured_alternate if captured_alternate.text else alternate,
+            )
         if window_id not in self.terminal_histories:
             return ScreenCapture(normal, alternate)
         captured = _bounded_terminal_history(self.terminal_histories[window_id])
@@ -598,6 +637,7 @@ def build_context(
     command_events: Iterable[Mapping[str, object]] = (),
     command_outputs: Mapping[int, object] | None = None,
     terminal_histories: Mapping[int, object] | None = None,
+    alternate_screen_texts: Mapping[int, object] | None = None,
 ) -> SessionContext:
     """Capture typed pane context, bounded history, and safe resume candidates."""
     builder = _ContextBuilder(
@@ -605,6 +645,7 @@ def build_context(
         command_events,
         command_outputs or {},
         terminal_histories or {},
+        alternate_screen_texts or {},
     )
     return builder.build(tabs)
 
@@ -687,6 +728,7 @@ def update_context_for_closing_pane(
         capture["command_events"],
         {window_id: capture["last_command_output"]},
         {window_id: capture["terminal_history"]},
+        {window_id: capture["alternate_screen_text"]},
     )
     tab_index, pane_index = location
     tabs[tab_index]["panes"][pane_index] = builder._build_pane(capture["window"], location)
@@ -824,7 +866,7 @@ def _shell_state_locations(
             location = (tab_index, pane_index)
             has_scrollback = bool(pane_terminal_history(context, *location))
             has_commands = bool(_history(pane.get("command_history")))
-            if location not in commands and (has_scrollback or has_commands):
+            if location in commands or has_scrollback or has_commands:
                 locations.add(location)
     return locations
 
@@ -846,15 +888,15 @@ def _restored_launch(
     if not launch or launch[0] != "launch":
         return None
     suffix = (
-        list(command)
-        if command is not None
-        else [
+        [
             *shell_restore_argv,
             "--tab-index",
             str(location[0]),
             "--pane-index",
             str(location[1]),
         ]
+        if location in shell_states
+        else list(command or ())
     )
     return shlex.join([*launch, *suffix])
 
@@ -897,3 +939,12 @@ def restore_session(
                 continue
         output.append(raw_line)
     return "\n".join(output).rstrip() + "\n"
+
+
+def pane_auto_run_argv(
+    context: ContextInput,
+    tab_index: int,
+    pane_index: int,
+) -> list[str]:
+    """Return one validated approved command to run before restoring its shell."""
+    return list(_auto_run_commands(context).get((tab_index, pane_index), ()))

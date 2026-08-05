@@ -309,6 +309,12 @@ class ShellRestoreTests(unittest.TestCase):
                     count = _read_until(master, b"__HISTORY_COUNT__2000", timeout=5)
                     self.assertIn(b"__HISTORY_COUNT__2000", count)
                     self.assertFalse(sentinel.exists())
+                    _read_until(master, b"RESTORED> ", timeout=5)
+
+                    os.write(master, b"print -r -- __WORKBENCH_COMMAND_EVENT__\r")
+                    completed = _read_until(master, b"RESTORED> ", timeout=5)
+                    self.assertIn(b"__WORKBENCH_COMMAND_EVENT__", completed)
+                    self.assertIn(b"\x1b]133;C;cmdline=", completed)
                 finally:
                     with suppress(OSError):
                         os.write(master, b"\x03exit\r")

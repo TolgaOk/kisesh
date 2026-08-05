@@ -12,6 +12,7 @@ from kitty_workbench.context import (
     build_context,
     merge_context,
     pane_alternate_screen_text,
+    pane_auto_run_argv,
     pane_last_command_output,
     pane_terminal_history,
     pending_restore_commands,
@@ -361,6 +362,7 @@ class ContextTests(unittest.TestCase):
                 },
             ),
             "terminal_history": f"{initial_lines}pwd\n/tmp/project\n",
+            "alternate_screen_text": "",
             "last_command_output": "/tmp/project\n",
             "command_events": [
                 {
@@ -418,7 +420,8 @@ class ContextTests(unittest.TestCase):
                     "in_alternate_screen": True,
                 },
             ),
-            "terminal_history": "Processes: 412 total\nCPU usage: 8.4%\n",
+            "terminal_history": "ls\nREADME.md\npwd\n/tmp/project\n",
+            "alternate_screen_text": "Processes: 412 total\nCPU usage: 8.4%\n",
             "last_command_output": "",
             "command_events": [],
         }
@@ -433,6 +436,86 @@ class ContextTests(unittest.TestCase):
         )
         self.assertEqual(restore["argv"], ["top"])
         self.assertTrue(restore["auto_run"])
+
+    def test_cmd_w_keeps_running_commands_and_both_terminal_buffers(self) -> None:
+        """Model the three-pane xxx session through teardown and first reopen."""
+        commands = (("nvim", "."), ("htop",), ("top",))
+        windows = [
+            {
+                "id": 51 + index,
+                "title": argv[0],
+                "cwd": "/tmp/project",
+                "foreground_processes": ([] if argv == ("top",) else [{"cmdline": list(argv)}]),
+                "last_reported_cmdline": " ".join(argv),
+                "at_prompt": False,
+                "in_alternate_screen": True,
+            }
+            for index, argv in enumerate(commands)
+        ]
+        context = build_context(
+            [_tab(*windows)],
+            terminal_histories={
+                51: "NVIM FRAME\n",
+                52: "HTOP FRAME\n",
+                53: "TOP FRAME\n",
+            },
+        )
+        context["snapshot_revision"] = 4
+
+        for pane_index, (window, argv) in enumerate(zip(windows, commands, strict=True)):
+            capture: ClosingPaneCapture = {
+                "tab_index": 0,
+                "pane_index": pane_index,
+                "window": cast(
+                    KittyWindow,
+                    {
+                        **window,
+                        "foreground_processes": [],
+                        "last_reported_cmdline": " ".join(argv),
+                    },
+                ),
+                "terminal_history": f"shell history for {argv[0]}\n",
+                "alternate_screen_text": f"{argv[0].upper()} FRAME AT CLOSE\n",
+                "last_command_output": "",
+                "command_events": [],
+            }
+            context = update_context_for_closing_pane(context, capture)
+
+        panes = context["tabs"][0]["panes"]
+        self.assertEqual([pane["last_command"] for pane in panes], ["nvim .", "htop", "top"])
+        self.assertEqual(
+            [candidate["argv"] for candidate in context["restore_commands"]],
+            [["nvim", "."], ["htop"], ["top"]],
+        )
+        for pane_index, argv in enumerate(commands):
+            self.assertEqual(
+                pane_terminal_history(context, 0, pane_index),
+                f"shell history for {argv[0]}\n",
+            )
+            self.assertEqual(
+                pane_alternate_screen_text(context, 0, pane_index),
+                f"{argv[0].upper()} FRAME AT CLOSE\n",
+            )
+        self.assertEqual(context["snapshot_revision"], 4)
+
+        snapshot = "new_tab xxx\n" + "launch\n" * len(commands)
+        restored = restore_session(snapshot, context)
+        for argv in commands:
+            self.assertIn(" ".join(argv), restored)
+
+        restored_shells = restore_session(
+            snapshot,
+            context,
+            shell_restore_argv=["/workbench", "restore-shell", "session-id"],
+        )
+        self.assertEqual(restored_shells.count("/workbench restore-shell"), len(commands))
+        self.assertNotIn("nvim .", restored_shells)
+        self.assertNotIn(" htop", restored_shells)
+        self.assertNotIn(" top", restored_shells)
+        self.assertEqual(
+            [pane_auto_run_argv(context, 0, index) for index in range(len(commands))],
+            [list(argv) for argv in commands],
+        )
 
 
 if __name__ == "__main__":

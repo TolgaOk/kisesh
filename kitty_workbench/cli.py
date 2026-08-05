@@ -363,6 +363,7 @@ def _closing_capture(value: object) -> ClosingPaneCapture | None:
     tab_index = value.get("tab_index")
     pane_index = value.get("pane_index")
     terminal_history = value.get("terminal_history")
+    alternate_screen_text = value.get("alternate_screen_text", "")
     last_output = value.get("last_command_output")
     valid_indices = all(
         isinstance(index, int) and not isinstance(index, bool)
@@ -371,6 +372,7 @@ def _closing_capture(value: object) -> ClosingPaneCapture | None:
     if (
         not valid_indices
         or not isinstance(terminal_history, str)
+        or not isinstance(alternate_screen_text, str)
         or not isinstance(last_output, str)
     ):
         raise ValueError(INVALID_CLOSE_MESSAGE)
@@ -379,6 +381,7 @@ def _closing_capture(value: object) -> ClosingPaneCapture | None:
         "pane_index": cast(int, pane_index),
         "window": cast(KittyWindow, raw_window),
         "terminal_history": terminal_history,
+        "alternate_screen_text": alternate_screen_text,
         "last_command_output": last_output,
         "command_events": _normalized_events(value.get("command_events", [])),
     }

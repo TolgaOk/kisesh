@@ -242,8 +242,15 @@ class KittyClient:
         )
 
     def terminal_history(self, window_id: int) -> str:
-        """Return plain text from the pane's active screen and scrollback buffer."""
-        return self.command("get-text", "--match", f"id:{window_id}", "--extent", "all")
+        """Return styled text from the pane's active screen and scrollback buffer."""
+        return self.command(
+            "get-text",
+            "--match",
+            f"id:{window_id}",
+            "--extent",
+            "all",
+            "--ansi",
+        )
 
     def send_text(self, window_id: int, text: str) -> None:
         """Place literal text in a pane without appending an Enter key."""

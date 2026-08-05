@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Protocol
@@ -14,6 +15,7 @@ SESSION_ID_VAR = "kitty_workbench_session"
 SESSION_SLUG_VAR = "kitty_workbench_slug"
 WORKBENCH_UI_VAR = "kitty_workbench_ui"
 DEBOUNCE_SECONDS = 1.25
+AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
 COMMAND_HISTORY_LIMIT = 2000
 
 
@@ -25,12 +27,39 @@ class WatcherChild(Protocol):
     foreground_cwd: object
 
 
+class WatcherLineBuffer(Protocol):
+    """Text renderer exposed by Kitty's concrete line-buffer object."""
+
+    def as_text(
+        self,
+        callback: Callable[[str], object],
+        as_ansi: bool,
+        add_wrap_markers: bool,
+    ) -> None:
+        """Stream visible buffer lines to a callback."""
+
+
+class WatcherScreen(Protocol):
+    """History and main-line buffers exposed by Kitty's screen object."""
+
+    main_linebuf: WatcherLineBuffer
+
+    def as_text_for_history_buf(
+        self,
+        callback: Callable[[str], object],
+        as_ansi: bool,
+        add_wrap_markers: bool,
+    ) -> None:
+        """Stream the in-memory scrollback buffer to a callback."""
+
+
 class WatcherWindow(Protocol):
     """Window attributes required by Workbench watcher callbacks."""
 
     id: int
     user_vars: object
     child: WatcherChild | None
+    screen: WatcherScreen
 
     def as_dict(self) -> Mapping[str, object]:
         """Return serializable pane metadata before the screen is destroyed."""
@@ -61,6 +90,7 @@ CommandPayload = dict[str, object]
 AutosavePayload = dict[str, object]
 
 _timers: dict[str, threading.Timer] = {}
+_timer_generations: dict[str, int] = {}
 _pending_commands: dict[str, list[CommandPayload]] = {}
 _timer_lock = threading.Lock()
 
@@ -123,23 +153,23 @@ def _launch_autosave(
     session_id: str,
     environment: dict[str, str],
     payload: AutosavePayload,
-) -> None:
-    """Launch one isolated autosave process with a complete typed payload."""
+) -> subprocess.Popen[str] | None:
+    """Launch one isolated autosave process and return its completion handle."""
     try:
         encoded = json.dumps(payload, ensure_ascii=False)
     except (TypeError, ValueError):
-        return
+        return None
     project = Path(__file__).resolve().parents[1]
     launcher = project / "bin" / "kitty-workbench"
     if not launcher.is_file():
-        return
+        return None
     command = [str(launcher)]
     socket = environment.get("KITTY_LISTEN_ON")
     if socket:
         command.extend(("--socket", socket))
     command.extend(("autosave", session_id, "--payload-stdin"))
     try:
-        process = subprocess.Popen(
+        process: subprocess.Popen[str] = subprocess.Popen(
             command,
             cwd=project,
             env=environment,
@@ -149,19 +179,49 @@ def _launch_autosave(
             start_new_session=True,
             text=True,
         )
+    except OSError:
+        return None
+    try:
         if process.stdin is not None:
             process.stdin.write(encoded)
             process.stdin.close()
     except (BrokenPipeError, OSError):
-        return
+        return process
+    return process
 
 
-def _run_autosave(session_id: str, environment: dict[str, str]) -> None:
-    """Drain debounced command events into one isolated autosave process."""
+def _run_autosave(
+    session_id: str,
+    environment: dict[str, str],
+    generation: int,
+) -> None:
+    """Drain events only when invoked by the session's current debounce timer."""
     with _timer_lock:
+        if _timer_generations.get(session_id) != generation:
+            return
         _timers.pop(session_id, None)
-        command_events = _pending_commands.pop(session_id, [])
-    _launch_autosave(session_id, environment, {"command_events": command_events})
+        command_events = list(_pending_commands.get(session_id, []))
+    process = _launch_autosave(
+        session_id,
+        environment,
+        {"command_events": command_events},
+    )
+    if process is None:
+        return
+    try:
+        return_code = process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if return_code:
+        return
+    saved_event_ids = {id(event) for event in command_events}
+    with _timer_lock:
+        pending = _pending_commands.get(session_id)
+        if pending is None:
+            return
+        pending[:] = [event for event in pending if id(event) not in saved_event_ids]
+        if not pending:
+            _pending_commands.pop(session_id, None)
 
 
 def _read_window_text(reader: Callable[[], object]) -> str:
@@ -171,6 +231,17 @@ def _read_window_text(reader: Callable[[], object]) -> str:
     except Exception:
         return ""
     return value if isinstance(value, str) else ""
+
+
+def _read_hidden_main_buffer(window: WatcherWindow) -> str:
+    """Read main-screen scrollback while a full-screen application is visible."""
+    parts: list[str] = []
+    try:
+        window.screen.as_text_for_history_buf(parts.append, True, False)
+        window.screen.main_linebuf.as_text(parts.append, True, False)
+    except Exception:
+        return ""
+    return "".join(parts)
 
 
 def _session_location(
@@ -210,7 +281,6 @@ _WINDOW_STATE_KEYS = (
     "cwd",
     "user_vars",
     "foreground_processes",
-    "env",
     "is_active",
     "is_focused",
     "at_prompt",
@@ -237,12 +307,21 @@ def _closing_pane_capture(
     state = {key: raw_window[key] for key in _WINDOW_STATE_KEYS if key in raw_window}
     state["id"] = window.id
     tab_index, pane_index = _session_location(window, boss, session_id)
+    alternate_screen = bool(state.get("in_alternate_screen"))
+    terminal_history = (
+        _read_hidden_main_buffer(window)
+        if alternate_screen
+        else _read_window_text(lambda: window.as_text(as_ansi=True, add_history=True))
+    )
     return {
         "tab_index": tab_index,
         "pane_index": pane_index,
         "window": state,
-        "terminal_history": _read_window_text(
-            lambda: window.as_text(add_history=True),
+        "terminal_history": terminal_history,
+        "alternate_screen_text": (
+            _read_window_text(lambda: window.as_text(as_ansi=True, alternate_screen=True))
+            if alternate_screen
+            else ""
         ),
         "last_command_output": _read_window_text(window.cmd_output),
         "command_events": command_events,
@@ -253,6 +332,7 @@ def _drain_closing_events(session_id: str) -> list[CommandPayload]:
     """Cancel a delayed save and atomically take its pending command events."""
     with _timer_lock:
         timer = _timers.pop(session_id, None)
+        _timer_generations[session_id] = _timer_generations.get(session_id, 0) + 1
         if timer is not None:
             timer.cancel()
         return _pending_commands.pop(session_id, [])
@@ -269,9 +349,14 @@ def _schedule(
     if not session_id:
         return
     environment = _window_environment(window)
-    timer = threading.Timer(DEBOUNCE_SECONDS, _run_autosave, (session_id, environment))
-    timer.daemon = True
     with _timer_lock:
+        generation = _timer_generations.get(session_id, 0) + 1
+        timer = threading.Timer(
+            DEBOUNCE_SECONDS,
+            _run_autosave,
+            (session_id, environment, generation),
+        )
+        timer.daemon = True
         if command_event is not None:
             pending = _pending_commands.setdefault(session_id, [])
             pending.append(command_event)
@@ -280,6 +365,7 @@ def _schedule(
         if previous is not None:
             previous.cancel()
         _timers[session_id] = timer
+        _timer_generations[session_id] = generation
     timer.start()
 
 
@@ -345,10 +431,17 @@ def on_cmd_startstop(boss: WatcherBoss, window: WatcherWindow, data: WatcherData
         if isinstance(raw_command, (list, tuple))
         else str(raw_command or "")
     )
+    completed_at = data.get("time")
+    if (
+        not isinstance(completed_at, (int, float))
+        or isinstance(completed_at, bool)
+        or completed_at <= 1_000_000_000
+    ):
+        completed_at = time.time()
     event: CommandPayload = {
         "window_id": window.id,
         "command": command,
-        "completed_at": data.get("time"),
+        "completed_at": completed_at,
     }
     cwd = _foreground_cwd(window)
     if cwd:
