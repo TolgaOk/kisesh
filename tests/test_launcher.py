@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,7 +46,7 @@ class LauncherTests(unittest.TestCase):
         mappings = [line for line in integration.splitlines() if line.startswith("map ")]
 
         launch_mappings = [line for line in mappings if " launch " in line]
-        self.assertEqual(len(mappings), 3)
+        self.assertEqual(len(mappings), 5)
         for mapping in launch_mappings:
             self.assertIn("~/.local/lib/kitty-workbench/bin/kitty-workbench", mapping)
             self.assertNotIn(" python3 ", mapping)
@@ -67,6 +68,7 @@ class LauncherTests(unittest.TestCase):
             toggle_mappings,
             [
                 "map --when-focus-on var:kitty_workbench_ui alt+s close_window",
+                "map --when-focus-on var:kitty_workbench_ui cmd+w close_window",
             ],
         )
         launch_index = mappings.index(manager_mappings[0])
@@ -74,8 +76,36 @@ class LauncherTests(unittest.TestCase):
             "map --when-focus-on var:kitty_workbench_ui alt+s close_window"
         )
         self.assertLess(launch_index, close_index)
+        close_mapping = "map cmd+w kitten ~/.local/lib/kitty-workbench/integration/safe_close.py"
+        self.assertIn(close_mapping, mappings)
+        self.assertLess(
+            mappings.index(close_mapping),
+            mappings.index("map --when-focus-on var:kitty_workbench_ui cmd+w close_window"),
+        )
+        self.assertTrue((project / "integration/safe_close.py").is_file())
         self.assertNotIn(" undo", integration)
         self.assertNotIn(" park", integration)
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
+    def test_no_ui_close_kitten_loads_inside_the_installed_kitty_runtime(self) -> None:
+        project = Path(__file__).parents[1]
+        script = project / "integration/safe_close.py"
+        expression = (
+            "import runpy; loaded = runpy.run_path("
+            f"{str(script)!r}); print(callable(loaded['handle_result']))"
+        )
+
+        result = subprocess.run(
+            [shutil.which("kitty") or "kitty", "+runpy", expression],
+            cwd=project,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "True")
 
     def test_panel_launcher_builds_cold_and_prewarmed_toggle_commands(self) -> None:
         project = Path(__file__).parents[1]

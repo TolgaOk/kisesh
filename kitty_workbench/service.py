@@ -550,11 +550,48 @@ class WorkbenchService:
 
         return self.store.update_context(updated.manifest.id, merge_latest)
 
-    def save_and_close(self, slug_or_id: str) -> StoredSession:
-        """Persist a live session completely before closing any of its tabs."""
+    def save_and_close(
+        self,
+        slug_or_id: str,
+        promote_os_window_id: int | None = None,
+    ) -> StoredSession:
+        """Persist a live session, close it, then optionally focus its successor."""
         stored = self.save(slug_or_id)
-        self._kitty().close_session_tabs(stored.manifest.id)
+        client = self._kitty()
+        client.close_session_tabs(stored.manifest.id)
+        if promote_os_window_id is not None:
+            self._promote_live_session(client, promote_os_window_id)
         return stored
+
+    def _promote_live_session(
+        self,
+        client: KittyController,
+        os_window_id: int,
+    ) -> None:
+        """Best-effort focus the active stored session remaining in one OS window."""
+        try:
+            tabs = client.tabs()
+        except KittyError:
+            return
+        candidates = sorted(
+            (tab for tab in tabs if tab.os_window_id == os_window_id),
+            key=lambda tab: (not tab.is_focused, not tab.is_active, tab.index),
+        )
+        for tab in candidates:
+            session_id = tab.session_id()
+            if session_id is None:
+                continue
+            try:
+                stored = self.store.get(session_id)
+            except StoreError:
+                continue
+            if stored.manifest.status != "active":
+                continue
+            try:
+                client.activate_session(session_id, tab)
+            except KittyError:
+                return
+            return
 
     def _capture_live_session(self, client: KittyController, session_id: str) -> str:
         """Capture a complete live session through an isolated temporary file."""

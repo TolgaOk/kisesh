@@ -54,6 +54,11 @@ entries and scrollback lines, the last command output, safe `top` state, and
 Claude/Codex resume commands; unknown commands are left at the prompt without
 being run.
 
+`Cmd+W` closes one tab and autosaves the remaining session. On the final tab it
+defaults to a native **No** confirmation, saves before closing, then shows the
+next live session in that Kitty window. Repeated presses cannot close through
+the confirmation into the next session.
+
 Archive (`e`) moves an inactive session to the lower list. Remove (`D`) sends
 one to recoverable Workbench trash.
 

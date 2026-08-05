@@ -51,9 +51,9 @@
 
 - [x] After `Cmd+W` closes a non-final tab, capture its panes and trigger a full
   save of the remaining tabs so the closed tab leaves both snapshot and context.
-- [ ] Intercept the final tab of a tracked session with a native confirmation,
+- [x] Intercept the final tab of a tracked session with a native confirmation,
   complete a full save before closing, and promote the next live session.
-- [ ] Make repeated close keys, cancellation, save failure, stale ownership, and
+- [x] Make repeated close keys, cancellation, save failure, stale ownership, and
   unavailable Kitty state fail safely without crossing into another session.
 
 ## Persistent session bar

@@ -20,7 +20,7 @@ MANAGED_BEGIN = "# BEGIN kitty-workbench (managed by ./install)"
 MANAGED_END = "# END kitty-workbench (managed by ./install)"
 INTEGRATION_INCLUDE = "include ~/.local/lib/kitty-workbench/integration/kitty-workbench.conf"
 DEFAULT_LISTEN_ON = "unix:/tmp/kitty-workbench-main"
-MANAGED_KEYS = ("alt+s", "alt+shift+s")
+MANAGED_KEYS = ("alt+s", "alt+shift+s", "cmd+w")
 
 InstallAction = Literal["enable", "disable", "uninstall", "purge"]
 
@@ -136,6 +136,8 @@ def _validate_source(paths: InstallPaths) -> None:
     required = (
         paths.source / "bin" / "kitty-workbench",
         paths.source / "integration" / "kitty-workbench.conf",
+        paths.source / "integration" / "safe_close.py",
+        paths.source / "kitty_workbench" / "close_guard.py",
         paths.source / "kitty_workbench" / "watcher.py",
     )
     missing = [str(path) for path in required if not path.is_file()]

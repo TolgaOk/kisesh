@@ -133,6 +133,14 @@ class InstallerTests(unittest.TestCase):
         backup = self.config.with_name("kitty.conf.kitty-workbench.bak")
         self.assertEqual(backup.read_text(encoding="utf-8"), original)
 
+    def test_enable_warns_when_it_takes_over_native_tab_close(self) -> None:
+        self.write_config("map cmd+w close_tab\n")
+
+        result = self.run_installer()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("takes precedence over existing mappings for cmd+w", result.stderr)
+
     def test_fresh_config_gets_only_the_required_remote_control_defaults(self) -> None:
         result = self.run_installer()
 

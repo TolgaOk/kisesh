@@ -9,7 +9,11 @@ import unittest
 from pathlib import Path
 
 PROJECT = Path(__file__).parents[1]
-SOURCE_FILES = [*sorted((PROJECT / "kitty_workbench").glob("*.py")), PROJECT / "workbench.py"]
+SOURCE_FILES = [
+    *sorted((PROJECT / "kitty_workbench").glob("*.py")),
+    *sorted((PROJECT / "integration").glob("*.py")),
+    PROJECT / "workbench.py",
+]
 
 
 class QualityContractTests(unittest.TestCase):

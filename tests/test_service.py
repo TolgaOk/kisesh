@@ -626,6 +626,48 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(self.kitty.include_tab)
         self.assertIn("restore-shell", self.kitty.opened_contents[-1])
 
+    def test_final_tab_close_saves_then_promotes_the_next_live_session(self) -> None:
+        self.kitty.window.update(
+            {
+                "last_reported_cmdline": "git status",
+                "last_cmd_exit_status": 0,
+                "at_prompt": True,
+            }
+        )
+        self.kitty.terminal_histories[11] = "pwd\ngit status\nclean\n"
+        closing = self.service.create_from_active("Closing")
+        next_session = self.store.create("Next", "/tmp/next")
+        next_tab = LiveTab(
+            1,
+            8,
+            1,
+            "Next",
+            "splits",
+            [{"id": 12, "cwd": "/tmp/next", "user_vars": {}}],
+            is_focused=True,
+            is_active=True,
+        )
+        self.kitty.stamp_tab(next_tab, next_session.manifest)
+        self.kitty.extra_tabs.append(next_tab)
+
+        closed = self.service.save_and_close(closing.manifest.id, 1)
+        context = self.store.read_context(closing.manifest.id)
+
+        self.assertEqual(closed.manifest.id, closing.manifest.id)
+        self.assertEqual(self.kitty.closed_sessions, [closing.manifest.id])
+        self.assertEqual([tab.tab_id for tab in self.kitty.tabs()], [next_tab.tab_id])
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (next_session.manifest.id, next_tab.tab_id),
+        )
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(
+            context["tabs"][0]["panes"][0]["terminal_history"],
+            "pwd\ngit status\nclean\n",
+        )
+        self.assertEqual(context["tabs"][0]["panes"][0]["last_command"], "git status")
+
     def test_open_requires_a_choice_then_can_attach_all_current_unowned_tabs(self) -> None:
         target = self.store.create("Existing Project", "/tmp/existing")
         target_tab = LiveTab(

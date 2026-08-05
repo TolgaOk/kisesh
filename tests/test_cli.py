@@ -131,6 +131,7 @@ class CliTests(unittest.TestCase):
             ]
         )
         discard = parse_arguments(["open", "project", "--unowned-tabs", "discard"])
+        promoted = parse_arguments(["close", "project", "--promote-os-window", "41"])
 
         self.assertIsInstance(before.command, AddTab)
         self.assertEqual(before.socket, "unix:/tmp/kitty")
@@ -146,6 +147,7 @@ class CliTests(unittest.TestCase):
             cast(OpenSession, discard.command).unowned_tabs,
             UnownedTabsAction.DISCARD,
         )
+        self.assertEqual(cast(CloseSession, promoted.command).promote_os_window, 41)
 
     def test_only_live_operations_construct_an_eager_kitty_client(self) -> None:
         """Keep stored-context reads offline unless a connection override is explicit."""
@@ -230,7 +232,8 @@ class CliTests(unittest.TestCase):
             (CopyTab("project"), "copy_current_tab", ("project",)),
             (SaveSession("project"), "save", ("project",)),
             (SaveSession(), "save_current", ()),
-            (CloseSession("project"), "save_and_close", ("project",)),
+            (CloseSession("project"), "save_and_close", ("project", None)),
+            (CloseSession("project", 41), "save_and_close", ("project", 41)),
             (OpenSession("project"), "open", ("project", None)),
             (
                 OpenSession(

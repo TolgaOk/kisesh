@@ -149,6 +149,9 @@ class CloseSession:
     session: PositionalString
     """Session name, slug, or identifier."""
 
+    promote_os_window: int | None = None
+    """Focus the next live session remaining in this Kitty OS window."""
+
 
 @dataclass(frozen=True, slots=True)
 class RenameSession:
@@ -352,7 +355,7 @@ def _run_membership(command: MembershipCommand, service: WorkbenchService) -> in
     elif isinstance(command, SaveSession):
         stored = service.save(command.session) if command.session else service.save_current()
     elif isinstance(command, CloseSession):
-        stored = service.save_and_close(command.session)
+        stored = service.save_and_close(command.session, command.promote_os_window)
     else:
         if command.unowned_name is not None and (
             command.unowned_tabs is not UnownedTabsAction.SAVE_SEPARATELY

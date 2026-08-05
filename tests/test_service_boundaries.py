@@ -489,11 +489,91 @@ class ServiceBoundaryTests(unittest.TestCase):
             mock.patch.object(self.service, "save", side_effect=StoreError("disk full")),
             self.assertRaisesRegex(StoreError, "disk full"),
         ):
-            self.service.save_and_close(stored.manifest.id)
+            self.service.save_and_close(stored.manifest.id, 1)
 
         self.assertTrue(self.kitty.include_tab)
         self.assertEqual(self.kitty.closed_sessions, [])
         self.assertEqual(self.kitty.tab.session_id(), stored.manifest.id)
+
+    def test_failed_remote_close_does_not_attempt_to_promote_another_session(self) -> None:
+        stored = self.service.create_from_active("Still open")
+
+        with (
+            mock.patch.object(
+                self.kitty,
+                "close_session_tabs",
+                side_effect=KittyError("close rejected"),
+            ),
+            mock.patch.object(self.kitty, "activate_session") as activate,
+            self.assertRaisesRegex(KittyError, "close rejected"),
+        ):
+            self.service.save_and_close(stored.manifest.id, 1)
+
+        activate.assert_not_called()
+        self.assertTrue(self.kitty.include_tab)
+        self.assertTrue(stored.snapshot_path.is_file())
+
+    def test_close_promotion_skips_unowned_stale_archived_and_other_window_tabs(self) -> None:
+        archived = self.store.create("Archived", "/tmp/archived")
+        archived = self.store.archive(archived.manifest.id)
+        valid = self.store.create("Valid", "/tmp/valid")
+        tabs = [
+            LiveTab(1, 8, 0, "Unowned", "splits", [{"id": 12, "user_vars": {}}], True),
+            LiveTab(
+                1,
+                9,
+                1,
+                "Stale",
+                "splits",
+                [{"id": 13, "user_vars": {"kitty_workbench_session": "missing"}}],
+                True,
+            ),
+            LiveTab(
+                1,
+                10,
+                2,
+                "Archived",
+                "splits",
+                [{"id": 14, "user_vars": {}}],
+                True,
+                True,
+            ),
+            LiveTab(2, 11, 0, "Other window", "splits", [{"id": 15, "user_vars": {}}], True),
+            LiveTab(1, 12, 3, "Valid", "splits", [{"id": 16, "user_vars": {}}]),
+        ]
+        self.kitty.stamp_tab(tabs[2], archived.manifest)
+        self.kitty.stamp_tab(tabs[3], valid.manifest)
+        self.kitty.stamp_tab(tabs[4], valid.manifest)
+        self.kitty.include_tab = False
+        self.kitty.extra_tabs = tabs
+
+        self.service._promote_live_session(self.kitty, 1)
+
+        self.assertEqual(
+            self.kitty.activated_sessions,
+            [(valid.manifest.id, tabs[4].tab_id)],
+        )
+
+    def test_close_promotion_is_best_effort_after_the_destructive_boundary(self) -> None:
+        stored = self.store.create("Remaining", "/tmp/remaining")
+        self.kitty.stamp_tab(self.kitty.tab, stored.manifest)
+
+        with mock.patch.object(self.kitty, "tabs", side_effect=KittyError("socket gone")):
+            self.service._promote_live_session(self.kitty, 1)
+        self.assertEqual(self.kitty.activated_sessions, [])
+
+        with mock.patch.object(
+            self.kitty,
+            "activate_session",
+            side_effect=KittyError("focus race"),
+        ):
+            self.service._promote_live_session(self.kitty, 1)
+        self.assertEqual(self.kitty.activated_sessions, [])
+
+        self.kitty.clear_tab_session(self.kitty.tab)
+        self.service._promote_live_session(self.kitty, 1)
+        self.service._promote_live_session(self.kitty, 99)
+        self.assertEqual(self.kitty.activated_sessions, [])
 
     def test_failed_auto_session_save_rolls_back_tabs_and_moves_partial_state_to_trash(
         self,
