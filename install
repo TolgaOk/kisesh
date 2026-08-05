@@ -1,0 +1,31 @@
+#!/bin/sh
+# Bootstrap an isolated runtime, then install or remove kitty-workbench.
+
+set -u
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+runtime_python="$project_dir/.venv/bin/python"
+
+if [ -x "$runtime_python" ] && "$runtime_python" -c 'import tyro' 2>/dev/null; then
+    exec "$runtime_python" -m kitty_workbench.installer "$@"
+fi
+
+for python in \
+    "$HOME/homebrew/bin/python3" \
+    /opt/homebrew/bin/python3 \
+    /usr/local/bin/python3 \
+    "$(command -v python3 2>/dev/null)"
+do
+    [ -n "$python" ] || continue
+    [ -x "$python" ] || continue
+    if "$python" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
+        if [ ! -x "$runtime_python" ]; then
+            "$python" -m venv "$project_dir/.venv" || exit 1
+        fi
+        "$runtime_python" -m pip install --disable-pip-version-check 'tyro>=1.0.15,<2' || exit 1
+        exec "$runtime_python" -m kitty_workbench.installer "$@"
+    fi
+done
+
+printf '%s\n' 'kitty-workbench installer: Python 3.11 or newer was not found' >&2
+exit 1

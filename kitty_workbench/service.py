@@ -1,0 +1,483 @@
+"""Application service coordinating Kitty and persisted session operations."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import uuid
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+from .context import (
+    CONTEXT_SCHEMA_VERSION,
+    build_context,
+    merge_context,
+    pending_restore_commands,
+    remap_context_windows,
+    restore_session,
+    update_context_for_closing_pane,
+)
+from .domain import ClosingPaneCapture, SessionContext
+from .filesystem import temporary_path
+from .kitty_client import KittyClient, KittyController, KittyError, LiveTab
+from .model import SessionManifest
+from .session_file import sanitize_session, snapshot_summary
+from .store import SessionStore, StoredSession, StoreError
+
+
+class WorkbenchError(RuntimeError):
+    """Raised when a requested session operation violates lifecycle rules."""
+
+
+@dataclass(slots=True)
+class SessionView:
+    """Stored session data enriched with matching live Kitty tabs."""
+
+    stored: StoredSession
+    live_tabs: list[LiveTab]
+    context: SessionContext | None = None
+
+    @property
+    def live(self) -> bool:
+        """Report whether at least one owned Kitty tab is currently running."""
+        return bool(self.live_tabs)
+
+
+PaneTextReader = Callable[[int], str | None]
+KittyFactory = Callable[[], KittyController]
+
+
+def _capture_pane_texts(
+    tabs: Iterable[LiveTab],
+    reader: PaneTextReader,
+) -> dict[int, str]:
+    """Capture available text independently so one failed pane cannot abort a save."""
+    captured: dict[int, str] = {}
+    for tab in tabs:
+        for window in tab.windows:
+            try:
+                text = reader(window["id"])
+            except KittyError:
+                continue
+            if isinstance(text, str):
+                captured[window["id"]] = text
+    return captured
+
+
+class WorkbenchService:
+    """Enforce session lifecycle rules across storage and live Kitty state."""
+
+    def __init__(
+        self,
+        store: SessionStore,
+        kitty: KittyController | None = None,
+        kitty_factory: KittyFactory = KittyClient,
+    ) -> None:
+        """Initialize service dependencies without connecting to Kitty eagerly."""
+        self.store = store
+        self.kitty = kitty
+        self.kitty_factory = kitty_factory
+
+    def _kitty(self) -> KittyController:
+        """Return the injected client or construct one lazily."""
+        if self.kitty is None:
+            self.kitty = self.kitty_factory()
+        return self.kitty
+
+    def _live_tabs_by_session(self) -> dict[str, list[LiveTab]]:
+        """Group live tabs by session and degrade to saved-only state if Kitty fails."""
+        try:
+            tabs = self._kitty().tabs()
+        except KittyError:
+            self.kitty = None
+            return {}
+        grouped: dict[str, list[LiveTab]] = {}
+        for tab in tabs:
+            session_id = tab.session_id()
+            if session_id:
+                grouped.setdefault(session_id, []).append(tab)
+        return grouped
+
+    def views(self) -> list[SessionView]:
+        """Return every active and archived session with best-effort live state."""
+        live_by_id = self._live_tabs_by_session()
+        views: list[SessionView] = []
+        for stored in self.store.list(include_archived=True):
+            try:
+                context = self.store.read_context(stored.manifest.id)
+            except StoreError:
+                context = None
+            views.append(
+                SessionView(
+                    stored=stored,
+                    live_tabs=live_by_id.get(stored.manifest.id, []),
+                    context=context,
+                )
+            )
+        return views
+
+    def create_from_active(self, name: str, project_root: str | None = None) -> StoredSession:
+        """Create a named session from the focused source tab and save it."""
+        clean_name = name.strip()
+        if not clean_name:
+            raise WorkbenchError("session name cannot be empty")
+        client = self._kitty()
+        tab = client.focused_tab(
+            client.list_state(),
+            exclude_window_id=_environment_window_id(),
+        )
+        if tab.session_id():
+            raise WorkbenchError("the current tab already belongs to a session")
+        stored = self.store.create(clean_name, project_root or tab.suggested_root())
+        client.stamp_tab(tab, stored.manifest)
+        return self.save(stored.manifest.id)
+
+    def add_current_tab(self, slug_or_id: str) -> StoredSession:
+        """Attach the focused source tab to an already live selected session."""
+        stored = self.store.get(slug_or_id)
+        if stored.manifest.status == "archived":
+            raise WorkbenchError("unarchive the session before adding a tab")
+        client = self._kitty()
+        state = client.list_state()
+        tab = client.focused_tab(state, exclude_window_id=_environment_window_id())
+        current_id = tab.session_id()
+        if current_id and current_id != stored.manifest.id:
+            raise WorkbenchError("the current tab belongs to another session")
+        live_tabs = client.tabs_for_session(stored.manifest.id, state)
+        if current_id != stored.manifest.id and stored.snapshot_path.is_file() and not live_tabs:
+            raise WorkbenchError("open the saved session before adding a live tab")
+        if current_id == stored.manifest.id:
+            return self.save(stored.manifest.id)
+        client.stamp_tab(tab, stored.manifest)
+        try:
+            return self.save(stored.manifest.id)
+        except Exception:
+            self._rollback_membership(lambda: client.clear_tab_session(tab))
+            raise
+
+    def detach_current_tab(self, slug_or_id: str) -> StoredSession:
+        """Detach the source tab without closing it or orphaning the session."""
+        stored = self.store.get(slug_or_id)
+        client = self._kitty()
+        state = client.list_state()
+        tab = client.focused_tab(state, exclude_window_id=_environment_window_id())
+        if tab.session_id() != stored.manifest.id:
+            raise WorkbenchError("the current tab does not belong to the selected session")
+        remaining = [
+            candidate
+            for candidate in client.tabs_for_session(stored.manifest.id, state)
+            if candidate.tab_id != tab.tab_id
+        ]
+        if not remaining:
+            raise WorkbenchError("cannot detach the session's only live tab")
+        client.clear_tab_session(tab)
+        try:
+            return self.save(stored.manifest.id)
+        except Exception:
+            self._rollback_membership(lambda: client.stamp_tab(tab, stored.manifest))
+            raise
+
+    @staticmethod
+    def _rollback_membership(operation: Callable[[], None]) -> None:
+        """Attempt a membership rollback without obscuring the original failure."""
+        try:
+            operation()
+        except KittyError:
+            return
+
+    def copy_current_tab(self, slug_or_id: str) -> StoredSession:
+        """Append a source tab's safe layout and context to an inactive target."""
+        target = self.store.get(slug_or_id)
+        if target.manifest.status == "archived":
+            raise WorkbenchError("unarchive the target session before copying a tab")
+        client = self._kitty()
+        state = client.list_state()
+        source = client.focused_tab(state, exclude_window_id=_environment_window_id())
+        if source.session_id() == target.manifest.id:
+            raise WorkbenchError("the current tab already belongs to the target session")
+        if client.tabs_for_session(target.manifest.id, state):
+            raise WorkbenchError(
+                "copy tab requires a saved target session; close its live tabs first"
+            )
+        copied_snapshot = self._capture_copied_tab(client, source, target.manifest)
+        existing = (
+            target.snapshot_path.read_text(encoding="utf-8")
+            if target.snapshot_path.is_file()
+            else ""
+        )
+        combined = sanitize_session(f"{existing.rstrip()}\n{copied_snapshot}", target.manifest)
+        copied = self.store.write_snapshot(
+            target.manifest.id,
+            combined,
+            snapshot_summary(combined),
+        )
+        addition = build_context(
+            [source],
+            command_outputs=_capture_pane_texts([source], client.last_command_output),
+            terminal_histories=_capture_pane_texts([source], client.terminal_history),
+        )
+        context = merge_context(self.store.read_context(target.manifest.id), addition)
+        context["snapshot_revision"] = copied.manifest.revision
+        self.store.write_context(copied.manifest.id, context)
+        return self.store.get(copied.manifest.id)
+
+    def _capture_copied_tab(
+        self,
+        client: KittyController,
+        source: LiveTab,
+        manifest: SessionManifest,
+    ) -> str:
+        """Capture and sanitize one source tab through an isolated temporary file."""
+        with temporary_path(
+            self.store.root,
+            prefix=".copy-tab.",
+            suffix=".kitty-session",
+        ) as capture_path:
+            client.capture_tab(source, capture_path, str(uuid.uuid4()))
+            raw = capture_path.read_text(encoding="utf-8")
+        return sanitize_session(raw, manifest)
+
+    def current_session(self) -> StoredSession:
+        """Resolve the focused tab's current session identity."""
+        client = self._kitty()
+        tab = client.focused_tab(
+            client.list_state(),
+            exclude_window_id=_environment_window_id(),
+        )
+        session_id = tab.session_id()
+        if not session_id:
+            raise WorkbenchError("the current tab does not belong to a session")
+        return self.store.get(session_id)
+
+    def save_current(self) -> StoredSession:
+        """Save the session owning the focused source tab."""
+        return self.save(self.current_session().manifest.id)
+
+    def save(
+        self,
+        slug_or_id: str,
+        command_events: Iterable[Mapping[str, object]] = (),
+    ) -> StoredSession:
+        """Capture a live session's safe layout, commands, and terminal buffers."""
+        stored = self.store.get(slug_or_id)
+        client = self._kitty()
+        state = client.list_state()
+        live_tabs = client.tabs_for_session(stored.manifest.id, state)
+        if not live_tabs:
+            raise WorkbenchError(f"session is not live: {stored.manifest.name}")
+        excluded_window_id = _environment_window_id()
+        for tab in live_tabs:
+            client.stamp_tab(
+                tab,
+                stored.manifest,
+                exclude_window_id=excluded_window_id,
+            )
+        raw = self._capture_live_session(client, stored.manifest.id)
+        safe = sanitize_session(raw, stored.manifest)
+        updated = self.store.write_snapshot(
+            stored.manifest.id,
+            safe,
+            snapshot_summary(safe),
+        )
+        context = build_context(
+            live_tabs,
+            self.store.read_context(updated.manifest.id),
+            command_events,
+            _capture_pane_texts(live_tabs, client.last_command_output),
+            _capture_pane_texts(live_tabs, client.terminal_history),
+        )
+        context["snapshot_revision"] = updated.manifest.revision
+        self.store.write_context(updated.manifest.id, context)
+        return self.store.get(updated.manifest.id)
+
+    def _capture_live_session(self, client: KittyController, session_id: str) -> str:
+        """Capture a complete live session through an isolated temporary file."""
+        with temporary_path(
+            self.store.root,
+            prefix=".capture.",
+            suffix=".kitty-session",
+        ) as capture_path:
+            client.capture_session(session_id, capture_path)
+            return capture_path.read_text(encoding="utf-8")
+
+    def context(self, slug_or_id: str) -> SessionContext | None:
+        """Return a session's persisted command and terminal context."""
+        return self.store.read_context(slug_or_id)
+
+    def open(self, slug_or_id: str) -> StoredSession:
+        """Focus a live session or restore an inactive safe snapshot."""
+        stored = self.store.get(slug_or_id)
+        client = self._kitty()
+        live_tabs = client.tabs_for_session(stored.manifest.id)
+        if live_tabs:
+            client.focus_tab(live_tabs[0].tab_id)
+            return self.store.mark_used(stored.manifest.id)
+        if stored.manifest.status == "archived":
+            stored = self.store.restore_archive(stored.manifest.id)
+        if not stored.snapshot_path.is_file():
+            raise WorkbenchError(f"session has no snapshot: {stored.manifest.name}")
+        context = self.store.read_context(stored.manifest.id)
+        self._open_inactive_snapshot(client, stored, context)
+        opened_tabs = self._focus_and_prefill(client, stored.manifest.id, context)
+        if context is not None and opened_tabs:
+            self.store.write_context(
+                stored.manifest.id,
+                remap_context_windows(context, opened_tabs),
+            )
+        return self.store.mark_used(stored.manifest.id)
+
+    def _open_inactive_snapshot(
+        self,
+        client: KittyController,
+        stored: StoredSession,
+        context: SessionContext | None,
+    ) -> None:
+        """Open the stored snapshot directly or through a generated restore file."""
+        snapshot = stored.snapshot_path.read_text(encoding="utf-8")
+        shell_restorer = (
+            str(Path(__file__).resolve().parents[1] / "bin" / "kitty-workbench"),
+            "--data-dir",
+            str(self.store.root),
+            "restore-shell",
+            stored.manifest.id,
+        )
+        resumable = restore_session(snapshot, context, shell_restore_argv=shell_restorer)
+        if resumable == snapshot:
+            client.open_snapshot(stored.snapshot_path)
+            return
+        with temporary_path(
+            self.store.root,
+            prefix=f".{stored.manifest.slug}.restore.",
+            suffix=".kitty-session",
+        ) as restore_path:
+            restore_path.write_text(resumable, encoding="utf-8")
+            client.open_snapshot(restore_path)
+
+    def _focus_and_prefill(
+        self,
+        client: KittyController,
+        session_id: str,
+        context: SessionContext | None,
+    ) -> list[LiveTab]:
+        """Focus restored tabs, prefill reminders, and return their current IDs."""
+        opened_tabs = client.tabs_for_session(session_id)
+        if not opened_tabs:
+            return []
+        client.focus_tab(opened_tabs[0].tab_id)
+        for (tab_index, pane_index), command in pending_restore_commands(context).items():
+            if not 0 <= tab_index < len(opened_tabs):
+                continue
+            windows = opened_tabs[tab_index].windows
+            if 0 <= pane_index < len(windows):
+                client.send_text(windows[pane_index]["id"], command)
+        return opened_tabs
+
+    def save_closing_pane(
+        self,
+        session_id: str,
+        capture: ClosingPaneCapture,
+    ) -> StoredSession:
+        """Persist synchronous pre-close pane state without querying dead Kitty tabs."""
+        return self.store.update_context(
+            session_id,
+            lambda existing: update_context_for_closing_pane(existing, capture),
+        )
+
+    def rename(self, slug_or_id: str, new_name: str) -> StoredSession:
+        """Rename stored and live ownership markers without replaying processes."""
+        old = self.store.get(slug_or_id)
+        renamed = self.store.rename(old.manifest.id, new_name)
+        if renamed.snapshot_path.is_file():
+            raw = renamed.snapshot_path.read_text(encoding="utf-8")
+            safe = sanitize_session(raw, renamed.manifest)
+            renamed = self.store.write_snapshot(
+                renamed.manifest.id,
+                safe,
+                snapshot_summary(safe),
+            )
+        try:
+            self._kitty().restamp_session(renamed.manifest.id, renamed.manifest.slug)
+        except KittyError:
+            return renamed
+        return renamed
+
+    def _require_inactive(self, stored: StoredSession, operation: str) -> None:
+        """Reject destructive lifecycle changes when Kitty confirms live tabs."""
+        try:
+            live = bool(self._kitty().tabs_for_session(stored.manifest.id))
+        except KittyError:
+            live = False
+        if live:
+            raise WorkbenchError(f"live sessions cannot be {operation}")
+
+    def archive(self, slug_or_id: str) -> StoredSession:
+        """Archive an inactive session so it leaves the primary list."""
+        stored = self.store.get(slug_or_id)
+        self._require_inactive(stored, "archived")
+        return self.store.archive(stored.manifest.id)
+
+    def unarchive(self, slug_or_id: str) -> StoredSession:
+        """Return an archived session to the primary saved-session list."""
+        stored = self.store.get(slug_or_id)
+        if stored.manifest.status != "archived":
+            raise WorkbenchError(f"session is not archived: {stored.manifest.name}")
+        return self.store.restore_archive(stored.manifest.id)
+
+    def remove(self, slug_or_id: str) -> Path:
+        """Move an inactive saved or archived session to recoverable trash."""
+        stored = self.store.get(slug_or_id)
+        self._require_inactive(stored, "removed")
+        return self.store.move_to_trash(stored.manifest.id)
+
+    def doctor(self) -> list[str]:
+        """Inspect storage, snapshots, context schemas, and the Kitty connection."""
+        try:
+            sessions = self.store.list(include_archived=True)
+        except Exception as error:
+            return [f"ERROR store: {error}"]
+        findings = [f"OK store: {len(sessions)} session(s)"]
+        for stored in sessions:
+            findings.extend(self._session_findings(stored))
+        try:
+            state = self._kitty().list_state()
+            findings.append(f"OK kitty: {len(state)} OS window(s)")
+        except KittyError as error:
+            findings.append(f"WARN kitty: {error}")
+        return findings
+
+    def _session_findings(self, stored: StoredSession) -> list[str]:
+        """Return integrity findings for one stored snapshot and context."""
+        if not stored.snapshot_path.exists():
+            return [f"WARN {stored.manifest.slug}: no snapshot"]
+        findings: list[str] = []
+        raw = stored.snapshot_path.read_text(encoding="utf-8")
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        if stored.manifest.snapshot_sha256 and digest != stored.manifest.snapshot_sha256:
+            findings.append(f"ERROR {stored.manifest.slug}: snapshot checksum mismatch")
+        try:
+            normalized = sanitize_session(raw, stored.manifest)
+        except ValueError as error:
+            findings.append(f"ERROR {stored.manifest.slug}: invalid snapshot: {error}")
+        else:
+            if normalized != raw:
+                findings.append(f"ERROR {stored.manifest.slug}: snapshot is not safely normalized")
+        try:
+            context = self.store.read_context(stored.manifest.id)
+        except StoreError as error:
+            findings.append(f"ERROR {stored.manifest.slug}: {error}")
+        else:
+            if context is not None and context.get("schema_version") != CONTEXT_SCHEMA_VERSION:
+                findings.append(f"ERROR {stored.manifest.slug}: unsupported context schema")
+        return findings
+
+
+def _environment_window_id() -> int | None:
+    """Return the invoking overlay ID only when caller metadata confirms one."""
+    if os.environ.get("KITTY_WORKBENCH_CALLER") not in {"overlay", "manager"}:
+        return None
+    value = os.environ.get("KITTY_WINDOW_ID")
+    try:
+        return int(value) if value else None
+    except ValueError:
+        return None

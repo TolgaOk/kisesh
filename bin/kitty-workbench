@@ -1,0 +1,26 @@
+#!/bin/sh
+# Resolve a modern Python explicitly. GUI-launched Kitty often has a different
+# executable search path from the user's interactive shell on macOS.
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+runtime_python="$project_dir/.venv/bin/python"
+
+if [ -x "$runtime_python" ]; then
+    exec "$runtime_python" "$project_dir/workbench.py" "$@"
+fi
+
+for python in \
+    "$HOME/homebrew/bin/python3" \
+    /opt/homebrew/bin/python3 \
+    /usr/local/bin/python3 \
+    "$(command -v python3 2>/dev/null)"
+do
+    [ -n "$python" ] || continue
+    [ -x "$python" ] || continue
+    if "$python" -c 'import sys, tyro; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
+        exec "$python" "$project_dir/workbench.py" "$@"
+    fi
+done
+
+printf '%s\n' 'kitty-workbench: run ./install to create the Python runtime' >&2
+exit 1

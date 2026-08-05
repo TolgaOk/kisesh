@@ -1,0 +1,68 @@
+[project]
+name = "kitty-workbench"
+version = "0.1.0"
+description = "Kitty-native, recoverable multi-tab session management"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["tyro>=1.0.15,<2"]
+
+[dependency-groups]
+dev = [
+  "coverage[toml]>=7.15,<8",
+  "mypy>=2.3,<3",
+  "ruff>=0.16,<0.17",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  "ANN",
+  "ARG",
+  "B",
+  "C90",
+  "D",
+  "E",
+  "F",
+  "I",
+  "PLR0911",
+  "PLR0912",
+  "PLR0913",
+  "PLR0915",
+  "RUF",
+  "SIM",
+  "UP",
+]
+ignore = ["D203", "D213"]
+allowed-confusables = ["›"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-args = 8
+max-branches = 15
+max-returns = 10
+max-statements = 60
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["kitty_workbench", "tests", "workbench.py"]
+
+[tool.coverage.run]
+branch = true
+parallel = true
+patch = ["subprocess"]
+source = ["kitty_workbench"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
+exclude_also = ["if __name__ == .__main__.:"]
