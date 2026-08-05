@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
 
+from .app_profiles import DEFAULT_APP_PROFILES, AppProfiles
 from .preview import PanePreview, TabPreview, build_session_preview, is_shell_program
 from .service import (
     SessionView,
@@ -153,7 +154,7 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
         "SESSION CONTENTS",
         (
             ("├─ / └─", "Tabs inside the selected session."),
-            ("✻ / 󰏄", "Claude / Codex pane."),
+            ("app icon", "Configured pane identity."),
             ("•", "Focused pane."),
             ("↻", "Saved command can be restored or prefilled."),
         ),
@@ -251,10 +252,12 @@ class SessionManager:
         self,
         service: SessionOperations,
         *,
+        profiles: AppProfiles = DEFAULT_APP_PROFILES,
         on_dismiss: Callable[[], None] | None = None,
     ) -> None:
         """Initialize manager state around a session service."""
         self.service = service
+        self.profiles = profiles
         self.on_dismiss = on_dismiss
         self.rows: list[SessionView] = []
         self.active_rows: list[SessionView] = []
@@ -374,7 +377,7 @@ class SessionManager:
         if selected_match is None:
             return entries
         selected_entry, selected_session = selected_match
-        preview = build_session_preview(selected_session.view)
+        preview = build_session_preview(selected_session.view, self.profiles)
         details: list[ListEntry] = []
         for tab_index, tab in enumerate(preview.tabs):
             details.extend(
@@ -1063,8 +1066,7 @@ def _edit_prompt_value(value: list[str], key: object) -> bool:
 
 def _pane_preview_label(pane: PanePreview) -> str:
     """Format one pane with agent, focus, command, and restore indicators."""
-    agent_labels = {"claude": "✻ Claude", "codex": "󰏄 Codex"}
-    label = agent_labels.get(pane.agent or "", pane.agent.title() if pane.agent else pane.program)
+    label = f"{pane.icon} {pane.label}"
     if pane.active:
         label = f"• {label}"
     if pane.restore_available:

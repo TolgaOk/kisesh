@@ -19,6 +19,7 @@ from kitty_workbench.installer import (
     InstallArguments,
     InstallError,
     InstallPaths,
+    _app_config_candidate,
     _backup_once,
     _check_install_target,
     _disable,
@@ -58,6 +59,7 @@ class InstallerBoundaryTests(unittest.TestCase):
             source=source,
             target=self.home / ".local" / "lib" / "kitty-workbench",
             kitty_config=self.home / ".config" / "kitty" / "kitty.conf",
+            app_config=self.home / ".config" / "kitty-workbench" / "apps.toml",
             data=self.home / ".local" / "share" / "kitty-workbench",
         )
 
@@ -123,9 +125,15 @@ class InstallerBoundaryTests(unittest.TestCase):
             source=PROJECT,
             target=PROJECT,
             kitty_config=in_place.kitty_config,
+            app_config=in_place.app_config,
             data=in_place.data,
         )
         _check_install_target(in_place)
+
+        app_directory = self.paths().app_config
+        app_directory.mkdir(parents=True)
+        with self.assertRaisesRegex(InstallError, "app config is not a file"):
+            _app_config_candidate(self.paths())
 
     def test_config_stripping_rejects_nested_and_unmatched_markers(self) -> None:
         paths = self.paths()
@@ -267,6 +275,7 @@ class InstallerBoundaryTests(unittest.TestCase):
 
     def test_enable_restores_the_previous_tab_bar_when_config_write_fails(self) -> None:
         paths = self.paths()
+        paths.app_config.parent.mkdir(parents=True)
         paths.kitty_config.parent.mkdir(parents=True)
         paths.kitty_config.write_text(
             f"allow_remote_control socket-only\nlisten_on {DEFAULT_LISTEN_ON}\n",
@@ -287,7 +296,25 @@ class InstallerBoundaryTests(unittest.TestCase):
         self.assertFalse(tab_bar.is_symlink())
         self.assertEqual(tab_bar.read_text(encoding="utf-8"), "original = True\n")
         self.assertFalse(paths.target.exists())
+        self.assertTrue(paths.app_config.parent.is_dir())
+        self.assertFalse(paths.app_config.exists())
         self.assertFalse((paths.data / ".integration" / "tab-bar.json").exists())
+
+    def test_enable_removes_a_new_app_config_directory_after_write_failure(self) -> None:
+        """Roll back the first-use XDG directory with the rest of the transaction."""
+        paths = self.paths()
+        valid = ConfigProbe((), "socket-only", DEFAULT_LISTEN_ON)
+
+        with (
+            mock.patch("kitty_workbench.installer._find_executable", return_value="/binary"),
+            mock.patch("kitty_workbench.installer._probe_config", side_effect=(valid, valid)),
+            mock.patch("kitty_workbench.installer._atomic_write", side_effect=OSError("disk full")),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            _enable(paths)
+
+        self.assertFalse(paths.app_config.exists())
+        self.assertFalse(paths.app_config.parent.exists())
 
     def test_disable_reinstalls_the_native_bar_when_config_write_fails(self) -> None:
         paths = self.paths()

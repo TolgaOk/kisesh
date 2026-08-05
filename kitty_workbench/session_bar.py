@@ -11,18 +11,18 @@ from itertools import accumulate
 from pathlib import Path
 from typing import Protocol, cast
 
+from .app_profiles import current_app_profiles
+
 SESSION_ICON = ""
 TAB_ICON = "󰓩"
-UNATTACHED_ICON = "○"
+UNATTACHED_ICON = "󰌸"
 ELLIPSIS = "…"
 SESSION_ID_VAR = "kitty_workbench_session"
 SESSION_SLUG_VAR = "kitty_workbench_slug"
 SESSION_NAME_VAR = "kitty_workbench_name"
 AGENT_VAR = "kitty_workbench_agent"
+APP_VAR = "kitty_workbench_app"
 MIN_SPLIT_SEGMENT_CELLS = 6
-
-_AGENT_LABELS = {"claude": "✻ Claude", "codex": "󰏄 Codex"}
-_AGENT_SYMBOLS = {"claude": "✻", "codex": "󰏄"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +32,7 @@ class SessionBarTab:
     title: str
     session_id: str | None
     session_name: str | None
-    agents: tuple[str, ...] = ()
+    applications: tuple[str, ...] = ()
 
 
 class _TabDatum(Protocol):
@@ -167,16 +167,23 @@ def _ellipsize(value: str, max_cells: int) -> str:
     return "".join(visible) + ELLIPSIS
 
 
-def _agent_names(agents: Iterable[str]) -> tuple[str, ...]:
-    """Keep supported agent names once in their stable visual order."""
-    normalized = {str(agent).strip().casefold() for agent in agents}
-    return tuple(agent for agent in _AGENT_LABELS if agent in normalized)
+def _application_names(applications: Iterable[str]) -> tuple[str, ...]:
+    """Keep configured application names once in their stable visual order."""
+    normalized = {str(application).strip().casefold() for application in applications}
+    return tuple(
+        profile.name for profile in current_app_profiles().apps if profile.name in normalized
+    )
 
 
-def _suffix(agents: tuple[str, ...], *, verbose: bool) -> str:
-    """Render recognized agents as concise symbols or labeled markers."""
-    labels = _AGENT_LABELS if verbose else _AGENT_SYMBOLS
-    return f" {' '.join(labels[agent] for agent in agents)}" if agents else ""
+def _suffix(applications: tuple[str, ...], *, verbose: bool) -> str:
+    """Render configured applications as concise symbols or labeled markers."""
+    profiles = current_app_profiles()
+    labels = []
+    for application in applications:
+        profile = profiles.named(application)
+        if profile is not None:
+            labels.append(f"{profile.icon} {profile.label}" if verbose else profile.icon)
+    return f" {' '.join(labels)}" if labels else ""
 
 
 def _starts_group(tab: SessionBarTab, previous: SessionBarTab | None) -> bool:
@@ -195,11 +202,11 @@ def _fit_group(
     icon: str,
     session_name: str,
     title: str,
-    agents: tuple[str, ...],
+    applications: tuple[str, ...],
     max_cells: int,
 ) -> str:
     """Compact a session boundary while retaining identity and tab title."""
-    suffix = _suffix(agents, verbose=False)
+    suffix = _suffix(applications, verbose=False)
     fixed = f"{icon}  · "
     available = max_cells - _cell_width(fixed) - _cell_width(suffix)
     if available < 4:
@@ -215,9 +222,9 @@ def _fit_group(
     return _ellipsize(label, max_cells)
 
 
-def _fit_tab(title: str, agents: tuple[str, ...], max_cells: int) -> str:
-    """Compact a normal tab while retaining agent symbols when space permits."""
-    suffix = _suffix(agents, verbose=False)
+def _fit_tab(title: str, applications: tuple[str, ...], max_cells: int) -> str:
+    """Compact a normal tab while retaining application symbols when space permits."""
+    suffix = _suffix(applications, verbose=False)
     if _cell_width(suffix) + 2 > max_cells:
         suffix = ""
     return f"{_ellipsize(title, max_cells - _cell_width(suffix))}{suffix}"
@@ -232,21 +239,21 @@ def render_tab_label(
     if max_cells <= 0:
         return ""
     title = _clean(tab.title, "Shell")
-    agents = _agent_names(tab.agents)
+    applications = _application_names(tab.applications)
     if _starts_group(tab, previous):
         icon, session_name = _session_descriptor(tab)
-        full = f"{icon} {session_name} │ {TAB_ICON} {title}{_suffix(agents, verbose=True)}"
+        full = f"{icon} {session_name} │ {TAB_ICON} {title}{_suffix(applications, verbose=True)}"
         if _cell_width(full) <= max_cells:
             return full
-        medium = f"{icon} {session_name} │ {title}{_suffix(agents, verbose=False)}"
+        medium = f"{icon} {session_name} │ {title}{_suffix(applications, verbose=False)}"
         if _cell_width(medium) <= max_cells:
             return medium
-        return _fit_group(icon, session_name, title, agents, max_cells)
-    full = f"{TAB_ICON} {title}{_suffix(agents, verbose=True)}"
+        return _fit_group(icon, session_name, title, applications, max_cells)
+    full = f"{TAB_ICON} {title}{_suffix(applications, verbose=True)}"
     if _cell_width(full) <= max_cells:
         return full
-    medium = f"{title}{_suffix(agents, verbose=False)}"
-    return medium if _cell_width(medium) <= max_cells else _fit_tab(title, agents, max_cells)
+    medium = f"{title}{_suffix(applications, verbose=False)}"
+    return medium if _cell_width(medium) <= max_cells else _fit_tab(title, applications, max_cells)
 
 
 def _mapping(value: object) -> Mapping[object, object]:
@@ -268,8 +275,8 @@ def _first_variable(windows: Sequence[object], name: str) -> str | None:
     return None
 
 
-def _command_agent(value: object) -> str | None:
-    """Recognize an agent from a cached initial child command."""
+def _command_application(value: object) -> str | None:
+    """Recognize a configured application from a cached initial child command."""
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         arguments = tuple(str(item) for item in value)
     elif isinstance(value, str):
@@ -282,24 +289,20 @@ def _command_agent(value: object) -> str | None:
     if not arguments:
         return None
     executable = Path(arguments[0]).name.lstrip("-").casefold()
-    return next(
-        (
-            agent
-            for agent in _AGENT_LABELS
-            if executable == agent or executable.startswith(f"{agent}-")
-        ),
-        None,
-    )
+    profile = current_app_profiles().match(executable)
+    return profile.name if profile is not None else None
 
 
-def _cached_agent(window: object) -> str | None:
-    """Read only precomputed variables, initial commands, and titles for an agent."""
-    marker = _mapping(getattr(window, "user_vars", {})).get(AGENT_VAR)
-    if marker is not None and str(marker).casefold() in _AGENT_LABELS:
-        return str(marker).casefold()
+def _cached_application(window: object) -> str | None:
+    """Read only precomputed variables, initial commands, and titles for an app."""
+    variables = _mapping(getattr(window, "user_vars", {}))
+    marker = variables.get(APP_VAR) or variables.get(AGENT_VAR)
+    profile = current_app_profiles().named(str(marker).casefold() if marker is not None else None)
+    if profile is not None:
+        return profile.name
     child = getattr(window, "child", None)
-    command_agent = _command_agent(getattr(child, "cmdline", ()))
-    return command_agent or _command_agent(getattr(window, "title", ""))
+    command_application = _command_application(getattr(child, "cmdline", ()))
+    return command_application or _command_application(getattr(window, "title", ""))
 
 
 def _native_tab(boss: object, tab_id: int) -> object | None:
@@ -328,8 +331,12 @@ def _bar_tab(datum: _TabDatum, boss: object) -> SessionBarTab | None:
         session_name = _first_variable(windows, SESSION_NAME_VAR) or _first_variable(
             windows, SESSION_SLUG_VAR
         )
-    agents = tuple(agent for window in windows if (agent := _cached_agent(window)) is not None)
-    return SessionBarTab(datum.title, session_id, session_name, agents)
+    applications = tuple(
+        application
+        for window in windows
+        if (application := _cached_application(window)) is not None
+    )
+    return SessionBarTab(datum.title, session_id, session_name, applications)
 
 
 def _kitty_boss() -> object:

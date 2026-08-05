@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
+from kitty_workbench.app_profiles import DEFAULT_APP_PROFILES
 from kitty_workbench.cli import (
     INVALID_CLOSE_MESSAGE,
     INVALID_EVENTS_MESSAGE,
@@ -102,6 +103,7 @@ def _service_mock(stored: StoredSession | None = None) -> tuple[WorkbenchService
     """Return a typed service view and its configurable autospecced mock."""
     raw = mock.create_autospec(WorkbenchService, instance=True)
     raw.store = mock.MagicMock()
+    raw.profiles = DEFAULT_APP_PROFILES
     raw.store.get.return_value = stored or _stored()
     return cast(WorkbenchService, raw), raw
 
@@ -117,7 +119,16 @@ class CliTests(unittest.TestCase):
     def test_tyro_parses_aliases_and_cascaded_global_options(self) -> None:
         """Accept concise subcommands with global options on either side."""
         before = parse_arguments(["--socket", "unix:/tmp/kitty", "add-tab", "project"])
-        after = parse_arguments(["add-tab", "project", "--data-dir", "/tmp/workbench"])
+        after = parse_arguments(
+            [
+                "add-tab",
+                "project",
+                "--data-dir",
+                "/tmp/workbench",
+                "--app-config",
+                "/tmp/apps.toml",
+            ]
+        )
         remove_alias = parse_arguments(["trash", "project"])
         attach = parse_arguments(["open", "project", "--unowned-tabs", "attach"])
         named = parse_arguments(
@@ -137,6 +148,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(before.socket, "unix:/tmp/kitty")
         self.assertIsInstance(after.command, AddTab)
         self.assertEqual(after.data_dir, Path("/tmp/workbench"))
+        self.assertEqual(after.app_config, Path("/tmp/apps.toml"))
         self.assertIsInstance(remove_alias.command, RemoveSession)
         self.assertEqual(
             cast(OpenSession, attach.command).unowned_tabs,
@@ -153,7 +165,19 @@ class CliTests(unittest.TestCase):
         """Keep stored-context reads offline unless a connection override is explicit."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            offline = CliConfig(ListSessions(), data_dir=root / "data")
+            app_config = root / "apps.toml"
+            app_config.write_text(
+                "version = 1\n\n"
+                '[defaults]\nrestore = "ignore"\nlabel = "Unknown"\nicon = "?"\n\n'
+                '[apps.tool]\nmatch = ["tool"]\nrestore = "captured"\n'
+                'label = "Tool"\nicon = "T"\n',
+                encoding="utf-8",
+            )
+            offline = CliConfig(
+                ListSessions(),
+                data_dir=root / "data",
+                app_config=app_config,
+            )
             connected = CliConfig(
                 ListSessions(),
                 data_dir=root / "data",
@@ -168,6 +192,9 @@ class CliTests(unittest.TestCase):
         self.assertFalse(_needs_kitty(ListSessions()))
         self.assertTrue(_needs_kitty(Manager()))
         self.assertIsNone(offline_service.kitty)
+        tool = offline_service.profiles.named("tool")
+        self.assertIsNotNone(tool)
+        self.assertEqual(tool.icon if tool is not None else None, "T")
         self.assertIs(connected_service.kitty, client.return_value)
         self.assertIs(live_service.kitty, client.return_value)
         self.assertEqual(client.call_count, 2)

@@ -10,6 +10,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from .app_profiles import (
+    DEFAULT_APP_PROFILES,
+    AppProfile,
+    AppProfiles,
+    DefaultRestoreMode,
+)
 from .domain import (
     ClosingPaneCapture,
     CommandEvent,
@@ -49,31 +55,7 @@ _ANSI_SEQUENCE = re.compile(
 _SGR_SEQUENCE = re.compile(r"\x1b\[[0-9:;]*m")
 _UNSAFE_TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
-_AGENTS = {
-    "aider": "aider",
-    "claude": "claude",
-    "codex": "codex",
-    "gemini": "gemini",
-    "opencode": "opencode",
-}
 _SHELLS = {"ash", "bash", "dash", "fish", "nu", "pwsh", "sh", "tcsh", "zsh"}
-_INTERACTIVE_PROGRAMS = {
-    "aider",
-    "btop",
-    "claude",
-    "codex",
-    "gemini",
-    "helix",
-    "htop",
-    "hx",
-    "lazygit",
-    "nvim",
-    "opencode",
-    "top",
-    "vi",
-    "vim",
-    "yazi",
-}
 
 
 @dataclass(slots=True, frozen=True)
@@ -216,21 +198,6 @@ def _foreground_argv(window: KittyWindow) -> list[str]:
     return []
 
 
-def _agent(program: str | None) -> str | None:
-    """Classify a known coding-agent executable by exact or suffixed name."""
-    if not program:
-        return None
-    normalized = program.casefold()
-    return next(
-        (
-            label
-            for token, label in _AGENTS.items()
-            if normalized == token or normalized.startswith(f"{token}-")
-        ),
-        None,
-    )
-
-
 def _exit_status(value: object) -> int | None:
     """Parse shell exit status metadata without treating booleans as integers."""
     return _integer(value)
@@ -361,24 +328,30 @@ def _codex_resume(argv: Sequence[str]) -> list[str]:
 def _restore_command(
     argv: Sequence[str],
     *,
-    agent: str | None,
+    profile: AppProfile | None,
+    default_restore: DefaultRestoreMode,
 ) -> RestoreSpec | None:
-    """Build a safe foreground restore specification from live process metadata."""
+    """Apply one configured app policy to captured foreground process metadata."""
     program = _command_name(argv)
     if not argv or not program or program.casefold() in _SHELLS:
         return None
-    if agent == "claude":
+    restore = profile.restore if profile is not None else default_restore
+    if restore == "ignore":
+        return None
+    if profile is not None and profile.adapter == "claude":
         restore_argv = _claude_resume(argv)
-    elif agent == "codex":
+    elif profile is not None and profile.adapter == "codex":
         restore_argv = _codex_resume(argv)
+    elif profile is not None and restore == "configured":
+        restore_argv = list(profile.argv)
     else:
         restore_argv = list(argv)
-    kind: RestoreKind = "agent" if agent else "foreground"
+    kind: RestoreKind = "agent" if profile is not None and profile.agent else "foreground"
     return {
         "argv": restore_argv,
         "command": shlex.join(restore_argv),
         "kind": kind,
-        "auto_run": bool(agent or program.casefold() in _INTERACTIVE_PROGRAMS),
+        "auto_run": restore in {"resume", "captured", "configured"},
     }
 
 
@@ -460,6 +433,7 @@ class _ContextBuilder:
         command_outputs: Mapping[int, object],
         terminal_histories: Mapping[int, object],
         alternate_screen_texts: Mapping[int, object],
+        profiles: AppProfiles,
     ) -> None:
         """Index prior panes and normalized completion events once per capture."""
         self.captured_at = utc_now()
@@ -468,6 +442,7 @@ class _ContextBuilder:
         self.command_outputs = command_outputs
         self.terminal_histories = terminal_histories
         self.alternate_screen_texts = alternate_screen_texts
+        self.profiles = profiles
         for raw_event in command_events:
             event = normalize_command_event(raw_event)
             if event is not None:
@@ -500,7 +475,8 @@ class _ContextBuilder:
         history = self._command_history(window, old, events, cwd)
         argv = _foreground_argv(window)
         program = _command_name(argv)
-        agent = _agent(program)
+        profile = self.profiles.match(program)
+        agent = profile.name if profile is not None and profile.agent else None
         alternate_screen = bool(window.get("in_alternate_screen"))
         output, output_command = self._last_output(window, old, events, history)
         screens = self._screens(window_id, old, alternate_screen)
@@ -514,7 +490,8 @@ class _ContextBuilder:
             "foreground_command": shlex.join(argv) if argv else None,
             "restore": _restore_command(
                 argv,
-                agent=agent,
+                profile=profile,
+                default_restore=self.profiles.defaults.restore,
             ),
             "at_prompt": bool(window.get("at_prompt")),
             "alternate_screen": alternate_screen,
@@ -638,6 +615,7 @@ def build_context(
     command_outputs: Mapping[int, object] | None = None,
     terminal_histories: Mapping[int, object] | None = None,
     alternate_screen_texts: Mapping[int, object] | None = None,
+    profiles: AppProfiles = DEFAULT_APP_PROFILES,
 ) -> SessionContext:
     """Capture typed pane context, bounded history, and safe resume candidates."""
     builder = _ContextBuilder(
@@ -646,6 +624,7 @@ def build_context(
         command_outputs or {},
         terminal_histories or {},
         alternate_screen_texts or {},
+        profiles,
     )
     return builder.build(tabs)
 
@@ -716,6 +695,7 @@ def _closing_pane_location(
 def update_context_for_closing_pane(
     existing: ContextInput,
     capture: ClosingPaneCapture,
+    profiles: AppProfiles = DEFAULT_APP_PROFILES,
 ) -> SessionContext:
     """Merge synchronous pre-close text and commands into one persisted pane."""
     tabs = _copied_context_tabs(existing)
@@ -729,6 +709,7 @@ def update_context_for_closing_pane(
         {window_id: capture["last_command_output"]},
         {window_id: capture["terminal_history"]},
         {window_id: capture["alternate_screen_text"]},
+        profiles,
     )
     tab_index, pane_index = location
     tabs[tab_index]["panes"][pane_index] = builder._build_pane(capture["window"], location)

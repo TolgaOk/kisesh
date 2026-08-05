@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .model import (
     AGENT_VAR,
+    APP_VAR,
     CAPTURE_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
@@ -75,6 +76,7 @@ _OPTION_POLICIES = {
 
 _MANAGED_VARIABLES = {
     AGENT_VAR,
+    APP_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,

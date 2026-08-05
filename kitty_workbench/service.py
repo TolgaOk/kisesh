@@ -14,6 +14,7 @@ from enum import StrEnum
 from functools import partial
 from pathlib import Path
 
+from .app_profiles import DEFAULT_APP_PROFILES, AppProfiles
 from .context import (
     CONTEXT_SCHEMA_VERSION,
     build_context,
@@ -188,11 +189,13 @@ class WorkbenchService:
         store: SessionStore,
         kitty: KittyController | None = None,
         kitty_factory: KittyFactory = KittyClient,
+        profiles: AppProfiles = DEFAULT_APP_PROFILES,
     ) -> None:
         """Initialize service dependencies without connecting to Kitty eagerly."""
         self.store = store
         self.kitty = kitty
         self.kitty_factory = kitty_factory
+        self.profiles = profiles
 
     def _kitty(self) -> KittyController:
         """Return the injected client or construct one lazily."""
@@ -468,6 +471,7 @@ class WorkbenchService:
             [source],
             command_outputs=_capture_pane_texts([source], client.last_command_output),
             terminal_histories=_capture_pane_texts([source], client.terminal_history),
+            profiles=self.profiles,
         )
         context = merge_context(self.store.read_context(target.manifest.id), addition)
         context["snapshot_revision"] = copied.manifest.revision
@@ -544,6 +548,7 @@ class WorkbenchService:
                 events,
                 command_outputs,
                 terminal_histories,
+                profiles=self.profiles,
             )
             context["snapshot_revision"] = updated.manifest.revision
             return context
@@ -745,7 +750,11 @@ class WorkbenchService:
         """Persist synchronous pre-close pane state without querying dead Kitty tabs."""
         return self.store.update_context(
             session_id,
-            lambda existing: update_context_for_closing_pane(existing, capture),
+            lambda existing: update_context_for_closing_pane(
+                existing,
+                capture,
+                self.profiles,
+            ),
         )
 
     def rename(self, slug_or_id: str, new_name: str) -> StoredSession:

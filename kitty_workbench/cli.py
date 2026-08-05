@@ -10,6 +10,7 @@ from typing import Annotated, cast
 
 import tyro
 
+from .app_profiles import load_app_profiles
 from .context import normalize_command_event, pane_last_command_output
 from .domain import ClosingPaneCapture, CommandEvent, JsonObject, KittyWindow
 from .kitty_client import KittyClient, KittyError
@@ -255,6 +256,9 @@ class CliConfig:
     data_dir: Path | None = None
     """Override the session data directory."""
 
+    app_config: Path | None = None
+    """Override the XDG application-profile TOML file."""
+
     kitty: str | None = None
     """Override the Kitty executable path."""
 
@@ -292,13 +296,13 @@ def _service(config: CliConfig) -> WorkbenchService:
     store = SessionStore(data_root(config.data_dir))
     connect = _needs_kitty(config.command) or bool(config.kitty or config.socket)
     kitty = KittyClient(executable=config.kitty, socket=config.socket) if connect else None
-    return WorkbenchService(store, kitty)
+    return WorkbenchService(store, kitty, profiles=load_app_profiles(config.app_config))
 
 
 def _run_manager(service: WorkbenchService) -> int:
     """Run the interactive manager with optional resident-panel dismissal."""
     dismiss = hide_quick_access_panel if is_panel_process() else None
-    return SessionManager(service, on_dismiss=dismiss).run()
+    return SessionManager(service, profiles=service.profiles, on_dismiss=dismiss).run()
 
 
 def _run_read(command: ReadCommand, service: WorkbenchService) -> int:

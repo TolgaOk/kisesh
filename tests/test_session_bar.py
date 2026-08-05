@@ -12,7 +12,13 @@ from typing import NamedTuple, cast
 from unittest import mock
 
 from kitty_workbench import session_bar
-from kitty_workbench.model import AGENT_VAR, SESSION_ID_VAR, SESSION_NAME_VAR, SESSION_SLUG_VAR
+from kitty_workbench.model import (
+    AGENT_VAR,
+    APP_VAR,
+    SESSION_ID_VAR,
+    SESSION_NAME_VAR,
+    SESSION_SLUG_VAR,
+)
 from kitty_workbench.session_bar import SessionBarBoss, SessionBarTab, render_tab_label
 
 PROJECT = Path(__file__).parents[1]
@@ -166,7 +172,7 @@ class ReloadBoss:
 def _fixture_tabs() -> list[SessionBarTab]:
     return [
         SessionBarTab("shell", "research", "Research Work"),
-        SessionBarTab("tests", "research", "Research Work", ("claude",)),
+        SessionBarTab("tests", "research", "Research Work", ("claude", "nvim")),
         SessionBarTab(
             "agent review",
             "research",
@@ -207,7 +213,7 @@ class SessionBarRenderingTests(unittest.TestCase):
         self.assertIn(" Research Work", render_tab_label(first, None, 60))
         self.assertNotIn("Research Work", render_tab_label(second, first, 60))
         self.assertIn(" Operations", render_tab_label(other, second, 60))
-        self.assertIn("○ Unattached", render_tab_label(unattached, other, 60))
+        self.assertIn("󰌸 Unattached", render_tab_label(unattached, other, 60))
         self.assertNotIn("Unattached", render_tab_label(next_unattached, unattached, 60))
         self.assertIn("shell", render_tab_label(first, None, 14))
         self.assertEqual(render_tab_label(first, None, 1), "…")
@@ -242,6 +248,7 @@ class SessionBarRenderingTests(unittest.TestCase):
                 self.assertNotIn("\x1b", label)
         self.assertEqual(session_bar._ellipsize("測試", 3), "測…")
         self.assertEqual(session_bar._ellipsize("e\N{COMBINING ACUTE ACCENT}", 1), "é")
+        self.assertEqual(session_bar._suffix(("unknown",), verbose=True), "")
 
 
 class SessionBarAdapterTests(unittest.TestCase):
@@ -410,6 +417,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             SESSION_ID_VAR: "session-id",
             SESSION_SLUG_VAR: "fallback-slug",
             SESSION_NAME_VAR: "Exact Name",
+            APP_VAR: "nvim",
             AGENT_VAR: "claude",
         }
         boss = Boss(
@@ -441,7 +449,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         call = drawer.calls[0]
         self.assertEqual(call[0], DrawData("bottom"))
         self.assertIs(call[1], screen)
-        self.assertEqual(cast(Datum, call[2]).title, "󰓩 Tests 󰏄 Codex")
+        self.assertEqual(cast(Datum, call[2]).title, "󰓩 Tests 󰋙 Codex")
         self.assertEqual(call[3], 17)
         self.assertEqual(call[4:], (60, 2, True, extra))
 
@@ -466,7 +474,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             session_bar.draw_tab(object(), object(), missing, 38, 60, 3, True, ExtraData(unowned))
 
         self.assertIn(" fallback-name", cast(Datum, drawer.calls[0][2]).title)
-        self.assertIn("○ Unattached", cast(Datum, drawer.calls[1][2]).title)
+        self.assertIn("󰌸 Unattached", cast(Datum, drawer.calls[1][2]).title)
         self.assertIs(drawer.calls[2][2], missing)
 
     def test_unstable_cached_apis_and_lazy_kitty_boundaries_fail_open(self) -> None:
@@ -479,13 +487,13 @@ class SessionBarAdapterTests(unittest.TestCase):
         self.assertIsNone(session_bar._bar_tab(datum, Boss({1: NativeTab(fail=True)})))
         self.assertEqual(session_bar._mapping(broken_variables), {})
         self.assertEqual(session_bar._mapping("not a mapping"), {})
-        self.assertIsNone(session_bar._command_agent("'unterminated"))
-        self.assertIsNone(session_bar._command_agent(42))
+        self.assertIsNone(session_bar._command_application("'unterminated"))
+        self.assertIsNone(session_bar._command_application(42))
         self.assertEqual(
-            session_bar._cached_agent(Window({}, child=Child("codex"))),
+            session_bar._cached_application(Window({}, child=Child("codex"))),
             "codex",
         )
-        self.assertEqual(session_bar._cached_agent(Window({}, title="Claude")), "claude")
+        self.assertEqual(session_bar._cached_application(Window({}, title="Claude")), "claude")
 
         drawer = RecordingDrawer()
         with (

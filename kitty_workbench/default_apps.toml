@@ -1,0 +1,90 @@
+version = 1
+
+# Unknown foreground apps are typed at the restored prompt but never submitted.
+# App modes: resume normalizes a supported agent; captured reuses captured argv;
+# configured uses argv below; prefill types without Enter; ignore restores no app.
+[defaults]
+restore = "prefill"
+label = "App"
+icon = ""
+
+[apps.aider]
+match = ["aider", "aider-*"]
+restore = "captured"
+label = "Aider"
+icon = "󰚩"
+agent = true
+
+[apps.btop]
+match = ["btop"]
+restore = "captured"
+label = "btop"
+icon = "󰍛"
+
+[apps.claude]
+match = ["claude", "claude-*"]
+restore = "resume"
+adapter = "claude"
+label = "Claude"
+icon = "✻"
+agent = true
+
+[apps.codex]
+match = ["codex", "codex-*"]
+restore = "resume"
+adapter = "codex"
+label = "Codex"
+icon = "󰋙"
+agent = true
+
+[apps.gemini]
+match = ["gemini", "gemini-*"]
+restore = "captured"
+label = "Gemini"
+icon = "✦"
+agent = true
+
+[apps.helix]
+match = ["helix", "hx"]
+restore = "captured"
+label = "Helix"
+icon = "󰘧"
+
+[apps.htop]
+match = ["htop"]
+restore = "captured"
+label = "htop"
+icon = "󰍛"
+
+[apps.lazygit]
+match = ["lazygit"]
+restore = "captured"
+label = "lazygit"
+icon = ""
+
+[apps.nvim]
+match = ["nvim", "nvim-*", "vim", "vi"]
+restore = "captured"
+label = "Vim"
+icon = ""
+
+[apps.opencode]
+match = ["opencode", "opencode-*"]
+restore = "captured"
+label = "OpenCode"
+icon = "󰅩"
+agent = true
+
+[apps.top]
+match = ["top"]
+restore = "configured"
+# Use exact argv for deterministic tools whose transient flags should not return.
+argv = ["top"]
+label = "top"
+icon = "󰍛"
+
+[apps.yazi]
+match = ["yazi"]
+restore = "captured"
+label = "Yazi"
+icon = "󰉋"

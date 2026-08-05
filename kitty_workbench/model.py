@@ -19,6 +19,7 @@ SESSION_NAME_VAR = "kitty_workbench_name"
 SESSION_SCOPE_VAR = "kitty_workbench_scope"
 CAPTURE_VAR = "kitty_workbench_capture"
 AGENT_VAR = "kitty_workbench_agent"
+APP_VAR = "kitty_workbench_app"
 WORKBENCH_UI_VAR = "kitty_workbench_ui"
 
 SessionStatus = Literal["active", "archived"]

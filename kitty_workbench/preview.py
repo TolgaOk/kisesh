@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .app_profiles import DEFAULT_APP_PROFILES, AppProfiles
 from .domain import KittyWindow, PaneContext, TabContext
 from .service import SessionView
 
 PreviewSource = Literal["live", "saved", "summary"]
 
-_KNOWN_AGENTS = ("claude", "codex")
 _SHELLS = {"ash", "bash", "dash", "fish", "nu", "pwsh", "sh", "tcsh", "zsh"}
 
 
@@ -22,6 +22,8 @@ class PanePreview:
 
     program: str
     agent: str | None
+    label: str
+    icon: str
     last_command: str | None
     active: bool
     restore_available: bool
@@ -47,7 +49,10 @@ class SessionPreview:
     tabs: tuple[TabPreview, ...]
 
 
-def build_session_preview(view: SessionView) -> SessionPreview:
+def build_session_preview(
+    view: SessionView,
+    profiles: AppProfiles = DEFAULT_APP_PROFILES,
+) -> SessionPreview:
     """Prefer current Kitty contents, then saved context, then manifest summaries."""
     if view.live_tabs:
         tabs = tuple(
@@ -55,7 +60,7 @@ def build_session_preview(view: SessionView) -> SessionPreview:
                 title=tab.title.strip() or f"Tab {index + 1}",
                 layout=tab.layout.strip(),
                 focused=tab.is_focused,
-                panes=tuple(_live_pane(window) for window in tab.windows),
+                panes=tuple(_live_pane(window, profiles) for window in tab.windows),
             )
             for index, tab in enumerate(view.live_tabs)
         )
@@ -63,7 +68,9 @@ def build_session_preview(view: SessionView) -> SessionPreview:
     if view.context is not None and view.context["tabs"]:
         return SessionPreview(
             "saved",
-            tuple(_saved_tab(tab, index) for index, tab in enumerate(view.context["tabs"])),
+            tuple(
+                _saved_tab(tab, index, profiles) for index, tab in enumerate(view.context["tabs"])
+            ),
         )
 
     summary = view.stored.manifest.summary
@@ -85,7 +92,7 @@ def build_session_preview(view: SessionView) -> SessionPreview:
     return SessionPreview("summary", tabs)
 
 
-def _saved_tab(tab: TabContext, index: int) -> TabPreview:
+def _saved_tab(tab: TabContext, index: int, profiles: AppProfiles) -> TabPreview:
     """Convert one fully typed persisted tab into preview state."""
     focus_candidates = [
         (pane_index, pane["last_focused_at"])
@@ -98,24 +105,30 @@ def _saved_tab(tab: TabContext, index: int) -> TabPreview:
         layout=tab["layout"].strip(),
         focused=tab["focused"],
         panes=tuple(
-            _saved_pane(pane, pane_index == active_index)
+            _saved_pane(pane, pane_index == active_index, profiles)
             for pane_index, pane in enumerate(tab["panes"])
         ),
     )
 
 
-def _saved_pane(pane: PaneContext, active: bool) -> PanePreview:
+def _saved_pane(pane: PaneContext, active: bool, profiles: AppProfiles) -> PanePreview:
     """Retain persisted program, command, restore, and attention metadata."""
     program = (pane["program"] or "").strip()
     if not program and pane["foreground_argv"]:
         program = _program_name(pane["foreground_argv"])
     if not program:
         program = pane["title"].strip() or "shell"
-    agent = (pane["agent"] or "").strip().casefold() or _known_agent(program)
+    matched = profiles.match(program)
+    agent = (pane["agent"] or "").strip().casefold() or (
+        matched.name if matched is not None and matched.agent else None
+    )
+    label, icon = _presentation(program, agent, profiles)
     last_command = " ".join((pane["last_command"] or "").split()) or None
     return PanePreview(
         program=program,
         agent=agent,
+        label=label,
+        icon=icon,
         last_command=last_command,
         active=active,
         restore_available=pane["restore"] is not None,
@@ -123,7 +136,7 @@ def _saved_pane(pane: PaneContext, active: bool) -> PanePreview:
     )
 
 
-def _live_pane(window: KittyWindow) -> PanePreview:
+def _live_pane(window: KittyWindow, profiles: AppProfiles) -> PanePreview:
     """Derive current foreground identity without consulting stale saved context."""
     argv: list[str] = []
     for process in reversed(window.get("foreground_processes", [])):
@@ -139,9 +152,14 @@ def _live_pane(window: KittyWindow) -> PanePreview:
     program = _program_name(argv)
     if not program:
         program = window.get("title", "").strip() or "shell"
+    matched = profiles.match(program)
+    agent = matched.name if matched is not None and matched.agent else None
+    label, icon = _presentation(program, agent, profiles)
     return PanePreview(
         program=program,
-        agent=_known_agent(program),
+        agent=agent,
+        label=label,
+        icon=icon,
         last_command=reported or None,
         active=bool(window.get("is_active") or window.get("is_focused")),
         restore_available=False,
@@ -156,17 +174,16 @@ def _program_name(argv: list[str]) -> str:
     return Path(argv[0]).name.lstrip("-").strip()
 
 
-def _known_agent(program: str) -> str | None:
-    """Recognize Claude and Codex executables, including suffixed launchers."""
-    normalized = program.casefold()
-    return next(
-        (
-            agent
-            for agent in _KNOWN_AGENTS
-            if normalized == agent or normalized.startswith(f"{agent}-")
-        ),
-        None,
-    )
+def _presentation(
+    program: str,
+    agent: str | None,
+    profiles: AppProfiles,
+) -> tuple[str, str]:
+    """Resolve configured label and icon with a visible unmatched fallback."""
+    profile = profiles.named(agent) or profiles.match(program)
+    if profile is not None:
+        return profile.label, profile.icon
+    return program or profiles.defaults.label, profiles.defaults.icon
 
 
 def is_shell_program(program: str) -> bool:

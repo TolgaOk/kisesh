@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import unittest
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -441,8 +442,8 @@ class WatcherTests(unittest.TestCase):
             self.assertEqual(event["cwd"], "/tmp/project")
             self.assertEqual(event["completed_at"], 1785843000.0)
 
-    def test_agent_commands_cache_only_native_bar_markers_without_polling(self) -> None:
-        """Set and clear agent markers through Kitty's in-process remote control."""
+    def test_commands_cache_native_bar_app_icons_without_polling(self) -> None:
+        """Set and clear app markers through Kitty's in-process remote control."""
         window = Window()
         boss = Boss()
         with mock.patch.object(watcher, "_schedule") as schedule:
@@ -461,12 +462,14 @@ class WatcherTests(unittest.TestCase):
                     "set-user-vars",
                     "--match",
                     "id:2",
+                    f"{watcher.APP_VAR}=claude",
                     f"{watcher.AGENT_VAR}=claude",
                 ),
             )
             schedule.assert_not_called()
 
             variables = cast(dict[str, str], window.user_vars)
+            variables[watcher.APP_VAR] = "claude"
             variables[watcher.AGENT_VAR] = "claude"
             watcher.on_cmd_startstop(
                 boss,
@@ -474,10 +477,10 @@ class WatcherTests(unittest.TestCase):
                 {"is_start": False, "cmdline": "claude", "time": 1785843000.0},
             )
 
-        self.assertEqual(boss.remote_calls[-1][1][-1], watcher.AGENT_VAR)
+        self.assertEqual(boss.remote_calls[-1][1][-2:], (watcher.APP_VAR, watcher.AGENT_VAR))
         schedule.assert_called_once()
 
-    def test_agent_marker_recognition_and_failures_are_bounded(self) -> None:
+    def test_app_marker_recognition_and_failures_are_bounded(self) -> None:
         """Handle wrappers, malformed commands, duplicate state, and Kitty failure."""
         self.assertEqual(
             watcher._command_arguments(["codex", "", "resume"]),
@@ -487,17 +490,43 @@ class WatcherTests(unittest.TestCase):
             watcher._command_arguments("command exec codex-beta"),
             ("command", "exec", "codex-beta"),
         )
-        self.assertEqual(watcher._command_agent("command exec codex-beta"), "codex")
-        self.assertIsNone(watcher._command_agent("env -i TOKEN=one"))
-        self.assertIsNone(watcher._command_agent("'unterminated"))
-        self.assertIsNone(watcher._command_agent(42))
+        codex = watcher._command_profile("command exec codex-beta")
+        self.assertEqual(codex.name if codex is not None else None, "codex")
+        self.assertIsNone(watcher._command_profile("env -i TOKEN=one"))
+        self.assertIsNone(watcher._command_profile("'unterminated"))
+        self.assertIsNone(watcher._command_profile(42))
 
         window = Window()
         boss = Boss(remote_error=True)
-        watcher._update_agent_marker(boss, window, "codex")
+        watcher._update_app_markers(boss, window, codex)
+        cast(dict[str, str], window.user_vars)[watcher.APP_VAR] = "codex"
         cast(dict[str, str], window.user_vars)[watcher.AGENT_VAR] = "codex"
-        watcher._update_agent_marker(boss, window, "codex")
+        watcher._update_app_markers(boss, window, codex)
         self.assertEqual(len(boss.remote_calls), 0)
+
+        project_root = str(Path(watcher.__file__).resolve().parents[1])
+        original_path = list(sys.path)
+        try:
+            sys.path[:] = [entry for entry in sys.path if entry != project_root]
+            self.assertIsNotNone(watcher._refreshed_app_profiles().match("codex"))
+            self.assertEqual(sys.path[0], project_root)
+        finally:
+            sys.path[:] = original_path
+
+    def test_non_agent_app_replaces_a_stale_agent_in_one_bar_update(self) -> None:
+        """Show a configured monitor icon while clearing obsolete agent identity."""
+        window = Window()
+        variables = cast(dict[str, str], window.user_vars)
+        variables[watcher.APP_VAR] = "claude"
+        variables[watcher.AGENT_VAR] = "claude"
+        boss = Boss()
+
+        watcher.on_cmd_startstop(boss, window, {"is_start": True, "cmdline": ["top"]})
+
+        self.assertEqual(
+            boss.remote_calls[-1][1][-2:],
+            (f"{watcher.APP_VAR}=top", watcher.AGENT_VAR),
+        )
 
     def test_autosave_uses_shared_launcher_and_receives_socket_before_subcommand(self) -> None:
         """Invoke the installed launcher with global options in Tyro order."""

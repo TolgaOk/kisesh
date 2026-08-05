@@ -35,6 +35,8 @@
   usable with a text fallback when decorative glyphs are unavailable.
 - [x] Cover live and saved context, multi-tab and multi-agent sessions, empty tabs,
   long names, narrow rendering, and selection changes with reviewed render tests.
+- [ ] Rename a live or saved tab from its expanded row with a theme-aware modal;
+  update Kitty immediately when live and autosave the persisted title.
 
 ## Unowned tabs during switching
 
@@ -60,7 +62,7 @@
 
 - [x] Prototype one native custom tab-bar row that combines session identity and
   Kitty tabs without a resident process, terminal layer, or separate panel.
-  - Render ` Research │ 󰓩 shell │ 󰓩 tests ✻`, with `○ Unattached` as fallback.
+  - Render ` Research │ 󰓩 shell │ 󰓩 tests ✻`, with `󰌸 Unattached` as fallback.
   - Let `tab_bar_edge` place the same design at the top or bottom.
   - Read cached Kitty session/user-variable metadata only; never run subprocesses
     or read session files in the draw path.
@@ -71,3 +73,11 @@
   scope unless Kitty gains a native multi-row rendering hook.
 - [x] Replace the existing custom tab bar's legacy `ksm` lookup only in a dedicated
   integration change; do not rewrite unrelated Kitty font or theme settings.
+
+## Application profiles
+
+- [x] Install a populated XDG TOML config once without overwriting user edits.
+- [x] Configure executable matching, restore mode or arguments, labels, icons, and
+  agent identity with a safe unmatched default.
+- [x] Reuse those icons in the selected-session preview and native top bar without
+  filesystem reads or subprocesses in the draw path.

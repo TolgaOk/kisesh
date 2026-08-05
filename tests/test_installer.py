@@ -52,6 +52,7 @@ class InstallerTests(unittest.TestCase):
         self.kitty.chmod(0o755)
         self.kitten.chmod(0o755)
         self.config = self.home / "config" / "kitty" / "kitty.conf"
+        self.app_config = self.home / "config" / "kitty-workbench" / "apps.toml"
         self.tab_bar = self.config.parent / "tab_bar.py"
         self.target = self.home / ".local" / "lib" / "kitty-workbench"
         self.data = self.home / "data" / "kitty-workbench"
@@ -193,6 +194,47 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(self.tab_bar.is_symlink())
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
         self.assertFalse(self.config.with_name("kitty.conf.kitty-workbench.bak").exists())
+        self.assertEqual(
+            self.app_config.read_text(encoding="utf-8"),
+            (PROJECT / "kitty_workbench" / "default_apps.toml").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(self.app_config.stat().st_mode & 0o777, 0o600)
+
+    def test_enable_preserves_an_edited_valid_app_config(self) -> None:
+        """Never overwrite a user's restore commands, labels, or icons."""
+        custom = (
+            "version = 1\n\n"
+            '[defaults]\nrestore = "ignore"\nlabel = "Unknown"\nicon = "?"\n\n'
+            '[apps.custom]\nmatch = ["custom"]\nrestore = "configured"\n'
+            'argv = ["custom", "--resume"]\nlabel = "Mine"\nicon = "M"\n'
+        )
+        self.app_config.parent.mkdir(parents=True)
+        self.app_config.write_text(custom, encoding="utf-8")
+
+        first = self.run_installer()
+        second = self.run_installer("--enable")
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.app_config.read_text(encoding="utf-8"), custom)
+        self.assertIn("(preserved)", second.stdout)
+
+    def test_invalid_app_config_fails_before_any_install_mutation(self) -> None:
+        """Reject unsafe profile edits without touching Kitty or the code link."""
+        self.write_config("font_size 15\n")
+        original = self.config.read_text(encoding="utf-8")
+        self.app_config.parent.mkdir(parents=True)
+        self.app_config.write_text(
+            'version = 1\n[defaults]\nrestore = "run-anything"\n', encoding="utf-8"
+        )
+
+        result = self.run_installer()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot use app config", result.stderr)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), original)
+        self.assertFalse(self.target.exists())
+        self.assertFalse(self.tab_bar.exists())
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_kitty_parser_accepts_the_complete_fresh_install(self) -> None:
@@ -234,6 +276,10 @@ class InstallerTests(unittest.TestCase):
 
     def test_disable_uninstall_and_purge_have_distinct_data_boundaries(self) -> None:
         self.assertEqual(self.run_installer().returncode, 0)
+        self.app_config.write_text(
+            self.app_config.read_text(encoding="utf-8") + "\n# keep my profiles\n",
+            encoding="utf-8",
+        )
         self.data.mkdir(parents=True, exist_ok=True)
         (self.data / "session.json").write_text("saved", encoding="utf-8")
         data_sibling = self.data.parent / "keep-data"
@@ -269,6 +315,9 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(data_sibling.read_text(encoding="utf-8"), "keep")
         self.assertTrue(self.config.is_file())
         self.assertIn("font_size 17", self.config.read_text(encoding="utf-8"))
+        self.assertTrue(
+            self.app_config.read_text(encoding="utf-8").endswith("# keep my profiles\n")
+        )
 
     def test_conflicting_actions_fail_before_mutating_config_or_sessions(self) -> None:
         original = "font_size 16\n"
@@ -298,6 +347,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.config.read_text(encoding="utf-8"), original)
         self.assertFalse(self.target.exists())
         self.assertFalse(self.config.with_name("kitty.conf.kitty-workbench.bak").exists())
+        self.assertFalse(self.app_config.exists())
 
     def test_existing_invalid_config_is_reported_without_modification(self) -> None:
         original = "FAKE_INVALID_KITTY_SETTING yes\n"

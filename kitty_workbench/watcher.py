@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shlex
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 SESSION_ID_VAR = "kitty_workbench_session"
 SESSION_SLUG_VAR = "kitty_workbench_slug"
 SESSION_NAME_VAR = "kitty_workbench_name"
 SESSION_SCOPE_VAR = "kitty_workbench_scope"
 AGENT_VAR = "kitty_workbench_agent"
+APP_VAR = "kitty_workbench_app"
 WORKBENCH_UI_VAR = "kitty_workbench_ui"
 DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
@@ -95,6 +98,20 @@ class WatcherBoss(Protocol):
         command: tuple[str, ...],
     ) -> object:
         """Execute a remote-control command inside Kitty's process."""
+
+
+class WatcherAppProfile(Protocol):
+    """Configured app identity needed for lightweight agent classification."""
+
+    name: str
+    agent: bool
+
+
+class WatcherAppProfiles(Protocol):
+    """Configured app lookup exposed through the installed Workbench package."""
+
+    def match(self, command: str | None) -> WatcherAppProfile | None:
+        """Return the profile matching one executable basename."""
 
 
 WatcherData = Mapping[str, object]
@@ -586,8 +603,17 @@ def _command_arguments(value: object) -> tuple[str, ...]:
         return ()
 
 
-def _command_agent(value: object) -> str | None:
-    """Recognize a direct Claude or Codex command including common wrappers."""
+def _refreshed_app_profiles() -> WatcherAppProfiles:
+    """Load event-cached profiles even when Kitty imported this watcher by path."""
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    module = importlib.import_module("kitty_workbench.app_profiles")
+    return cast(WatcherAppProfiles, module.refresh_app_profiles())
+
+
+def _command_profile(value: object) -> WatcherAppProfile | None:
+    """Recognize a configured application including common command wrappers."""
     arguments = _command_arguments(value)
     index = 0
     while index < len(arguments):
@@ -602,43 +628,43 @@ def _command_agent(value: object) -> str | None:
             ):
                 index += 1
             continue
-        return next(
-            (
-                agent
-                for agent in ("claude", "codex")
-                if executable == agent or executable.startswith(f"{agent}-")
-            ),
-            None,
-        )
+        return _refreshed_app_profiles().match(executable)
     return None
 
 
-def _update_agent_marker(
+def _update_app_markers(
     boss: WatcherBoss,
     window: WatcherWindow,
-    agent: str | None,
+    profile: WatcherAppProfile | None,
 ) -> None:
-    """Cache a lightweight agent marker for the in-process native tab bar."""
-    current = _string_mapping(window.user_vars).get(AGENT_VAR)
-    if current == agent or (current is None and agent is None):
+    """Cache lightweight app and agent markers for the in-process native tab bar."""
+    current = _string_mapping(window.user_vars)
+    application = profile.name if profile is not None else None
+    agent = profile.name if profile is not None and profile.agent else None
+    desired = ((APP_VAR, application), (AGENT_VAR, agent))
+    assignments = tuple(
+        f"{name}={value}" if value is not None else name
+        for name, value in desired
+        if current.get(name) != value and not (current.get(name) is None and value is None)
+    )
+    if not assignments:
         return
-    assignment = f"{AGENT_VAR}={agent}" if agent is not None else AGENT_VAR
     try:
         boss.call_remote_control(
             window,
-            ("set-user-vars", "--match", f"id:{window.id}", assignment),
+            ("set-user-vars", "--match", f"id:{window.id}", *assignments),
         )
     except Exception:
         return
 
 
 def on_cmd_startstop(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
-    """Update the agent marker and queue completed shell commands for saving."""
+    """Update app markers and queue completed shell commands for saving."""
     raw_command = data.get("cmdline")
     if data.get("is_start"):
-        _update_agent_marker(boss, window, _command_agent(raw_command))
+        _update_app_markers(boss, window, _command_profile(raw_command))
         return
-    _update_agent_marker(boss, window, None)
+    _update_app_markers(boss, window, None)
     command: object = (
         [str(item) for item in raw_command]
         if isinstance(raw_command, (list, tuple))

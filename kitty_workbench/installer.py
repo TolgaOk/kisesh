@@ -8,12 +8,14 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import tyro
 
+from .app_profiles import AppProfileError, parse_app_profiles
 from .filesystem import atomic_write_text, temporary_path
 from .tab_bar_install import (
     TabBarInstallError,
@@ -43,6 +45,7 @@ class InstallPaths:
     source: Path
     target: Path
     kitty_config: Path
+    app_config: Path
     data: Path
 
 
@@ -127,12 +130,14 @@ def install_paths(*, kitty_config: Path | None = None) -> InstallPaths:
     """Resolve every path used by an install, disable, uninstall, or purge."""
     home = _home()
     source = Path(__file__).resolve().parents[1]
+    config_base = _expand_home(os.environ.get("XDG_CONFIG_HOME", "~/.config"), home)
     data_base = _expand_home(os.environ.get("XDG_DATA_HOME", "~/.local/share"), home)
     return InstallPaths(
         home=home,
         source=source,
         target=home / ".local" / "lib" / "kitty-workbench",
         kitty_config=_kitty_config(home, kitty_config),
+        app_config=config_base / "kitty-workbench" / "apps.toml",
         data=data_base / "kitty-workbench",
     )
 
@@ -146,6 +151,8 @@ def _validate_source(paths: InstallPaths) -> None:
         paths.source / "integration" / "safe_close.py",
         paths.source / "integration" / "tab_bar.py",
         paths.source / "kitty_workbench" / "close_guard.py",
+        paths.source / "kitty_workbench" / "app_profiles.py",
+        paths.source / "kitty_workbench" / "default_apps.toml",
         paths.source / "kitty_workbench" / "session_bar.py",
         paths.source / "kitty_workbench" / "watcher.py",
     )
@@ -274,6 +281,28 @@ def _atomic_write(path: Path, content: str) -> None:
     atomic_write_text(path, content, mode=mode, prefix=".kitty-workbench-config.")
 
 
+def _app_config_candidate(paths: InstallPaths) -> str | None:
+    """Validate existing app profiles or return bundled content for first install."""
+    bundled = paths.source / "kitty_workbench" / "default_apps.toml"
+    try:
+        content = bundled.read_text(encoding="utf-8")
+        parse_app_profiles(content, source=str(bundled))
+        if paths.app_config.exists():
+            if not paths.app_config.is_file():
+                raise InstallError(f"app config is not a file: {paths.app_config}")
+            existing = paths.app_config.read_text(encoding="utf-8")
+            parse_app_profiles(existing, source=str(paths.app_config))
+            return None
+    except (AppProfileError, OSError) as error:
+        raise InstallError(f"cannot use app config: {error}") from error
+    return content
+
+
+def _write_app_config(path: Path, content: str) -> None:
+    """Install a private first-use app config without replacing user choices."""
+    atomic_write_text(path, content, mode=0o600, prefix=".kitty-workbench-apps.")
+
+
 def _backup_once(path: Path) -> Path | None:
     """Create one metadata-preserving config backup without overwriting it."""
     if not path.exists():
@@ -392,9 +421,12 @@ def _enable(paths: InstallPaths) -> None:
     config = _editable_config(paths.kitty_config)
     original = _read_config(config)
     base, _ = _strip_workbench_config(original, paths)
+    app_config_candidate = _app_config_candidate(paths)
     link_created = _ensure_install_link(paths)
     bar_paths = tab_bar_paths(config, paths.target, paths.data)
     tab_bar_changed = False
+    app_config_created = False
+    app_config_parent_existed = paths.app_config.parent.exists()
     try:
         base_probe = _probe_config(kitty, config, base)
         if base_probe.bad_lines:
@@ -411,6 +443,9 @@ def _enable(paths: InstallPaths) -> None:
         if _socket_missing(final_probe.listen_on):
             raise InstallError("Kitty has no persistent listen_on socket; no changes were made")
         tab_bar_changed = install_tab_bar(bar_paths)
+        if app_config_candidate is not None:
+            _write_app_config(paths.app_config, app_config_candidate)
+            app_config_created = True
         if desired != original:
             backup = _backup_once(config)
             _atomic_write(config, desired)
@@ -420,6 +455,11 @@ def _enable(paths: InstallPaths) -> None:
         else:
             print(f"already enabled: {config}")
     except Exception:
+        if app_config_created:
+            paths.app_config.unlink(missing_ok=True)
+            if not app_config_parent_existed:
+                with suppress(OSError):
+                    paths.app_config.parent.rmdir()
         if tab_bar_changed:
             restore_tab_bar(bar_paths)
         if link_created and paths.target.is_symlink():
@@ -427,6 +467,8 @@ def _enable(paths: InstallPaths) -> None:
         raise
 
     print(f"code:    {paths.target} -> {paths.source}")
+    state = "created" if app_config_created else "preserved"
+    print(f"apps:    {paths.app_config} ({state})")
     print(f"tab bar: {bar_paths.live} -> {bar_paths.source}")
     if conflicts := _mapping_conflicts(base):
         print(

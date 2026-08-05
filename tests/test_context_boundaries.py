@@ -6,11 +6,11 @@ from datetime import UTC, datetime
 from typing import cast
 from unittest import mock
 
+from kitty_workbench.app_profiles import DEFAULT_APP_PROFILES
 from kitty_workbench.context import (
     ARGUMENT_COUNT_LIMIT,
     ARGUMENT_LENGTH_LIMIT,
     TERMINAL_HISTORY_CHARACTER_LIMIT,
-    _agent,
     _append_history,
     _bounded_terminal_history,
     _claude_resume,
@@ -149,9 +149,10 @@ class ContextBoundaryTests(unittest.TestCase):
         self.assertNotIn("cwd", history[0])
 
     def test_agent_resume_variants_reduce_to_stable_safe_commands(self) -> None:
-        self.assertIsNone(_agent(None))
-        self.assertEqual(_agent("claude-nightly"), "claude")
-        self.assertIsNone(_agent("python"))
+        claude = DEFAULT_APP_PROFILES.match("claude-nightly")
+        self.assertIsNotNone(claude)
+        self.assertTrue(claude.agent if claude is not None else False)
+        self.assertIsNone(DEFAULT_APP_PROFILES.match("python"))
         self.assertEqual(_claude_resume(["claude", "--resume=abc"]), ["claude", "--resume", "abc"])
         self.assertEqual(_claude_resume(["claude", "-r", "abc"]), ["claude", "--resume", "abc"])
         self.assertEqual(_claude_resume(["claude", "-r", "--flag"]), ["claude", "--continue"])
@@ -170,8 +171,18 @@ class ContextBoundaryTests(unittest.TestCase):
             _codex_resume(["codex", "resume", "--sandbox"]),
             ["codex", "resume", "--last"],
         )
-        self.assertIsNone(_restore_command(["-zsh"], agent=None))
-        unknown = _restore_command(["python", "server.py"], agent=None)
+        self.assertIsNone(
+            _restore_command(
+                ["-zsh"],
+                profile=None,
+                default_restore=DEFAULT_APP_PROFILES.defaults.restore,
+            )
+        )
+        unknown = _restore_command(
+            ["python", "server.py"],
+            profile=None,
+            default_restore=DEFAULT_APP_PROFILES.defaults.restore,
+        )
         self.assertIsNotNone(unknown)
         assert unknown is not None
         self.assertFalse(unknown["auto_run"])
