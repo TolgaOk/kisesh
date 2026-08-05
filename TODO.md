@@ -62,7 +62,7 @@
 
 - [x] Prototype one native custom tab-bar row that combines session identity and
   Kitty tabs without a resident process, terminal layer, or separate panel.
-  - Render ` Research │  Shell │ ✻ Claude`, with `󰌸 Unattached` as fallback.
+  - Render ` Research    Shell  ✻ Claude`, with `󰌸 Unattached` as fallback.
   - Let `tab_bar_edge` place the same design at the top or bottom.
   - Read cached Kitty session/user-variable metadata only; never run subprocesses
     or read session files in the draw path.

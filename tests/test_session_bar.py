@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import unittest
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple, cast
@@ -95,13 +95,14 @@ class Boss:
         return self.tabs.get(tab_id)
 
 
-@dataclass(frozen=True, slots=True)
-class DrawData:
+class DrawData(NamedTuple):
     tab_bar_edge: str
     active_bg: int = 101
     active_fg: int = 102
     inactive_bg: int = 201
     inactive_fg: int = 202
+    default_bg: int = 301
+    powerline_style: str = "slanted"
 
     def tab_bg(self, tab: object) -> int:
         return self.active_bg if bool(getattr(tab, "is_active", False)) else self.inactive_bg
@@ -120,6 +121,11 @@ class Cursor:
 @dataclass(slots=True)
 class Screen:
     cursor: Cursor
+    drawn: list[tuple[str, int, int]] = field(default_factory=list)
+
+    def draw(self, text: str) -> None:
+        self.drawn.append((text, self.cursor.bg, self.cursor.fg))
+        self.cursor.x += session_bar._cell_width(text)
 
 
 class RecordingDrawer:
@@ -201,7 +207,25 @@ def _render_fixture(width: int) -> str:
     labels: list[str] = []
     previous: SessionBarTab | None = None
     for tab in _fixture_tabs():
-        labels.append(render_tab_label(tab, previous, width))
+        if session_bar._starts_group(
+            tab, previous
+        ) and width >= session_bar.MIN_SPLIT_SEGMENT_CELLS * 2 + session_bar._cell_width(
+            session_bar.TAB_START_CAP
+        ):
+            icon, name = session_bar._session_descriptor(tab)
+            session_label = f"{icon} {name}"
+            session_width = max(
+                session_bar.MIN_SPLIT_SEGMENT_CELLS,
+                min(session_bar._cell_width(session_label) + 2, width // 2),
+            )
+            content_width = (
+                width - session_width - session_bar._cell_width(session_bar.TAB_START_CAP)
+            )
+            session_text = session_bar._ellipsize(session_label, session_width - 2)
+            tab_text = render_tab_label(tab, tab, content_width - 2)
+            labels.append(f"{session_text}   {tab_text}")
+        else:
+            labels.append(render_tab_label(tab, previous, width))
         previous = tab
     return "    ".join(labels)
 
@@ -350,6 +374,19 @@ class SessionBarAdapterTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
+            "".join(text for text, _, _ in active_screen.drawn),
+            "",
+        )
+        self.assertEqual(
+            active_screen.drawn,
+            [("", draw_data.default_bg, draw_data.active_bg)],
+        )
+        self.assertEqual(cast(DrawData, first_drawer.calls[0][0]).powerline_style, "round")
+        self.assertEqual(first_drawer.calls[1][0], draw_data)
+        session_neighbors = cast(session_bar._SegmentExtraData, first_drawer.calls[0][7])
+        self.assertIsNone(session_neighbors.next_tab)
+        self.assertIsNone(session_neighbors.prev_tab)
+        self.assertEqual(
             [
                 (cast(Datum, call[2]).title, cast(Datum, call[2]).is_active)
                 for call in switched_drawer.calls
@@ -419,6 +456,13 @@ class SessionBarAdapterTests(unittest.TestCase):
 
         self.assertIsNone(session_bar._native_tab_colors(object(), object()))
         self.assertIsNone(session_bar._native_tab_colors(incomplete, object()))
+        self.assertIsNone(session_bar._default_bar_background(object()))
+        self.assertIsNone(session_bar._rounded_draw_data(object()))
+        self.assertIsNone(
+            session_bar._rounded_draw_data(
+                SimpleNamespace(_replace=mock.Mock(side_effect=ValueError("invalid style")))
+            )
+        )
         with mock.patch(
             "kitty_workbench.session_bar.importlib.import_module",
             return_value=SimpleNamespace(
@@ -426,6 +470,19 @@ class SessionBarAdapterTests(unittest.TestCase):
             ),
         ):
             self.assertIsNone(session_bar._native_tab_colors(complete, object()))
+
+        with (
+            mock.patch.object(session_bar, "_native_tab_colors", return_value=None),
+            mock.patch.object(session_bar, "_default_bar_background", return_value=301),
+        ):
+            plan = session_bar._segment_plan(
+                DrawData("top"),
+                Datum("Shell", 1),
+                session_bar._ResolvedTabs(SessionBarTab("Shell", "id", "Project"), None),
+                30,
+            )
+
+        self.assertIsNone(plan)
 
     def test_native_adapter_uses_only_the_focused_pane_identity(self) -> None:
         first = Datum("Shell", 1)
@@ -661,6 +718,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         script = (
             "import sys; "
             f"sys.path.insert(0,{str(PROJECT)!r}); "
+            "from collections import namedtuple; "
             "from types import SimpleNamespace as N; "
             "from kitty.tab_bar import ExtraData,TabBarData; "
             "import kitty_workbench.session_bar as s; "
@@ -672,16 +730,24 @@ class SessionBarAdapterTests(unittest.TestCase):
             "following=TabBarData('Tests',tab_id=2); "
             "extra=ExtraData(); extra.prev_tab=None; extra.next_tab=following; "
             "extra.for_layout=False; "
-            "draw=N(tab_bg=lambda t:0x101010 if t.is_active else 0x202020,"
-            "tab_fg=lambda t:0xf0f0f0 if t.is_active else 0x808080); "
-            "screen=N(cursor=N(x=7,bg=0,fg=0)); seen=[]; "
+            "D=namedtuple('D','tab_bg tab_fg default_bg powerline_style'); "
+            "draw=D(lambda t:0x101010 if t.is_active else 0x202020,"
+            "lambda t:0xf0f0f0 if t.is_active else 0x808080,0x303030,'slanted'); "
+            "screen=N(cursor=N(x=7,bg=0,fg=0)); seen=[]; painted=[]; "
+            "screen.draw=lambda text,screen=screen,painted=painted:"
+            "(painted.append((text,screen.cursor.bg,screen.cursor.fg)),"
+            "setattr(screen.cursor,'x',screen.cursor.x+len(text)),None)[-1]; "
             "drawer=lambda d,sc,t,b,m,i,last,e,seen=seen:"
-            "(seen.append((t.title,t.is_active,sc.cursor.bg,sc.cursor.fg)),"
+            "(seen.append((t.title,t.is_active,sc.cursor.bg,sc.cursor.fg,"
+            "d.powerline_style,e.next_tab)),"
             "setattr(sc.cursor,'x',b+m),b+m)[-1]; "
             "s._kitty_drawer=lambda drawer=drawer:drawer; "
             "result=s.draw_tab(draw,screen,current,7,60,1,False,extra); "
-            "print(result==67,len(seen)==2,seen[0][1] is False,"
-            "seen[1][1] is True,seen[0][2]!=seen[1][2])"
+            "cap_bg=s._default_bar_background(draw); "
+            "tab_bg=s._native_tab_colors(draw,current).background; "
+            "print(result==67,len(seen)==2,seen[0][1] is False,seen[1][1] is True,"
+            "seen[0][4]=='round',seen[1][4]=='slanted',seen[0][5] is None,"
+            "painted==[('',cap_bg,tab_bg)])"
         )
         result = subprocess.run(
             ["kitty", "+runpy", script],
@@ -693,7 +759,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "True True True True True")
+        self.assertEqual(result.stdout.strip(), "True True True True True True True True")
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_entrypoint_loads_with_pre_feature_model_cached_in_kitty(self) -> None:

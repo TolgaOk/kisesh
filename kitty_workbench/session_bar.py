@@ -16,6 +16,7 @@ from .app_profiles import current_app_profiles
 SESSION_ICON = ""
 UNATTACHED_ICON = "󰌸"
 ELLIPSIS = "…"
+TAB_START_CAP = ""
 SESSION_ID_VAR = "kitty_workbench_session"
 SESSION_SLUG_VAR = "kitty_workbench_slug"
 SESSION_NAME_VAR = "kitty_workbench_name"
@@ -54,12 +55,29 @@ class _ExtraData(Protocol):
         """Return the previous native tab, if this is not the first tab."""
 
 
+class _DefaultBarDrawData(Protocol):
+    """Theme background exposed by Kitty's immutable tab-bar draw data."""
+
+    @property
+    def default_bg(self) -> int:
+        """Return the tab-bar background as an integer-compatible color."""
+
+
 class _ScreenCursor(Protocol):
     """Mutable Kitty cursor state needed to draw adjacent native segments."""
 
     x: int
     bg: int
     fg: int
+
+
+class _SegmentScreen(Protocol):
+    """Kitty screen operations needed to start one rounded tab segment."""
+
+    cursor: _ScreenCursor
+
+    def draw(self, text: str) -> None:
+        """Draw text at the current cursor position."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,14 +107,16 @@ class _TabColors:
 
 @dataclass(frozen=True, slots=True)
 class _SegmentPlan:
-    """Complete rendering plan for a session prefix and its first native tab."""
+    """Complete rendering plan for a capped session and native tab segment."""
 
+    session_draw_data: object
     session_tab: object
     content_tab: object
     session_width: int
     content_width: int
     session_colors: _TabColors
     content_colors: _TabColors
+    default_background: int
 
 
 class SessionBarCache(Protocol):
@@ -354,6 +374,27 @@ def _native_tab_colors(draw_data: object, tab: object) -> _TabColors | None:
         return None
 
 
+def _default_bar_background(draw_data: object) -> int | None:
+    """Resolve the theme's tab-bar background between rounded segments."""
+    try:
+        module = importlib.import_module("kitty.tab_bar")
+        as_rgb = cast(Callable[[int], int], module.as_rgb)
+        return as_rgb(int(cast(_DefaultBarDrawData, draw_data).default_bg))
+    except Exception:
+        return None
+
+
+def _rounded_draw_data(draw_data: object) -> object | None:
+    """Clone Kitty's immutable draw data with its native round separator style."""
+    replacement = cast(Callable[..., object] | None, getattr(draw_data, "_replace", None))
+    if not callable(replacement):
+        return None
+    try:
+        return replacement(powerline_style="round")
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolved_tabs(datum: _TabDatum, neighbors: _ExtraData) -> _ResolvedTabs:
     """Resolve cached Workbench metadata while tolerating disappearing native tabs."""
     try:
@@ -380,14 +421,16 @@ def _segment_plan(
     resolved: _ResolvedTabs,
     max_title_length: int,
 ) -> _SegmentPlan | None:
-    """Build a two-segment plan when native data and width support it safely."""
+    """Build two native segments with facing round caps when space permits."""
     current = resolved.current
     replacement = cast(Callable[..., object] | None, getattr(tab, "_replace", None))
+    session_draw_data = _rounded_draw_data(draw_data)
     if (
         current is None
         or not _starts_group(current, resolved.previous)
-        or max_title_length < MIN_SPLIT_SEGMENT_CELLS * 2
+        or max_title_length < MIN_SPLIT_SEGMENT_CELLS * 2 + _cell_width(TAB_START_CAP)
         or not callable(replacement)
+        or session_draw_data is None
     ):
         return None
     icon, session_name = _session_descriptor(current)
@@ -396,7 +439,7 @@ def _segment_plan(
         MIN_SPLIT_SEGMENT_CELLS,
         min(_cell_width(session_label) + 2, max_title_length // 2),
     )
-    content_width = max_title_length - session_width
+    content_width = max_title_length - session_width - _cell_width(TAB_START_CAP)
     try:
         session_tab = replacement(
             title=_ellipsize(session_label, session_width - 2),
@@ -408,16 +451,29 @@ def _segment_plan(
         return None
     session_colors = _native_tab_colors(draw_data, session_tab)
     content_colors = _native_tab_colors(draw_data, content_tab)
-    if session_colors is None or content_colors is None:
+    default_background = _default_bar_background(draw_data)
+    if session_colors is None or content_colors is None or default_background is None:
         return None
     return _SegmentPlan(
+        session_draw_data,
         session_tab,
         content_tab,
         session_width,
         content_width,
         session_colors,
         content_colors,
+        default_background,
     )
+
+
+def _draw_tab_start(screen: _SegmentScreen, plan: _SegmentPlan) -> None:
+    """Paint only the tab's left cap against the real tab-bar background."""
+    cursor = screen.cursor
+    cursor.bg = plan.default_background
+    cursor.fg = plan.content_colors.background
+    screen.draw(TAB_START_CAP)
+    cursor.bg = plan.content_colors.background
+    cursor.fg = plan.content_colors.foreground
 
 
 def reload_session_bar(boss: SessionBarBoss) -> None:
@@ -453,9 +509,12 @@ def draw_tab(
     resolved = _resolved_tabs(datum, neighbors)
     drawer = _kitty_drawer()
     cursor = cast(_ScreenCursor | None, getattr(screen, "cursor", None))
+    screen_draw = getattr(screen, "draw", None)
     plan = (
         _segment_plan(draw_data, tab, resolved, max_title_length)
-        if cursor is not None and isinstance(getattr(cursor, "x", None), int)
+        if cursor is not None
+        and isinstance(getattr(cursor, "x", None), int)
+        and callable(screen_draw)
         else None
     )
     if plan is not None and cursor is not None:
@@ -463,11 +522,11 @@ def draw_tab(
         cursor.fg = plan.session_colors.foreground
         segment_neighbors = _SegmentExtraData(
             prev_tab=getattr(neighbors, "prev_tab", None),
-            next_tab=plan.content_tab,
+            next_tab=None,
             for_layout=bool(getattr(neighbors, "for_layout", False)),
         )
         drawer(
-            draw_data,
+            plan.session_draw_data,
             screen,
             plan.session_tab,
             before,
@@ -476,8 +535,7 @@ def draw_tab(
             False,
             segment_neighbors,
         )
-        cursor.bg = plan.content_colors.background
-        cursor.fg = plan.content_colors.foreground
+        _draw_tab_start(cast(_SegmentScreen, screen), plan)
         return drawer(
             draw_data,
             screen,

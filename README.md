@@ -47,8 +47,8 @@ Moving with `j/k` expands only the selected session: each tab is followed by a
 comma-separated pane row. Configured icons such as `✻ Claude`, `󰋙 Codex`, and
 ` Vim` appear there. Each native top-bar tab shows only its focused pane's icon
 and name. `•` marks the focused pane,
-and `↻` marks restorable or prefilled state. ` Session` remains a separate
-inactive segment; `󰌸 Unattached` clearly marks tabs with no session owner.
+and `↻` marks restorable or prefilled state. ` Session   󰋙 Codex` keeps
+session identity inactive and separate; `󰌸 Unattached` marks tabs with no owner.
 
 If the current window contains unowned tabs, opening a session asks whether to
 attach them, edit a random unused name and save them separately, discard them

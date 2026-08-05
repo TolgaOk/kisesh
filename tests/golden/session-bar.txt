@@ -1,4 +1,4 @@
-top wide      Research Work │  shell    ✻ Claude    󰋙 Codex    󰌸 Unattached │  notes     scratch
-bottom wide   Research Work │  shell    ✻ Claude    󰋙 Codex    󰌸 Unattached │  notes     scratch
-top narrow    R… ·  shell    ✻ Claude    󰋙 Codex    󰌸 U… ·  notes     scratch
+top wide      Research Work    shell    ✻ Claude    󰋙 Codex    󰌸 Unattached    notes     scratch
+bottom wide   Research Work    shell    ✻ Claude    󰋙 Codex    󰌸 Unattached    notes     scratch
+top narrow    Re…    s…    ✻ Claude    󰋙 Codex    󰌸 Un…    n…     scratch
 bottom tiny   shell    ✻ Claude    󰋙 Codex     notes     scrat…
