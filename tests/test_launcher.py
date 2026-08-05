@@ -46,7 +46,7 @@ class LauncherTests(unittest.TestCase):
         mappings = [line for line in integration.splitlines() if line.startswith("map ")]
 
         launch_mappings = [line for line in mappings if " launch " in line]
-        self.assertEqual(len(mappings), 5)
+        self.assertEqual(len(mappings), 6)
         for mapping in launch_mappings:
             self.assertIn("~/.local/lib/kitty-workbench/bin/kitty-workbench", mapping)
             self.assertNotIn(" python3 ", mapping)
@@ -86,6 +86,12 @@ class LauncherTests(unittest.TestCase):
             mappings.index("map --when-focus-on var:kitty_workbench_ui cmd+w close_window"),
         )
         self.assertTrue((project / "integration/safe_close.py").is_file())
+        layout_mapping = (
+            "map --when-focus-on var:kitty_workbench_session alt+z kitten "
+            "~/.local/lib/kitty-workbench/integration/layout_toggle.py"
+        )
+        self.assertIn(layout_mapping, mappings)
+        self.assertTrue((project / "integration/layout_toggle.py").is_file())
         self.assertNotIn(" undo", integration)
         self.assertNotIn(" park", integration)
 
@@ -115,6 +121,28 @@ class LauncherTests(unittest.TestCase):
     def test_no_ui_tab_bar_reload_kitten_loads_inside_kitty_runtime(self) -> None:
         project = Path(__file__).parents[1]
         script = project / "integration/reload_tab_bar.py"
+        expression = (
+            "from kittens.runner import import_kitten_main_module; "
+            f"loaded = import_kitten_main_module('', {str(script)!r}); "
+            "print(callable(loaded['end']))"
+        )
+
+        result = subprocess.run(
+            [shutil.which("kitty") or "kitty", "+runpy", expression],
+            cwd=project,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "True")
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
+    def test_no_ui_layout_toggle_kitten_loads_inside_kitty_runtime(self) -> None:
+        project = Path(__file__).parents[1]
+        script = project / "integration/layout_toggle.py"
         expression = (
             "from kittens.runner import import_kitten_main_module; "
             f"loaded = import_kitten_main_module('', {str(script)!r}); "

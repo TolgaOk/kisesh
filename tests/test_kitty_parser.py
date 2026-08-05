@@ -280,6 +280,71 @@ print(json.dumps({"mods": key.mods, "key": key.key, "resolved": resolved}))
         self.assertEqual(parsed["resolved"]["workbench"], ["close_window"])
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
+    def test_layout_fallback_is_scoped_to_tracked_sessions_by_real_kitty(self) -> None:
+        """Resolve the Alt-Z condition through Kitty's real key engine."""
+
+        integration = Path(__file__).parents[1] / "integration" / "kitty-workbench.conf"
+        program = """
+import json
+import sys
+from kitty.config import load_config
+from kitty.keys import Mappings
+
+options = load_config(sys.argv[1], sys.argv[2])
+candidates = next(
+    definitions
+    for definitions in options.keyboard_modes[""].keymap.values()
+    if any("layout_toggle.py" in definition.definition for definition in definitions)
+)
+
+class FocusScenario(Mappings):
+    def __init__(self, tracked):
+        self.window = object()
+        self.tracked = tracked
+
+    def get_active_window(self):
+        return self.window
+
+    def match_windows(self, expression):
+        assert expression == "var:kitty_workbench_session"
+        return iter((self.window,)) if self.tracked else iter(())
+
+resolved = {
+    label: [
+        definition.definition
+        for definition in FocusScenario(tracked).matching_key_actions(candidates)
+    ]
+    for label, tracked in (("tracked", True), ("untracked", False))
+}
+print(json.dumps(resolved))
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary) / "base.conf"
+            base.write_text("map alt+z toggle_layout stack\n", encoding="utf-8")
+            result = subprocess.run(
+                [
+                    shutil.which("kitty") or "kitty",
+                    "+runpy",
+                    program,
+                    str(base),
+                    str(integration),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "tracked": ["kitten ~/.local/lib/kitty-workbench/integration/layout_toggle.py"],
+                "untracked": ["toggle_layout stack"],
+            },
+        )
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_generated_agent_resume_snapshot_is_accepted_by_installed_kitty(self) -> None:
         manifest = SessionManifest(
             name="Agent Scenario",
