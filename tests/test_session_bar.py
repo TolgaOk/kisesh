@@ -56,14 +56,32 @@ class Window:
 
 
 class NativeTab:
-    def __init__(self, *windows: Window, fail: bool = False) -> None:
+    def __init__(
+        self,
+        *windows: Window,
+        fail: bool = False,
+        active_index: int | None = 0,
+    ) -> None:
         self.windows = windows
         self.fail = fail
+        self.active_index = active_index
 
     def __iter__(self) -> Iterator[Window]:
         if self.fail:
             raise RuntimeError("tab disappeared")
         return iter(self.windows)
+
+    @property
+    def active_window(self) -> Window | None:
+        if self.active_index is None:
+            return None
+        return self.windows[self.active_index]
+
+
+class UnstableFocusTab(NativeTab):
+    @property
+    def active_window(self) -> Window | None:
+        raise RuntimeError("focus changed during render")
 
 
 class Boss:
@@ -172,13 +190,8 @@ class ReloadBoss:
 def _fixture_tabs() -> list[SessionBarTab]:
     return [
         SessionBarTab("shell", "research", "Research Work"),
-        SessionBarTab("tests", "research", "Research Work", ("claude", "nvim")),
-        SessionBarTab(
-            "agent review",
-            "research",
-            "Research Work",
-            ("codex", "claude", "claude"),
-        ),
+        SessionBarTab("tests", "research", "Research Work", "claude"),
+        SessionBarTab("agent review", "research", "Research Work", "codex"),
         SessionBarTab("notes", None, None),
         SessionBarTab("scratch", None, None),
     ]
@@ -208,7 +221,7 @@ class SessionBarRenderingTests(unittest.TestCase):
 
     def test_group_boundaries_and_widths_preserve_the_useful_identity(self) -> None:
         first, second, _, unattached, next_unattached = _fixture_tabs()
-        other = SessionBarTab("deploy", "other", "Operations", ("codex",))
+        other = SessionBarTab("deploy", "other", "Operations", "codex")
 
         self.assertIn(" Research Work", render_tab_label(first, None, 60))
         self.assertNotIn("Research Work", render_tab_label(second, first, 60))
@@ -221,24 +234,23 @@ class SessionBarRenderingTests(unittest.TestCase):
         self.assertEqual(session_bar._ellipsize("anything", 0), "")
 
         medium_group = render_tab_label(
-            SessionBarTab("test", "id", "Team", ("claude",)),
+            SessionBarTab("ignored tab title", "id", "Team", "claude"),
             None,
             20,
         )
-        self.assertEqual(medium_group, " Team │ test ✻")
+        self.assertEqual(medium_group, " Team │ ✻ Claude")
         tiny_tab = render_tab_label(
-            SessionBarTab("long title", "id", "Team", ("claude", "codex")),
+            SessionBarTab("long title", "id", "Team", "codex"),
             SessionBarTab("before", "id", "Team"),
             2,
         )
-        self.assertEqual(tiny_tab, "l…")
+        self.assertEqual(tiny_tab, "󰋙…")
 
     def test_controls_unicode_and_agent_noise_cannot_break_cell_budgets(self) -> None:
         tab = SessionBarTab(
             "測試\n\x1b[31m terminal",
             "id",
             "Team\tSession",
-            ("unknown", "CODEX", "codex"),
         )
 
         for width in range(1, 35):
@@ -248,7 +260,12 @@ class SessionBarRenderingTests(unittest.TestCase):
                 self.assertNotIn("\x1b", label)
         self.assertEqual(session_bar._ellipsize("測試", 3), "測…")
         self.assertEqual(session_bar._ellipsize("e\N{COMBINING ACUTE ACCENT}", 1), "é")
-        self.assertEqual(session_bar._suffix(("unknown",), verbose=True), "")
+        configured = render_tab_label(
+            SessionBarTab("ignored", "id", "Team", "CODEX"),
+            SessionBarTab("before", "id", "Team"),
+            20,
+        )
+        self.assertEqual(configured, "󰋙 Codex")
 
 
 class SessionBarAdapterTests(unittest.TestCase):
@@ -259,8 +276,8 @@ class SessionBarAdapterTests(unittest.TestCase):
         variables = {SESSION_ID_VAR: "id", SESSION_NAME_VAR: "Silver Seal"}
         boss = Boss(
             {
-                1: NativeTab(Window(variables)),
-                2: NativeTab(Window(variables)),
+                1: NativeTab(Window(variables, title="Shell")),
+                2: NativeTab(Window(variables, title="Tests")),
             }
         )
         draw_data = DrawData("top")
@@ -323,7 +340,7 @@ class SessionBarAdapterTests(unittest.TestCase):
                 (cast(Datum, call[2]).title, cast(Datum, call[2]).is_active)
                 for call in first_drawer.calls
             ],
-            [(" Silver Seal", False), ("󰓩 Shell", True)],
+            [(" Silver Seal", False), (" Shell", True)],
         )
         self.assertEqual(
             first_drawer.colors,
@@ -337,7 +354,7 @@ class SessionBarAdapterTests(unittest.TestCase):
                 (cast(Datum, call[2]).title, cast(Datum, call[2]).is_active)
                 for call in switched_drawer.calls
             ],
-            [(" Silver Seal", False), ("󰓩 Shell", False), ("󰓩 Tests", True)],
+            [(" Silver Seal", False), (" Shell", False), (" Tests", True)],
         )
         self.assertEqual(
             switched_drawer.colors,
@@ -410,7 +427,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         ):
             self.assertIsNone(session_bar._native_tab_colors(complete, object()))
 
-    def test_native_adapter_uses_cached_metadata_and_preserves_kitty_draw_state(self) -> None:
+    def test_native_adapter_uses_only_the_focused_pane_identity(self) -> None:
         first = Datum("Shell", 1)
         second = Datum("Tests", 2)
         variables = {
@@ -420,15 +437,27 @@ class SessionBarAdapterTests(unittest.TestCase):
             APP_VAR: "nvim",
             AGENT_VAR: "claude",
         }
+        session_variables = {
+            SESSION_ID_VAR: "session-id",
+            SESSION_NAME_VAR: "Exact Name",
+        }
+        second_native = NativeTab(
+            Window(
+                {**session_variables, APP_VAR: "nvim"},
+                title="Editor pane",
+                child=Child(["nvim"]),
+            ),
+            Window(
+                session_variables,
+                title="Agent pane",
+                child=Child(["/opt/bin/codex-nightly"]),
+            ),
+            active_index=1,
+        )
         boss = Boss(
             {
                 1: NativeTab(Window(lambda: variables, child=Child(["-zsh"]))),
-                2: NativeTab(
-                    Window(
-                        {SESSION_ID_VAR: "session-id", SESSION_NAME_VAR: "Exact Name"},
-                        child=Child(["/opt/bin/codex-nightly"]),
-                    )
-                ),
+                2: second_native,
             }
         )
         drawer = RecordingDrawer()
@@ -444,14 +473,19 @@ class SessionBarAdapterTests(unittest.TestCase):
             result = session_bar.draw_tab(
                 DrawData("bottom"), screen, second, 17, 60, 2, True, extra
             )
+            second_native.active_index = 0
+            session_bar.draw_tab(DrawData("bottom"), screen, second, 17, 60, 2, True, extra)
 
         self.assertEqual(result, 41)
-        call = drawer.calls[0]
-        self.assertEqual(call[0], DrawData("bottom"))
-        self.assertIs(call[1], screen)
-        self.assertEqual(cast(Datum, call[2]).title, "󰓩 Tests 󰋙 Codex")
-        self.assertEqual(call[3], 17)
-        self.assertEqual(call[4:], (60, 2, True, extra))
+        first_call, second_call = drawer.calls
+        self.assertEqual(first_call[0], DrawData("bottom"))
+        self.assertIs(first_call[1], screen)
+        self.assertEqual(cast(Datum, first_call[2]).title, "󰋙 Codex")
+        self.assertNotIn("Vim", cast(Datum, first_call[2]).title)
+        self.assertEqual(cast(Datum, second_call[2]).title, " Vim")
+        self.assertNotIn("Codex", cast(Datum, second_call[2]).title)
+        self.assertEqual(first_call[3], 17)
+        self.assertEqual(first_call[4:], (60, 2, True, extra))
 
     def test_adapter_marks_groups_unattached_tabs_and_metadata_failures_safely(self) -> None:
         tracked = Datum("Editor", 1)
@@ -494,6 +528,15 @@ class SessionBarAdapterTests(unittest.TestCase):
             "codex",
         )
         self.assertEqual(session_bar._cached_application(Window({}, title="Claude")), "claude")
+        fallback = session_bar._bar_tab(
+            datum,
+            Boss({1: UnstableFocusTab(Window({}, title="Fallback pane"))}),
+        )
+        self.assertIsNotNone(fallback)
+        self.assertEqual(
+            fallback.focused_title if fallback is not None else None,
+            "Fallback pane",
+        )
 
         drawer = RecordingDrawer()
         with (
@@ -599,7 +642,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             "extra=ExtraData(); extra.prev_tab=previous; "
             "extra.next_tab=None; extra.for_layout=False; "
             "result=s.draw_tab(N(),N(),current,17,60,2,True,extra); "
-            "print(result,seen==[(s.TAB_ICON+' Tests',17)])"
+            "print(result,seen==[(s.current_app_profiles().defaults.icon+' Shell',17)])"
         )
         result = subprocess.run(
             ["kitty", "+runpy", script],

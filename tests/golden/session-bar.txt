@@ -1,4 +1,4 @@
-top wide      Research Work │ 󰓩 shell    󰓩 tests ✻ Claude  Vim    󰓩 agent review ✻ Claude 󰋙 Codex    󰌸 Unattached │ 󰓩 notes    󰓩 scratch
-bottom wide   Research Work │ 󰓩 shell    󰓩 tests ✻ Claude  Vim    󰓩 agent review ✻ Claude 󰋙 Codex    󰌸 Unattached │ 󰓩 notes    󰓩 scratch
-top narrow    Res… · shell    tests ✻     agent rev… ✻ 󰋙    󰌸 Una… · notes    󰓩 scratch
-bottom tiny   Resea…    tes… ✻     age… ✻ 󰋙    󰌸 Unatt…    scratch
+top wide      Research Work │  shell    ✻ Claude    󰋙 Codex    󰌸 Unattached │  notes     scratch
+bottom wide   Research Work │  shell    ✻ Claude    󰋙 Codex    󰌸 Unattached │  notes     scratch
+top narrow    R… ·  shell    ✻ Claude    󰋙 Codex    󰌸 U… ·  notes     scratch
+bottom tiny   shell    ✻ Claude    󰋙 Codex     notes     scrat…

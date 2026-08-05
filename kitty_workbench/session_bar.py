@@ -14,7 +14,6 @@ from typing import Protocol, cast
 from .app_profiles import current_app_profiles
 
 SESSION_ICON = ""
-TAB_ICON = "󰓩"
 UNATTACHED_ICON = "󰌸"
 ELLIPSIS = "…"
 SESSION_ID_VAR = "kitty_workbench_session"
@@ -27,12 +26,12 @@ MIN_SPLIT_SEGMENT_CELLS = 6
 
 @dataclass(frozen=True, slots=True)
 class SessionBarTab:
-    """Cached metadata needed to label one native Kitty tab."""
+    """Cached focused-pane and session metadata for one native Kitty tab."""
 
-    title: str
+    focused_title: str
     session_id: str | None
     session_name: str | None
-    applications: tuple[str, ...] = ()
+    focused_application: str | None = None
 
 
 class _TabDatum(Protocol):
@@ -167,23 +166,13 @@ def _ellipsize(value: str, max_cells: int) -> str:
     return "".join(visible) + ELLIPSIS
 
 
-def _application_names(applications: Iterable[str]) -> tuple[str, ...]:
-    """Keep configured application names once in their stable visual order."""
-    normalized = {str(application).strip().casefold() for application in applications}
-    return tuple(
-        profile.name for profile in current_app_profiles().apps if profile.name in normalized
-    )
-
-
-def _suffix(applications: tuple[str, ...], *, verbose: bool) -> str:
-    """Render configured applications as concise symbols or labeled markers."""
+def _pane_descriptor(tab: SessionBarTab) -> tuple[str, str]:
+    """Return the configured icon and name for only the tab's focused pane."""
     profiles = current_app_profiles()
-    labels = []
-    for application in applications:
-        profile = profiles.named(application)
-        if profile is not None:
-            labels.append(f"{profile.icon} {profile.label}" if verbose else profile.icon)
-    return f" {' '.join(labels)}" if labels else ""
+    profile = profiles.named(tab.focused_application)
+    if profile is not None:
+        return profile.icon, profile.label
+    return profiles.defaults.icon, _clean(tab.focused_title, profiles.defaults.label)
 
 
 def _starts_group(tab: SessionBarTab, previous: SessionBarTab | None) -> bool:
@@ -199,35 +188,26 @@ def _session_descriptor(tab: SessionBarTab) -> tuple[str, str]:
 
 
 def _fit_group(
-    icon: str,
+    session_icon: str,
     session_name: str,
-    title: str,
-    applications: tuple[str, ...],
+    pane_icon: str,
+    pane_name: str,
     max_cells: int,
 ) -> str:
-    """Compact a session boundary while retaining identity and tab title."""
-    suffix = _suffix(applications, verbose=False)
-    fixed = f"{icon}  · "
-    available = max_cells - _cell_width(fixed) - _cell_width(suffix)
+    """Compact a session boundary while retaining focused-pane identity."""
+    fixed = f"{session_icon}  · {pane_icon} "
+    available = max_cells - _cell_width(fixed)
     if available < 4:
-        return _ellipsize(f"{icon} {session_name}", max_cells)
+        return _ellipsize(f"{pane_icon} {pane_name}", max_cells)
     session_width = _cell_width(session_name)
-    title_width = _cell_width(title)
-    session_budget = min(session_width, max(2, available // 2))
-    title_budget = min(title_width, available - session_budget)
+    pane_width = _cell_width(pane_name)
+    session_budget = min(session_width, max(1, available // 3))
+    pane_budget = min(pane_width, available - session_budget)
     label = (
-        f"{icon} {_ellipsize(session_name, session_budget)} · "
-        f"{_ellipsize(title, title_budget)}{suffix}"
+        f"{session_icon} {_ellipsize(session_name, session_budget)} · "
+        f"{pane_icon} {_ellipsize(pane_name, pane_budget)}"
     )
     return _ellipsize(label, max_cells)
-
-
-def _fit_tab(title: str, applications: tuple[str, ...], max_cells: int) -> str:
-    """Compact a normal tab while retaining application symbols when space permits."""
-    suffix = _suffix(applications, verbose=False)
-    if _cell_width(suffix) + 2 > max_cells:
-        suffix = ""
-    return f"{_ellipsize(title, max_cells - _cell_width(suffix))}{suffix}"
 
 
 def render_tab_label(
@@ -235,25 +215,18 @@ def render_tab_label(
     previous: SessionBarTab | None,
     max_cells: int,
 ) -> str:
-    """Build a themed-label payload for one tab with graceful width fallbacks."""
+    """Render only focused-pane identity plus a leading session boundary."""
     if max_cells <= 0:
         return ""
-    title = _clean(tab.title, "Shell")
-    applications = _application_names(tab.applications)
+    pane_icon, pane_name = _pane_descriptor(tab)
+    pane_label = f"{pane_icon} {pane_name}"
     if _starts_group(tab, previous):
-        icon, session_name = _session_descriptor(tab)
-        full = f"{icon} {session_name} │ {TAB_ICON} {title}{_suffix(applications, verbose=True)}"
+        session_icon, session_name = _session_descriptor(tab)
+        full = f"{session_icon} {session_name} │ {pane_label}"
         if _cell_width(full) <= max_cells:
             return full
-        medium = f"{icon} {session_name} │ {title}{_suffix(applications, verbose=False)}"
-        if _cell_width(medium) <= max_cells:
-            return medium
-        return _fit_group(icon, session_name, title, applications, max_cells)
-    full = f"{TAB_ICON} {title}{_suffix(applications, verbose=True)}"
-    if _cell_width(full) <= max_cells:
-        return full
-    medium = f"{title}{_suffix(applications, verbose=False)}"
-    return medium if _cell_width(medium) <= max_cells else _fit_tab(title, applications, max_cells)
+        return _fit_group(session_icon, session_name, pane_icon, pane_name, max_cells)
+    return _ellipsize(pane_label, max_cells)
 
 
 def _mapping(value: object) -> Mapping[object, object]:
@@ -305,6 +278,15 @@ def _cached_application(window: object) -> str | None:
     return command_application or _command_application(getattr(window, "title", ""))
 
 
+def _focused_window(native: object, windows: tuple[object, ...]) -> object | None:
+    """Return Kitty's active pane with a stable first-pane compatibility fallback."""
+    try:
+        focused = getattr(native, "active_window", None)
+    except Exception:
+        focused = None
+    return focused if focused is not None else next(iter(windows), None)
+
+
 def _native_tab(boss: object, tab_id: int) -> object | None:
     """Resolve a tab through Kitty's in-process boss without remote control."""
     resolver = getattr(boss, "tab_for_id", None)
@@ -331,12 +313,15 @@ def _bar_tab(datum: _TabDatum, boss: object) -> SessionBarTab | None:
         session_name = _first_variable(windows, SESSION_NAME_VAR) or _first_variable(
             windows, SESSION_SLUG_VAR
         )
-    applications = tuple(
-        application
-        for window in windows
-        if (application := _cached_application(window)) is not None
+    focused = _focused_window(native, windows)
+    focused_title = getattr(focused, "title", datum.title) if focused is not None else datum.title
+    focused_application = _cached_application(focused) if focused is not None else None
+    return SessionBarTab(
+        str(focused_title),
+        session_id,
+        session_name,
+        focused_application,
     )
-    return SessionBarTab(datum.title, session_id, session_name, applications)
 
 
 def _kitty_boss() -> object:

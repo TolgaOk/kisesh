@@ -171,12 +171,12 @@ class AppProfileBehaviorTests(unittest.TestCase):
                     "work",
                     "session",
                     "Project",
-                    ("custom", "claude", "custom"),
+                    "custom",
                 ),
                 None,
                 80,
             )
-        self.assertEqual(rendered, " Project │ 󰓩 work C Claude Custom H Custom App")
+        self.assertEqual(rendered, " Project │ H Custom App")
 
     def test_xdg_user_config_can_change_icons_and_restore_policy_without_code_edits(self) -> None:
         """Reload an edited standard config only at an explicit event boundary."""

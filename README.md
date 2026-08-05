@@ -45,7 +45,8 @@ running. Other Kitty OS windows retain their normal tab bars.
 
 Moving with `j/k` expands only the selected session: each tab is followed by a
 comma-separated pane row. Configured icons such as `✻ Claude`, `󰋙 Codex`, and
-` Vim` appear there and in Kitty's native top bar. `•` marks the focused pane,
+` Vim` appear there. Each native top-bar tab shows only its focused pane's icon
+and name. `•` marks the focused pane,
 and `↻` marks restorable or prefilled state. ` Session` remains a separate
 inactive segment; `󰌸 Unattached` clearly marks tabs with no session owner.
 
