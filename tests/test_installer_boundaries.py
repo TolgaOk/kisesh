@@ -1,0 +1,316 @@
+from __future__ import annotations
+
+import io
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from unittest import mock
+
+from kitty_workbench.installer import (
+    DEFAULT_LISTEN_ON,
+    INTEGRATION_INCLUDE,
+    MANAGED_BEGIN,
+    MANAGED_END,
+    ConfigProbe,
+    InstallArguments,
+    InstallError,
+    InstallPaths,
+    _backup_once,
+    _check_install_target,
+    _disable,
+    _editable_config,
+    _enable,
+    _expand_home,
+    _find_executable,
+    _home,
+    _kitty_config,
+    _probe_config,
+    _read_config,
+    _remove_product_data,
+    _same_target,
+    _strip_workbench_config,
+    _uninstall,
+    _validate_source,
+    main,
+)
+
+PROJECT = Path(__file__).parents[1]
+
+
+class InstallerBoundaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def paths(self, *, source: Path = PROJECT) -> InstallPaths:
+        return InstallPaths(
+            home=self.home,
+            source=source,
+            target=self.home / ".local" / "lib" / "kitty-workbench",
+            kitty_config=self.home / ".config" / "kitty" / "kitty.conf",
+            data=self.home / ".local" / "share" / "kitty-workbench",
+        )
+
+    def test_home_and_config_resolution_follow_every_documented_precedence(self) -> None:
+        self.assertEqual(_expand_home("~", self.home), self.home)
+        self.assertEqual(_expand_home("~/config", self.home), self.home / "config")
+        self.assertEqual(_expand_home("/absolute", self.home), Path("/absolute"))
+
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            self.assertRaisesRegex(InstallError, "HOME is unavailable"),
+        ):
+            _home()
+
+        scenarios: tuple[tuple[Path | None, dict[str, str], Path], ...] = (
+            (Path("~/explicit.conf"), {}, self.home / "explicit.conf"),
+            (
+                None,
+                {"KITTY_WORKBENCH_KITTY_CONFIG": "~/workbench.conf"},
+                self.home / "workbench.conf",
+            ),
+            (
+                None,
+                {"KITTY_CONFIG_DIRECTORY": "~/kitty-directory"},
+                self.home / "kitty-directory" / "kitty.conf",
+            ),
+            (
+                None,
+                {"XDG_CONFIG_HOME": "~/xdg"},
+                self.home / "xdg" / "kitty" / "kitty.conf",
+            ),
+        )
+        for override, environment, expected in scenarios:
+            with (
+                self.subTest(expected=expected),
+                mock.patch.dict("os.environ", environment, clear=True),
+            ):
+                self.assertEqual(_kitty_config(self.home, override), expected)
+
+        macos = self.home / "Library" / "Preferences" / "kitty" / "kitty.conf"
+        macos.parent.mkdir(parents=True)
+        macos.touch()
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(_kitty_config(self.home), macos)
+        conventional = self.home / ".config" / "kitty" / "kitty.conf"
+        conventional.parent.mkdir(parents=True)
+        conventional.touch()
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(_kitty_config(self.home), conventional)
+
+    def test_source_and_target_checks_fail_closed_without_replacing_foreign_files(self) -> None:
+        incomplete = self.root / "incomplete"
+        incomplete.mkdir()
+        with self.assertRaisesRegex(InstallError, "source checkout is incomplete"):
+            _validate_source(self.paths(source=incomplete))
+
+        with mock.patch.object(Path, "resolve", side_effect=OSError("unreadable")):
+            self.assertFalse(_same_target(self.root / "link", PROJECT))
+
+        in_place = self.paths(source=PROJECT)
+        in_place = InstallPaths(
+            home=in_place.home,
+            source=PROJECT,
+            target=PROJECT,
+            kitty_config=in_place.kitty_config,
+            data=in_place.data,
+        )
+        _check_install_target(in_place)
+
+    def test_config_stripping_rejects_nested_and_unmatched_markers(self) -> None:
+        paths = self.paths()
+        cases = (
+            (f"{MANAGED_BEGIN}\n{MANAGED_BEGIN}\n", "nested"),
+            (f"{MANAGED_END}\n", "unmatched"),
+        )
+        for content, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(InstallError, message):
+                _strip_workbench_config(content, paths)
+
+        absolute = f"include {paths.target / 'integration' / 'kitty-workbench.conf'}\n"
+        stripped, changed = _strip_workbench_config(f"font_size 14\n{absolute}", paths)
+        self.assertTrue(changed)
+        self.assertEqual(stripped, "font_size 14\n")
+
+    def test_config_symlinks_preserve_targets_and_report_resolution_or_read_errors(self) -> None:
+        target = self.root / "real-kitty.conf"
+        target.write_text("font_size 14\n", encoding="utf-8")
+        link = self.root / "kitty.conf"
+        link.symlink_to(target)
+        self.assertEqual(_editable_config(link), target.resolve())
+        self.assertEqual(_read_config(self.root / "missing"), "")
+
+        broken = self.root / "broken.conf"
+        broken.symlink_to(self.root / "absent")
+        with self.assertRaisesRegex(InstallError, "cannot resolve Kitty config symlink"):
+            _editable_config(broken)
+
+        with (
+            mock.patch.object(Path, "read_text", side_effect=OSError("permission denied")),
+            self.assertRaisesRegex(InstallError, "cannot read Kitty config"),
+        ):
+            _read_config(target)
+
+    def test_backup_is_once_only_and_copy_failures_leave_a_clear_error(self) -> None:
+        config = self.root / "kitty.conf"
+        self.assertIsNone(_backup_once(config))
+        config.write_text("font_size 14\n", encoding="utf-8")
+        backup = _backup_once(config)
+        self.assertIsNotNone(backup)
+        assert backup is not None
+        backup.write_text("original backup\n", encoding="utf-8")
+        self.assertEqual(_backup_once(config), backup)
+        self.assertEqual(backup.read_text(encoding="utf-8"), "original backup\n")
+
+        backup.unlink()
+        with (
+            mock.patch.object(shutil, "copy2", side_effect=OSError("disk full")),
+            self.assertRaisesRegex(InstallError, "cannot back up"),
+        ):
+            _backup_once(config)
+
+    def test_executable_resolution_covers_explicit_path_path_app_and_failure(self) -> None:
+        configured = self.root / "configured-kitty"
+        configured.write_text("binary", encoding="utf-8")
+        configured.chmod(0o755)
+        with mock.patch.dict("os.environ", {"TEST_KITTY": str(configured)}, clear=True):
+            self.assertEqual(_find_executable("TEST_KITTY", "kitty", "/app/kitty"), str(configured))
+
+        with (
+            mock.patch.dict("os.environ", {"TEST_KITTY": "/missing"}, clear=True),
+            self.assertRaisesRegex(InstallError, "is not executable"),
+        ):
+            _find_executable("TEST_KITTY", "kitty", "/app/kitty")
+
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch.object(shutil, "which", return_value="/path/kitty"),
+        ):
+            self.assertEqual(_find_executable("TEST_KITTY", "kitty", "/app/kitty"), "/path/kitty")
+
+        def app_only(path: Path) -> bool:
+            return str(path) == "/app/kitty"
+
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch.object(shutil, "which", return_value=None),
+            mock.patch.object(Path, "is_file", autospec=True, side_effect=app_only),
+            mock.patch.object(os, "access", return_value=True),
+        ):
+            self.assertEqual(_find_executable("TEST_KITTY", "kitty", "/app/kitty"), "/app/kitty")
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch.object(shutil, "which", return_value=None),
+            mock.patch.object(Path, "is_file", return_value=False),
+            self.assertRaisesRegex(InstallError, "kitty was not found"),
+        ):
+            _find_executable("TEST_KITTY", "kitty", "/app/kitty")
+
+    def test_config_probe_translates_every_process_boundary(self) -> None:
+        config = self.root / "kitty" / "kitty.conf"
+        failures = (
+            (
+                subprocess.CompletedProcess([], 2, stdout="", stderr="parser failed"),
+                "parser failed",
+            ),
+            (subprocess.CompletedProcess([], 3, stdout="fallback", stderr=""), "fallback"),
+            (subprocess.CompletedProcess([], 0, stdout="not-json", stderr=""), "unreadable"),
+            (subprocess.CompletedProcess([], 0, stdout='{"bad":"wrong"}', stderr=""), "invalid"),
+        )
+        for result, message in failures:
+            with (
+                self.subTest(message=message),
+                mock.patch.object(subprocess, "run", return_value=result),
+                self.assertRaisesRegex(InstallError, message),
+            ):
+                _probe_config("/kitty", config, "font_size 14\n")
+        with (
+            mock.patch.object(
+                subprocess,
+                "run",
+                side_effect=OSError("spawn failed"),
+            ),
+            self.assertRaisesRegex(InstallError, "cannot validate"),
+        ):
+            _probe_config("/kitty", config, "")
+
+    def test_enable_rejects_final_remote_control_and_socket_state_without_mutation(self) -> None:
+        paths = self.paths()
+        valid = ConfigProbe((), "socket-only", DEFAULT_LISTEN_ON)
+        invalid_finals = (
+            (ConfigProbe((), "no", DEFAULT_LISTEN_ON), "remote control"),
+            (ConfigProbe((), "socket-only", "none"), "listen_on"),
+        )
+        for final, message in invalid_finals:
+            with (
+                self.subTest(message=message),
+                mock.patch("kitty_workbench.installer._validate_source"),
+                mock.patch("kitty_workbench.installer._check_install_target"),
+                mock.patch("kitty_workbench.installer._find_executable", return_value="/binary"),
+                mock.patch("kitty_workbench.installer._ensure_install_link", return_value=False),
+                mock.patch("kitty_workbench.installer._probe_config", side_effect=(valid, final)),
+                self.assertRaisesRegex(InstallError, message),
+            ):
+                _enable(paths)
+        self.assertFalse(paths.kitty_config.exists())
+        self.assertFalse(paths.target.exists())
+
+    def test_purge_guards_scope_unlinks_symlinks_and_reports_already_absent_data(self) -> None:
+        paths = self.paths()
+        with self.assertRaisesRegex(InstallError, "unsafe purge path"):
+            _remove_product_data(self.root / "other", self.root)
+
+        paths.data.parent.mkdir(parents=True)
+        external = self.root / "external-data"
+        external.mkdir()
+        paths.data.symlink_to(external, target_is_directory=True)
+        self.assertTrue(_remove_product_data(paths.data, paths.data.parent))
+        self.assertFalse(paths.data.exists())
+        self.assertTrue(external.exists())
+        self.assertFalse(_remove_product_data(paths.data, paths.data.parent))
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            _uninstall(paths, purge=True)
+        self.assertIn("session data already absent", output.getvalue())
+
+    def test_disable_handles_a_config_removed_between_read_and_backup(self) -> None:
+        paths = self.paths()
+        output = io.StringIO()
+        with (
+            mock.patch(
+                "kitty_workbench.installer._read_config",
+                return_value=f"{INTEGRATION_INCLUDE}\n",
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertTrue(_disable(paths))
+        self.assertNotIn("backup:", output.getvalue())
+        self.assertEqual(paths.kitty_config.read_text(encoding="utf-8"), "")
+
+    def test_main_formats_operating_system_failures_without_a_traceback(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch(
+                "kitty_workbench.installer.parse_arguments",
+                return_value=InstallArguments(),
+            ),
+            mock.patch("kitty_workbench.installer.install_paths", return_value=self.paths()),
+            mock.patch("kitty_workbench.installer._enable", side_effect=OSError("disk failed")),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(main([]), 1)
+        self.assertEqual(stderr.getvalue(), "kitty-workbench installer: disk failed\n")
+
+
+if __name__ == "__main__":
+    unittest.main()

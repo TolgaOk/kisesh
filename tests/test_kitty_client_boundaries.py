@@ -1,0 +1,347 @@
+from __future__ import annotations
+
+import json
+import shutil
+import stat
+import subprocess
+import tempfile
+import unittest
+from collections.abc import Sequence
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from kitty_workbench.domain import KittyOsWindowState
+from kitty_workbench.kitty_client import (
+    KittyClient,
+    KittyError,
+    LiveTab,
+    _find_kitty,
+    _find_socket,
+    _is_socket,
+    _require_snapshot,
+    _run_command,
+)
+from kitty_workbench.model import CAPTURE_VAR, SESSION_ID_VAR, SESSION_SLUG_VAR
+from tests.fakes import RecordingCommandRunner
+
+
+class RaisingRunner:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        input: str | None,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, check, capture_output, text, input, timeout
+        raise self.error
+
+
+class FailAtRunner(RecordingCommandRunner):
+    def __init__(self, fail_at: int) -> None:
+        super().__init__(stderr="capture failed")
+        self.fail_at = fail_at
+
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        input: str | None = None,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        self.returncode = 1 if len(self.commands) == self.fail_at else 0
+        return super().__call__(
+            command,
+            check=check,
+            capture_output=capture_output,
+            text=text,
+            input=input,
+            timeout=timeout,
+        )
+
+
+class KittyClientBoundaryTests(unittest.TestCase):
+    def test_default_runner_and_socketless_command_preserve_stdout_and_stdin(self) -> None:
+        result = _run_command(
+            ["/usr/bin/printf", "%s", "ok"],
+            check=False,
+            capture_output=True,
+            text=True,
+            input=None,
+            timeout=5,
+        )
+        self.assertEqual(result.stdout, "ok")
+
+        runner = RecordingCommandRunner(stdout="done")
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch("kitty_workbench.kitty_client._find_socket", return_value=None),
+        ):
+            client = KittyClient(executable="/kitty", runner=runner)
+        self.assertEqual(client.command("ls", check=False), "done")
+        self.assertEqual(runner.commands, [["/kitty", "@", "ls"]])
+
+    def test_remote_failures_and_invalid_state_are_reported_without_tracebacks(self) -> None:
+        for error in (OSError("spawn failed"), subprocess.TimeoutExpired("kitty", 15)):
+            with (
+                self.subTest(error=type(error).__name__),
+                self.assertRaisesRegex(KittyError, "cannot run Kitty remote command"),
+            ):
+                KittyClient(
+                    executable="/kitty",
+                    socket="unix:/tmp/test",
+                    runner=RaisingRunner(error),
+                ).command("ls")
+
+        for stderr, stdout, expected in (
+            ("permission denied", "", "permission denied"),
+            ("", "remote failure", "remote failure"),
+        ):
+            runner = RecordingCommandRunner(stdout=stdout, stderr=stderr, returncode=2)
+            client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
+            with self.subTest(expected=expected), self.assertRaisesRegex(KittyError, expected):
+                client.command("ls")
+            self.assertEqual(client.command("ls", check=False), stdout)
+
+        for payload, message in (("not-json", "invalid window state"), ("{}", "not a list")):
+            client = KittyClient(
+                executable="/kitty",
+                socket="unix:/tmp/test",
+                runner=RecordingCommandRunner(stdout=payload),
+            )
+            with self.subTest(payload=payload), self.assertRaisesRegex(KittyError, message):
+                client.list_state()
+
+    def test_live_tab_root_and_representative_pane_follow_focus_with_safe_fallbacks(self) -> None:
+        with self.assertRaisesRegex(KittyError, "has no windows"):
+            _ = LiveTab(1, 2, 0, "Empty", "splits", []).representative_window_id
+
+        tab = LiveTab(
+            1,
+            2,
+            0,
+            "Work",
+            "splits",
+            [
+                {"id": 3, "cwd": "/older", "last_focused_at": 1},
+                {
+                    "id": 4,
+                    "is_active": True,
+                    "cwd": "/pane",
+                    "last_focused_at": 2,
+                    "foreground_processes": [{"cwd": ""}],
+                },
+            ],
+        )
+        self.assertEqual(tab.representative_window_id, 4)
+        self.assertEqual(tab.suggested_root(), "/pane")
+        self.assertIsNone(tab.session_id())
+
+        with mock.patch.object(Path, "cwd", return_value=Path("/fallback")):
+            self.assertEqual(
+                LiveTab(1, 2, 0, "No cwd", "splits", [{"id": 5}]).suggested_root(),
+                "/fallback",
+            )
+
+    def test_tab_parsing_drops_empty_ui_tabs_and_supplies_stable_defaults(self) -> None:
+        state: list[KittyOsWindowState] = [
+            {
+                "id": 1,
+                "tabs": [
+                    {
+                        "id": 2,
+                        "windows": [{"id": 3, "user_vars": {"kitty_workbench_ui": "YES"}}],
+                    },
+                    {
+                        "id": 4,
+                        "title": "",
+                        "layout": "",
+                        "windows": [{"id": 5, "user_vars": {"kitty_workbench_ui": "false"}}],
+                    },
+                ],
+            }
+        ]
+        client = KittyClient(executable="/kitty", socket="unix:/tmp/test")
+
+        tabs = client.tabs(state)
+
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0].tab_id, 4)
+        self.assertEqual(tabs[0].title, "untitled")
+        self.assertEqual(tabs[0].layout, "splits")
+
+    def test_focused_tab_reports_empty_and_overlay_only_states_precisely(self) -> None:
+        client = KittyClient(executable="/kitty", socket="unix:/tmp/test")
+        with self.assertRaisesRegex(KittyError, "no OS windows"):
+            client.focused_tab([])
+
+        overlay_only: list[KittyOsWindowState] = [
+            {
+                "id": 1,
+                "tabs": [
+                    {
+                        "id": 2,
+                        "windows": [{"id": 3, "user_vars": {"kitty_workbench_ui": "yes"}}],
+                    }
+                ],
+            }
+        ]
+        with self.assertRaisesRegex(KittyError, "no usable tabs"):
+            client.focused_tab(overlay_only)
+        with self.assertRaisesRegex(KittyError, "outside the manager"):
+            client.focused_tab(overlay_only, exclude_window_id=3)
+
+    def test_session_filter_restamp_focus_and_open_route_exact_remote_commands(self) -> None:
+        session_id = "session-id"
+        state: list[KittyOsWindowState] = [
+            {
+                "id": 1,
+                "tabs": [
+                    {
+                        "id": 2,
+                        "windows": [
+                            {"id": 3, "user_vars": {SESSION_ID_VAR: session_id}},
+                            {"id": 4, "user_vars": {SESSION_ID_VAR: session_id}},
+                        ],
+                    },
+                    {
+                        "id": 5,
+                        "windows": [{"id": 6, "user_vars": {SESSION_ID_VAR: "other"}}],
+                    },
+                ],
+            }
+        ]
+        runner = RecordingCommandRunner(stdout=json.dumps(state))
+        client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
+
+        self.assertEqual([tab.tab_id for tab in client.tabs_for_session(session_id, state)], [2])
+        client.restamp_session(session_id, "renamed")
+        client.focus_tab(2)
+        client.open_snapshot(Path("/tmp/session.kitty-session"))
+
+        set_commands = [command for command in runner.commands if "set-user-vars" in command]
+        self.assertEqual(len(set_commands), 2)
+        self.assertTrue(all(f"{SESSION_SLUG_VAR}=renamed" in command for command in set_commands))
+        self.assertIn("focus-tab", runner.commands[-2])
+        self.assertIn("goto_session", runner.commands[-1])
+
+    def test_capture_operations_validate_files_and_always_clear_temporary_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session_snapshot = root / "session.kitty-session"
+            tab_snapshot = root / "tab.kitty-session"
+            session_snapshot.write_text("new_tab Work\n", encoding="utf-8")
+            tab_snapshot.write_text("new_tab Tab\n", encoding="utf-8")
+            runner = RecordingCommandRunner()
+            client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
+            tab = LiveTab(1, 2, 0, "Work", "splits", [{"id": 3}, {"id": 4}])
+
+            client.capture_session("session-id", session_snapshot)
+            client.capture_tab(tab, tab_snapshot, "capture-id")
+
+            self.assertIn(f"--match=var:{SESSION_ID_VAR}=session-id", runner.commands[0])
+            capture_commands = [
+                command for command in runner.commands if CAPTURE_VAR in " ".join(command)
+            ]
+            self.assertEqual(len(capture_commands), 5)
+            self.assertTrue(
+                any(f"{CAPTURE_VAR}=capture-id" in command for command in capture_commands)
+            )
+            self.assertTrue(
+                any(
+                    CAPTURE_VAR in command and f"{CAPTURE_VAR}=" not in command
+                    for command in capture_commands
+                )
+            )
+
+            for missing in (root / "missing", root / "empty"):
+                if missing.name == "empty":
+                    missing.touch()
+                with (
+                    self.subTest(path=missing),
+                    self.assertRaisesRegex(KittyError, "did not produce"),
+                ):
+                    _require_snapshot(missing, "test")
+
+            failing = FailAtRunner(fail_at=2)
+            failing_client = KittyClient(
+                executable="/kitty",
+                socket="unix:/tmp/test",
+                runner=failing,
+            )
+            with self.assertRaisesRegex(KittyError, "capture failed"):
+                failing_client.capture_tab(tab, root / "never-written", "failed-id")
+            self.assertIn(CAPTURE_VAR, failing.commands[-1][-1])
+            self.assertNotIn(f"{CAPTURE_VAR}=", failing.commands[-1])
+
+    def test_empty_prefill_is_a_noop(self) -> None:
+        runner = RecordingCommandRunner()
+        KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner).send_text(3, "")
+        self.assertEqual(runner.commands, [])
+
+    def test_executable_and_socket_discovery_are_unambiguous(self) -> None:
+        with mock.patch.object(shutil, "which", return_value="/bin/kitty"):
+            self.assertEqual(_find_kitty(), "/bin/kitty")
+
+        def macos_only(path: Path) -> bool:
+            return str(path) == "/Applications/kitty.app/Contents/MacOS/kitty"
+
+        with (
+            mock.patch.object(shutil, "which", return_value=None),
+            mock.patch.object(Path, "exists", autospec=True, side_effect=macos_only),
+        ):
+            self.assertEqual(_find_kitty(), "/Applications/kitty.app/Contents/MacOS/kitty")
+        with (
+            mock.patch.object(shutil, "which", return_value=None),
+            mock.patch.object(Path, "exists", return_value=False),
+            self.assertRaisesRegex(KittyError, "cannot find the Kitty"),
+        ):
+            _find_kitty()
+
+        first = Path("/tmp/mykitty")
+        second = Path("/tmp/mykitty-two")
+        with (
+            mock.patch.object(Path, "glob", return_value=iter([second])),
+            mock.patch.object(Path, "exists", return_value=True),
+            mock.patch("kitty_workbench.kitty_client._is_socket", return_value=True),
+        ):
+            self.assertIsNone(_find_socket())
+        with (
+            mock.patch.object(Path, "glob", return_value=iter([])),
+            mock.patch.object(Path, "exists", return_value=True),
+            mock.patch("kitty_workbench.kitty_client._is_socket", return_value=True),
+        ):
+            self.assertEqual(_find_socket(), f"unix:{first}")
+        with (
+            mock.patch.object(Path, "glob", return_value=iter([second])),
+            mock.patch.object(Path, "exists", side_effect=(OSError("unreadable"), False)),
+            mock.patch("kitty_workbench.kitty_client._is_socket", return_value=True),
+        ):
+            self.assertIsNone(_find_socket())
+
+    def test_socket_probe_distinguishes_unix_sockets_from_regular_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            regular = root / "regular"
+            regular.write_text("text", encoding="utf-8")
+            self.assertFalse(_is_socket(regular))
+            with mock.patch.object(
+                Path,
+                "stat",
+                return_value=SimpleNamespace(st_mode=stat.S_IFSOCK),
+            ):
+                self.assertTrue(_is_socket(root / "socket"))
+
+
+if __name__ == "__main__":
+    unittest.main()
