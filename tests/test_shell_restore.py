@@ -7,6 +7,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -188,6 +189,110 @@ class ShellRestoreTests(unittest.TestCase):
                 else:
                     # Interactive shells can ignore SIGTERM. Kill the isolated
                     # forkpty process group so a failed test cannot leak one.
+                    os.killpg(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                os.close(master)
+
+    @unittest.skipUnless(
+        shutil.which("kitten") and shutil.which("zsh"), "kitten and zsh are required"
+    )
+    def test_approved_app_uses_user_zsh_path_before_prompt(self) -> None:
+        """Run a restored app found only through the user's zsh configuration."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            user_bin = root / "user-bin"
+            user_bin.mkdir()
+            htop = user_bin / "htop"
+            htop.write_text("#!/bin/sh\nprintf '__RESTORED_HTOP__\\n'\n", encoding="utf-8")
+            htop.chmod(0o755)
+
+            store = SessionStore(root / "data")
+            stored = store.create("Homebrew App", "/tmp/project")
+            context = build_context(
+                [
+                    LiveTab(
+                        1,
+                        7,
+                        0,
+                        "htop",
+                        "splits",
+                        [
+                            {
+                                "id": 11,
+                                "cwd": "/tmp/project",
+                                "foreground_processes": [],
+                                "last_reported_cmdline": "htop",
+                                "at_prompt": False,
+                                "in_alternate_screen": True,
+                            }
+                        ],
+                    )
+                ]
+            )
+            store.write_context(stored.manifest.id, context)
+
+            user_zdotdir = root / "user-zsh"
+            user_zdotdir.mkdir()
+            (user_zdotdir / ".zshrc").write_text(
+                "\n".join(
+                    (
+                        f"export PATH={shlex.quote(str(user_bin))}:$PATH",
+                        "PS1='PATH-RESTORED> '",
+                        "RPS1=''",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            empty_path = root / "empty-path"
+            empty_path.mkdir()
+            command = [
+                sys.executable,
+                str(PROJECT / "workbench.py"),
+                "--data-dir",
+                str(store.root),
+                "restore-shell",
+                stored.manifest.id,
+                "--tab-index",
+                "0",
+                "--pane-index",
+                "0",
+            ]
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HOME": str(root),
+                    "SHELL": shutil.which("zsh") or "/bin/zsh",
+                    "TERM": "xterm-kitty",
+                    "PATH": str(empty_path),
+                    "ZDOTDIR": str(user_zdotdir),
+                    "KITTY_WORKBENCH_KITTEN": shutil.which("kitten") or "kitten",
+                }
+            )
+            pid, master = pty.fork()
+            if pid == 0:  # pragma: no cover - assertions run in the parent
+                os.execvpe(command[0], command, environment)
+
+            try:
+                startup = _read_until(master, b"PATH-RESTORED> ", timeout=12)
+                self.assertIn(b"__RESTORED_HTOP__", startup)
+                self.assertLess(
+                    startup.index(b"__RESTORED_HTOP__"),
+                    startup.index(b"PATH-RESTORED> "),
+                )
+                self.assertNotIn(b"executable file not found", startup)
+                self.assertNotIn(b"command not found", startup)
+            finally:
+                with suppress(OSError):
+                    os.write(master, b"\x03exit\r")
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    waited, _ = os.waitpid(pid, os.WNOHANG)
+                    if waited == pid:
+                        break
+                    time.sleep(0.05)
+                else:
                     os.killpg(pid, signal.SIGKILL)
                     os.waitpid(pid, 0)
                 os.close(master)

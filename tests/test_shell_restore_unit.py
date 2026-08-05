@@ -206,6 +206,14 @@ class ShellRestoreUnitTests(unittest.TestCase):
             0,
             {**environment, "SHELL": "/bin/fish"},
         )
+        fish_with_app = shell_restore.shell_launch_command(
+            self.stored,
+            self.context(["top"]),
+            0,
+            0,
+            {**environment, "SHELL": "/bin/fish"},
+            ["top"],
+        )
         malformed = shell_restore.shell_launch_command(
             self.stored,
             self.context(["pwd"]),
@@ -219,6 +227,10 @@ class ShellRestoreUnitTests(unittest.TestCase):
         self.assertIn("--env=KITTY_WORKBENCH_RESTORING_SHELL=1", zsh)
         self.assertEqual(empty_zsh, [str(kitten), "run-shell", "--shell=/bin/zsh -l"])
         self.assertEqual(fish, [str(kitten), "run-shell", "--shell=/bin/fish"])
+        self.assertEqual(
+            fish_with_app,
+            [str(kitten), "run-shell", "--shell=/bin/fish", "--", "top"],
+        )
         self.assertEqual(malformed, [str(kitten), "run-shell", "--shell='"])
 
     def test_approved_app_runs_before_a_history_backed_restored_shell(self) -> None:
@@ -261,10 +273,13 @@ class ShellRestoreUnitTests(unittest.TestCase):
             ["top"],
         )
 
-        self.assertEqual(command[-2:], ["--", "top"])
+        self.assertNotIn("--", command)
         self.assertTrue(any(item.startswith("--env=ZDOTDIR=") for item in command))
         state = self.stored.directory / "shell-state" / "tab-0000-pane-0000"
         self.assertEqual((state / "history").read_text(encoding="utf-8"), "top\n")
+        zshrc = (state / ".zshrc").read_text(encoding="utf-8")
+        self.assertGreater(zshrc.index("command top"), zshrc.index("builtin source"))
+        self.assertGreater(zshrc.index("command top"), zshrc.index("builtin fc -R"))
 
     def test_restored_shell_prints_scrollback_then_executes_normal_shell(self) -> None:
         scenarios = (
