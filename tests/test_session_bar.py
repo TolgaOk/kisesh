@@ -13,7 +13,7 @@ from unittest import mock
 
 from kitty_workbench import session_bar
 from kitty_workbench.model import AGENT_VAR, SESSION_ID_VAR, SESSION_NAME_VAR, SESSION_SLUG_VAR
-from kitty_workbench.session_bar import SessionBarTab, render_tab_label
+from kitty_workbench.session_bar import SessionBarBoss, SessionBarTab, render_tab_label
 
 PROJECT = Path(__file__).parents[1]
 
@@ -90,6 +90,35 @@ class RecordingDrawer:
             )
         )
         return 41
+
+
+class Cache:
+    def __init__(self) -> None:
+        self.clears = 0
+
+    def clear_cached(self) -> None:
+        self.clears += 1
+
+
+class Manager:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def mark_tab_bar_dirty(self) -> None:
+        self.events.append("dirty")
+
+    def update_tab_bar_data(self) -> None:
+        self.events.append("update")
+
+
+class ReloadBoss:
+    def __init__(self, managers: list[Manager]) -> None:
+        self.all_tab_managers = managers
+        self.refreshes = 0
+
+    def refresh_active_tab_bar(self) -> bool:
+        self.refreshes += 1
+        return True
 
 
 def _fixture_tabs() -> list[SessionBarTab]:
@@ -288,6 +317,27 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
         session_bar._drawer = None
 
+    def test_reload_clears_every_kitty_cache_and_repaints_each_native_bar(self) -> None:
+        caches = [Cache(), Cache()]
+        module = SimpleNamespace(
+            load_custom_draw_tab=caches[0],
+            load_custom_draw_tab_module=caches[1],
+        )
+        managers = [Manager(), Manager()]
+        boss = ReloadBoss(managers)
+        session_bar._drawer = RecordingDrawer()
+
+        with mock.patch(
+            "kitty_workbench.session_bar.importlib.import_module",
+            return_value=module,
+        ):
+            session_bar.reload_session_bar(cast(SessionBarBoss, boss))
+
+        self.assertEqual([cache.clears for cache in caches], [1, 1])
+        self.assertEqual([manager.events for manager in managers], [["dirty", "update"]] * 2)
+        self.assertEqual(boss.refreshes, 1)
+        self.assertIsNone(session_bar._drawer)
+
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_kitty_runtime_loads_the_exact_custom_bar_entrypoint(self) -> None:
         script = (
@@ -297,6 +347,30 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
         result = subprocess.run(
             ["kitty", "+runpy", script, str(PROJECT / "integration" / "tab_bar.py")],
+            cwd=PROJECT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "kitty_workbench.session_bar")
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
+    def test_real_entrypoint_loads_with_pre_feature_model_cached_in_kitty(self) -> None:
+        entrypoint = PROJECT / "integration" / "tab_bar.py"
+        script = (
+            "import runpy,sys; "
+            f"sys.path.insert(0,{str(PROJECT)!r}); "
+            "import kitty_workbench.model as model; "
+            "del model.AGENT_VAR; del model.SESSION_NAME_VAR; "
+            "sys.modules.pop('kitty_workbench.session_bar',None); "
+            "loaded=runpy.run_path(sys.argv[1]); "
+            "print(loaded['draw_tab'].__module__)"
+        )
+        result = subprocess.run(
+            ["kitty", "+runpy", script, str(entrypoint)],
             cwd=PROJECT,
             check=False,
             capture_output=True,

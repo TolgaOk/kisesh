@@ -108,6 +108,28 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "True")
 
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
+    def test_no_ui_tab_bar_reload_kitten_loads_inside_kitty_runtime(self) -> None:
+        project = Path(__file__).parents[1]
+        script = project / "integration/reload_tab_bar.py"
+        expression = (
+            "from kittens.runner import import_kitten_main_module; "
+            f"loaded = import_kitten_main_module('', {str(script)!r}); "
+            "print(callable(loaded['end']))"
+        )
+
+        result = subprocess.run(
+            [shutil.which("kitty") or "kitty", "+runpy", expression],
+            cwd=project,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "True")
+
     def test_panel_launcher_builds_cold_and_prewarmed_toggle_commands(self) -> None:
         project = Path(__file__).parents[1]
         launcher = project / "bin/kitty-workbench-panel"

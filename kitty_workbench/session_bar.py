@@ -11,12 +11,14 @@ from itertools import accumulate
 from pathlib import Path
 from typing import Protocol, cast
 
-from .model import AGENT_VAR, SESSION_ID_VAR, SESSION_NAME_VAR, SESSION_SLUG_VAR
-
 SESSION_ICON = ""
 TAB_ICON = "󰓩"
 UNATTACHED_ICON = "○"
 ELLIPSIS = "…"
+SESSION_ID_VAR = "kitty_workbench_session"
+SESSION_SLUG_VAR = "kitty_workbench_slug"
+SESSION_NAME_VAR = "kitty_workbench_name"
+AGENT_VAR = "kitty_workbench_agent"
 
 _AGENT_LABELS = {"claude": "✻ Claude", "codex": "◇ Codex"}
 _AGENT_SYMBOLS = {"claude": "✻", "codex": "◇"}
@@ -42,6 +44,32 @@ class _TabDatum(Protocol):
     @property
     def tab_id(self) -> int:
         """Return the native tab identifier."""
+
+
+class SessionBarCache(Protocol):
+    """Kitty run-once loader whose cached custom renderer can be cleared."""
+
+    def clear_cached(self) -> None:
+        """Forget the previously loaded custom renderer."""
+
+
+class SessionBarManager(Protocol):
+    """Native tab manager operations needed for an immediate redraw."""
+
+    def mark_tab_bar_dirty(self) -> None:
+        """Request a native tab-bar repaint."""
+
+    def update_tab_bar_data(self) -> None:
+        """Rebuild native tab-bar data with the refreshed renderer."""
+
+
+class SessionBarBoss(Protocol):
+    """Native Kitty controller operations used by the one-shot reloader."""
+
+    all_tab_managers: Iterable[SessionBarManager]
+
+    def refresh_active_tab_bar(self) -> bool:
+        """Refresh the focused operating-system window's native bar."""
 
 
 TabDrawer = Callable[[object, object, object, object, int, int, bool, object], int]
@@ -255,6 +283,23 @@ def _kitty_drawer() -> TabDrawer:
         module = importlib.import_module("kitty.tab_bar")
         _drawer = cast(TabDrawer, module.draw_tab_with_powerline)
     return _drawer
+
+
+def reload_session_bar(boss: SessionBarBoss) -> None:
+    """Clear Kitty's run-once custom-bar cache and redraw every native bar."""
+    global _drawer
+    module = importlib.import_module("kitty.tab_bar")
+    loaders = (
+        cast(SessionBarCache, module.load_custom_draw_tab),
+        cast(SessionBarCache, module.load_custom_draw_tab_module),
+    )
+    for loader in loaders:
+        loader.clear_cached()
+    _drawer = None
+    for manager in boss.all_tab_managers:
+        manager.mark_tab_bar_dirty()
+        manager.update_tab_bar_data()
+    boss.refresh_active_tab_bar()
 
 
 def draw_tab(

@@ -142,6 +142,7 @@ def _validate_source(paths: InstallPaths) -> None:
     required = (
         paths.source / "bin" / "kitty-workbench",
         paths.source / "integration" / "kitty-workbench.conf",
+        paths.source / "integration" / "reload_tab_bar.py",
         paths.source / "integration" / "safe_close.py",
         paths.source / "integration" / "tab_bar.py",
         paths.source / "kitty_workbench" / "close_guard.py",
