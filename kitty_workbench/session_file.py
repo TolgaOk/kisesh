@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import shlex
+from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
@@ -12,7 +14,9 @@ from .model import (
     CAPTURE_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
+    SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
+    WORKBENCH_UI_VAR,
     SessionManifest,
     SnapshotSummary,
     session_marker_name,
@@ -26,6 +30,15 @@ class _OptionPolicy(Enum):
     KEEP_FLAG = auto()
     DROP_VALUE = auto()
     DROP_FLAG = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class _TransientUiLocations:
+    """Transient lines and tab sections that cannot enter a durable snapshot."""
+
+    launch_lines: frozenset[int]
+    contaminated_tabs: frozenset[int]
+    transient_only_tabs: frozenset[int]
 
 
 _OPTION_POLICIES = {
@@ -64,8 +77,10 @@ _MANAGED_VARIABLES = {
     AGENT_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
+    SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
     CAPTURE_VAR,
+    WORKBENCH_UI_VAR,
 }
 
 
@@ -117,6 +132,55 @@ def _parse_launch(line: str) -> list[str]:
     if not tokens or tokens[0] != "launch":
         raise ValueError("expected a Kitty launch line")
     return tokens
+
+
+def _is_workbench_ui_launch(line: str) -> bool:
+    """Identify a serialized transient manager window from its user variable."""
+    tokens = _parse_launch(line)
+    marker: str | None = None
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        assignment = ""
+        if token.startswith("--var="):
+            assignment = token.removeprefix("--var=")
+            index += 1
+        elif token == "--var":
+            assignment = tokens[index + 1] if index + 1 < len(tokens) else ""
+            index += 2
+        else:
+            index += 1
+        name, separator, value = assignment.partition("=")
+        if name == WORKBENCH_UI_VAR:
+            marker = value if separator else ""
+    return marker is not None and marker.casefold() not in {"", "0", "false", "no"}
+
+
+def _transient_ui_locations(lines: Sequence[str]) -> _TransientUiLocations:
+    """Locate transient launch lines and the tab layouts contaminated by them."""
+    launch_lines: set[int] = set()
+    launch_counts: dict[int, int] = {}
+    transient_counts: dict[int, int] = {}
+    tab_index = -1
+    for line_index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if stripped.startswith("new_tab"):
+            tab_index += 1
+            continue
+        if not stripped.startswith("launch"):
+            continue
+        launch_counts[tab_index] = launch_counts.get(tab_index, 0) + 1
+        if _is_workbench_ui_launch(stripped):
+            launch_lines.add(line_index)
+            transient_counts[tab_index] = transient_counts.get(tab_index, 0) + 1
+    contaminated_tabs = frozenset(transient_counts)
+    return _TransientUiLocations(
+        launch_lines=frozenset(launch_lines),
+        contaminated_tabs=contaminated_tabs,
+        transient_only_tabs=frozenset(
+            index for index in contaminated_tabs if transient_counts[index] == launch_counts[index]
+        ),
+    )
 
 
 def sanitize_launch_line(
@@ -187,16 +251,26 @@ def sanitize_session(
     stamp_ownership: bool = True,
 ) -> str:
     """Normalize generated or legacy grammar into a safe multi-tab snapshot."""
+    lines = text.splitlines()
+    transient = _transient_ui_locations(lines)
     output: list[str] = []
     saw_tab = False
     saw_launch = False
-    for raw_line in text.splitlines():
+    tab_index = -1
+    for line_index, raw_line in enumerate(lines):
         stripped = raw_line.strip()
-        if _is_os_window_directive(stripped):
-            continue
         if stripped.startswith("new_tab"):
+            tab_index += 1
+            if tab_index in transient.transient_only_tabs:
+                continue
             saw_tab = True
             output.append(raw_line)
+            continue
+        if tab_index in transient.transient_only_tabs or _is_os_window_directive(stripped):
+            continue
+        if line_index in transient.launch_lines:
+            continue
+        if stripped.startswith("set_layout_state") and tab_index in transient.contaminated_tabs:
             continue
         if stripped.startswith("launch"):
             if not saw_tab:

@@ -57,6 +57,9 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(all("--location=" not in line for line in manager_mappings))
         self.assertTrue(all("--bias=" not in line for line in manager_mappings))
         self.assertTrue(all("--var=kitty_workbench_ui=yes" in line for line in manager_mappings))
+        self.assertTrue(
+            all("--env=KITTY_WORKBENCH_CALLER=overlay" in line for line in manager_mappings)
+        )
         self.assertTrue(all("bin/kitty-workbench manager" in line for line in manager_mappings))
 
         toggle_mappings = [

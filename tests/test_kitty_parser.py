@@ -113,6 +113,48 @@ print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
         self.assertEqual(json.loads(result.stdout), {"os_windows": 1, "tabs": 2, "panes": [1, 1]})
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
+    def test_transient_manager_is_absent_from_real_restored_layout(self) -> None:
+        manifest = SessionManifest(
+            name="Overlay Scenario",
+            slug="overlay-scenario",
+            project_root="/tmp/project",
+        )
+        safe = sanitize_session(
+            "new_tab Shell\n"
+            "layout stack\n"
+            'set_layout_state {"pairs":{"one":1,"two":2}}\n'
+            "launch 'kitty-unserialize-data={\"id\":1}' --var=kitty_workbench_scope=4\n"
+            "launch 'kitty-unserialize-data={\"id\":2}' "
+            "--var=kitty_workbench_ui=yes --title=Workbench\n"
+            "new_tab Workbench\n"
+            "layout splits\n"
+            "launch 'kitty-unserialize-data={\"id\":3}' "
+            "--var=kitty_workbench_ui=yes --title=Workbench\n",
+            manifest,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot = Path(temporary) / "without-overlay.kitty-session"
+            snapshot.write_text(safe, encoding="utf-8")
+            result = subprocess.run(
+                [
+                    shutil.which("kitty") or "kitty",
+                    "+runpy",
+                    PARSE_SESSION_PROGRAM,
+                    str(snapshot),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+        self.assertNotIn("kitty_workbench_ui", safe)
+        self.assertNotIn("kitty_workbench_scope", safe)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"os_windows": 1, "tabs": 1, "panes": [1]})
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_opt_in_integration_is_accepted_by_installed_kitty(self) -> None:
         integration = Path(__file__).parents[1] / "integration" / "kitty-workbench.conf"
         program = (

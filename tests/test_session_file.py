@@ -8,11 +8,14 @@ from pathlib import Path
 from kitty_workbench.model import (
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
+    SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
+    WORKBENCH_UI_VAR,
     SessionManifest,
 )
 from kitty_workbench.session_file import (
     _cd_working_directory,
+    _is_workbench_ui_launch,
     _launch_working_directories,
     _parse_launch,
     _sanitize_blob,
@@ -105,6 +108,45 @@ class SessionFileTests(unittest.TestCase):
             stamp_ownership=False,
         )
         self.assertEqual(safe, "new_tab Scratch\nlaunch\n")
+
+    def test_transient_manager_is_removed_without_inflating_snapshot_panes(self) -> None:
+        raw = (
+            "new_tab Shell\n"
+            "layout stack\n"
+            'set_layout_state {"pairs":{"one":1,"two":2}}\n'
+            f"launch 'kitty-unserialize-data={{\"id\":1}}' "
+            f"--var={SESSION_SCOPE_VAR}=7\n"
+            f"launch 'kitty-unserialize-data={{\"id\":2}}' "
+            f"--var={WORKBENCH_UI_VAR}=yes --title=Workbench\n"
+            "focus\n"
+            "new_tab Editor\n"
+            "layout splits\n"
+            'set_layout_state {"pairs":{"one":3}}\n'
+            f"launch 'kitty-unserialize-data={{\"id\":3}}' "
+            f"--var {WORKBENCH_UI_VAR}=no --var={SESSION_SCOPE_VAR}=7\n"
+            "new_tab Workbench\n"
+            "layout splits\n"
+            f"launch 'kitty-unserialize-data={{\"id\":4}}' "
+            f"--var={WORKBENCH_UI_VAR}=yes --title=Workbench\n"
+            "focus_tab\n"
+        )
+
+        safe = sanitize_session(raw, self.manifest)
+
+        self.assertNotIn(WORKBENCH_UI_VAR, safe)
+        self.assertNotIn(SESSION_SCOPE_VAR, safe)
+        self.assertNotIn('{"id":2}', safe)
+        self.assertIn('{"id":1}', safe)
+        self.assertIn('{"id":3}', safe)
+        self.assertNotIn('{"id":4}', safe)
+        self.assertNotIn("new_tab Workbench", safe)
+        self.assertEqual(safe.count("set_layout_state"), 1)
+        summary = snapshot_summary(safe)
+        self.assertEqual(summary.tab_count, 2)
+        self.assertEqual(summary.pane_count, 2)
+        self.assertEqual(sanitize_session(safe, self.manifest), safe)
+        self.assertTrue(_is_workbench_ui_launch("launch --var kitty_workbench_ui=YES"))
+        self.assertFalse(_is_workbench_ui_launch("launch --var=kitty_workbench_ui=false"))
 
     def test_missing_structure_gets_a_shell_tab(self) -> None:
         self.manifest.name = "Workbench Session"

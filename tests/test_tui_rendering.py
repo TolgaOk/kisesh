@@ -5,6 +5,7 @@ import unittest
 from collections.abc import Iterable
 from pathlib import Path
 
+from kitty_workbench.domain import KittyWindow
 from kitty_workbench.service import UnownedTabsAction, UnownedTabsDecision
 from kitty_workbench.store import StoredSession
 from kitty_workbench.tui import SessionManager
@@ -165,6 +166,35 @@ class TuiRenderingTests(unittest.TestCase):
         attention_row = next(index for index, line in enumerate(lines) if "top !" in line)
         attention_x = lines[attention_row].index("top")
         self.assertEqual(screen.styles[attention_row][attention_x], palette.warning)
+
+    def test_stacked_windows_are_not_described_as_simultaneously_visible_panes(self) -> None:
+        service = StaticService()
+        stack = service._rows[0].live_tabs[-1]
+        windows: list[KittyWindow] = [
+            {
+                "id": 100 + index,
+                "title": "zsh",
+                "foreground_processes": [{"cmdline": ["-zsh"]}],
+                "is_active": index == 7,
+                "is_focused": index == 7,
+            }
+            for index in range(8)
+        ]
+        stack.windows = windows
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 0
+        manager.palette = rendered_manager()[2]
+        screen = Canvas(18, 100)
+
+        manager._draw(screen)
+        rendered = screen.render()
+
+        self.assertIn("└─ monitor · 1 visible + 7 stacked · stack", rendered)
+        lines = rendered.splitlines()
+        monitor_row = next(index for index, line in enumerate(lines) if "└─ monitor" in line)
+        self.assertEqual(lines[monitor_row + 1].count("zsh"), 8)
+        self.assertNotIn("monitor · 8 panes", rendered)
 
     def test_preview_follows_vim_selection_without_expanding_other_sessions(self) -> None:
         manager = SessionManager(StaticService())

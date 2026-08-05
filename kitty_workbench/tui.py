@@ -583,9 +583,12 @@ class SessionManager:
         if entry.line == "tab":
             pane_count = len(tab.panes)
             pane_label = "pane" if pane_count == 1 else "panes"
-            metadata = (
-                " · snapshot" if not tab.details_available else f" · {pane_count} {pane_label}"
-            )
+            if not tab.details_available:
+                metadata = " · snapshot"
+            elif tab.layout.partition(":")[0].casefold() == "stack" and pane_count > 1:
+                metadata = f" · 1 visible + {pane_count - 1} stacked"
+            else:
+                metadata = f" · {pane_count} {pane_label}"
             if tab.layout:
                 metadata += f" · {tab.layout}"
             if tab.focused:
