@@ -49,7 +49,7 @@ comma-separated pane row. Configured icons such as `✻ Claude`, `󰋙 Codex`, a
 ` Vim` appear there. Each native top-bar tab shows only its focused pane's icon
 and name. `•` marks the focused pane,
 and `↻` marks restorable or prefilled state. ` Session   󰋙 Codex` keeps
-session identity inactive and separate; `󰌸 Unattached` marks tabs with no owner.
+session identity inactive and separate. Unattached tabs show only pane identity.
 
 If the current window contains unowned tabs, opening a session asks whether to
 attach them, edit a random unused name and save them separately, discard them

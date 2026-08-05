@@ -250,7 +250,7 @@ class SessionBarRenderingTests(unittest.TestCase):
         self.assertIn(" Research Work", render_tab_label(first, None, 60))
         self.assertNotIn("Research Work", render_tab_label(second, first, 60))
         self.assertIn(" Operations", render_tab_label(other, second, 60))
-        self.assertIn("󰌸 Unattached", render_tab_label(unattached, other, 60))
+        self.assertEqual(render_tab_label(unattached, other, 60), " notes")
         self.assertNotIn("Unattached", render_tab_label(next_unattached, unattached, 60))
         self.assertIn("shell", render_tab_label(first, None, 14))
         self.assertEqual(render_tab_label(first, None, 1), "…")
@@ -544,7 +544,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         self.assertEqual(first_call[3], 17)
         self.assertEqual(first_call[4:], (60, 2, True, extra))
 
-    def test_adapter_marks_groups_unattached_tabs_and_metadata_failures_safely(self) -> None:
+    def test_adapter_marks_groups_hides_unattached_identity_and_fails_safely(self) -> None:
         tracked = Datum("Editor", 1)
         unowned = Datum("Scratch", 2)
         missing = Datum("Original", 3)
@@ -565,7 +565,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             session_bar.draw_tab(object(), object(), missing, 38, 60, 3, True, ExtraData(unowned))
 
         self.assertIn(" fallback-name", cast(Datum, drawer.calls[0][2]).title)
-        self.assertIn("󰌸 Unattached", cast(Datum, drawer.calls[1][2]).title)
+        self.assertEqual(cast(Datum, drawer.calls[1][2]).title, " Shell")
         self.assertIs(drawer.calls[2][2], missing)
 
     def test_unstable_cached_apis_and_lazy_kitty_boundaries_fail_open(self) -> None:

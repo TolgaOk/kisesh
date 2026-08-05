@@ -14,7 +14,6 @@ from typing import Protocol, cast
 from .app_profiles import current_app_profiles
 
 SESSION_ICON = ""
-UNATTACHED_ICON = "󰌸"
 ELLIPSIS = "…"
 TAB_START_CAP = ""
 SESSION_ID_VAR = "kitty_workbench_session"
@@ -197,13 +196,13 @@ def _pane_descriptor(tab: SessionBarTab) -> tuple[str, str]:
 
 def _starts_group(tab: SessionBarTab, previous: SessionBarTab | None) -> bool:
     """Return whether a tab begins a new contiguous session group."""
-    return previous is None or previous.session_id != tab.session_id
+    return tab.session_id is not None and (
+        previous is None or previous.session_id != tab.session_id
+    )
 
 
 def _session_descriptor(tab: SessionBarTab) -> tuple[str, str]:
     """Return the icon and sanitized name for a tab's session boundary."""
-    if tab.session_id is None:
-        return UNATTACHED_ICON, "Unattached"
     return SESSION_ICON, _clean(tab.session_name, "Session")
 
 
