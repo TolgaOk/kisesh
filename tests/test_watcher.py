@@ -658,6 +658,61 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(captured_window["id"], 99)
         self.assertNotIn("env", captured_window)
 
+    def test_closing_nonfinal_tab_schedules_snapshot_of_remaining_session_tabs(self) -> None:
+        """Follow the close capture with one debounced full save for tab removal."""
+        closing = Window(90, history="closing history\n")
+        remaining = Window(91, history="remaining history\n")
+        foreign = Window(92, session_id="other-session")
+        boss = Boss([[closing], [remaining], [foreign]])
+        process = mock.MagicMock()
+        process.wait.return_value = 0
+
+        with (
+            mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer),
+            mock.patch.object(
+                watcher,
+                "_launch_autosave",
+                return_value=process,
+            ) as launch,
+        ):
+            watcher.on_close(boss, closing, {})
+            self.assertEqual(len(FakeTimer.instances), 1)
+            self.assertIs(watcher._timers["session-id"], FakeTimer.instances[0])
+            FakeTimer.instances[0].fire()
+
+        self.assertEqual(launch.call_count, 2)
+        immediate = launch.call_args_list[0]
+        delayed = launch.call_args_list[1]
+        self.assertEqual(immediate.args[0], "session-id")
+        immediate_payload = cast(dict[str, object], immediate.args[2])
+        closing_payload = cast(dict[str, object], immediate_payload["closing_pane"])
+        self.assertEqual(closing_payload["tab_index"], 0)
+        self.assertEqual(delayed.args[0], "session-id")
+        self.assertEqual(delayed.args[2], {"command_events": []})
+
+    def test_close_resave_requires_a_known_distinct_remaining_tab(self) -> None:
+        """Avoid futile full saves for final, missing, or unavailable tab state."""
+        closing = Window(90)
+        same_tab = Window(91)
+        foreign = Window(92, session_id="other-session")
+
+        self.assertFalse(watcher._has_other_session_tab(closing, None, "session-id"))
+        self.assertFalse(watcher._has_other_session_tab(closing, BrokenBoss(), "session-id"))
+        self.assertFalse(
+            watcher._has_other_session_tab(
+                Window(404),
+                Boss([[closing], [same_tab]]),
+                "session-id",
+            )
+        )
+        self.assertFalse(
+            watcher._has_other_session_tab(
+                closing,
+                Boss([[closing, same_tab], [foreign]]),
+                "session-id",
+            )
+        )
+
     def test_shell_close_requests_ansi_scrollback_for_styled_prompts(self) -> None:
         """Capture Spaceship prompt colors from a normal shell's main screen."""
         history = "\x1b[38;2;245;130;65m ~/dotfiles \x1b[0m ls\n"

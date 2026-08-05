@@ -195,6 +195,52 @@ class ServiceTests(unittest.TestCase):
             ["Fresh Start"],
         )
 
+    def test_autosave_after_cmd_w_removes_closed_tab_from_snapshot_and_context(self) -> None:
+        closing = self.kitty.tab
+        closing.title = "Temporary"
+        remaining = LiveTab(
+            1,
+            9,
+            1,
+            "Keep",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/keep", "user_vars": {}}],
+            is_focused=True,
+            is_active=True,
+        )
+        self.kitty.extra_tabs.append(remaining)
+        self.kitty.capture_session_text = (
+            "new_tab Temporary\nlaunch --cwd=/tmp/project\nnew_tab Keep\nlaunch --cwd=/tmp/keep\n"
+        )
+        self.kitty.terminal_histories = {
+            11: "temporary history\n",
+            13: "keep history\n",
+        }
+        stored = self.service.create_from_unowned(
+            "Two Tabs",
+            UnownedTabsDecision(UnownedTabsAction.ATTACH),
+        )
+
+        self.kitty.include_tab = False
+        self.kitty.current_tab = remaining
+        self.kitty.capture_session_text = "new_tab Keep\nlaunch --cwd=/tmp/keep\n"
+        saved = self.service.save(stored.manifest.id)
+        context = self.store.read_context(stored.manifest.id)
+
+        self.assertEqual(saved.manifest.summary.tab_count, 1)
+        self.assertEqual(saved.manifest.summary.tab_titles, ["Keep"])
+        self.assertNotIn("Temporary", saved.snapshot_path.read_text(encoding="utf-8"))
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(len(context["tabs"]), 1)
+        self.assertEqual(context["tabs"][0]["title"], "Keep")
+        self.assertEqual(context["tabs"][0]["panes"][0]["window_id"], 13)
+        self.assertEqual(
+            context["tabs"][0]["panes"][0]["terminal_history"],
+            "keep history\n",
+        )
+        self.assertNotIn("temporary history", str(context))
+
     def test_save_records_completed_history_and_restores_live_agent_context(self) -> None:
         self.kitty.window.update(
             {

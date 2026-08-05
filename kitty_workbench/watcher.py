@@ -393,6 +393,33 @@ def _session_location(
     )
 
 
+def _has_other_session_tab(
+    window: WatcherWindow,
+    boss: WatcherBoss | None,
+    session_id: str,
+) -> bool:
+    """Report whether the closing pane's session owns another Kitty tab."""
+    if boss is None:
+        return False
+    try:
+        tabs = [list(tab) for tab in boss.match_tabs("all")]
+    except Exception:
+        return False
+    closing_tab = next(
+        (tab for tab in tabs if any(sibling.id == window.id for sibling in tab)),
+        None,
+    )
+    if closing_tab is None:
+        return False
+    return any(
+        tab is not closing_tab
+        and any(
+            _string_mapping(sibling.user_vars).get(SESSION_ID_VAR) == session_id for sibling in tab
+        )
+        for tab in tabs
+    )
+
+
 _WINDOW_STATE_KEYS = (
     "id",
     "title",
@@ -498,7 +525,7 @@ def on_focus_change(boss: WatcherBoss, window: WatcherWindow, data: WatcherData)
 
 
 def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
-    """Persist pane text synchronously before Kitty destroys its screen buffer."""
+    """Persist closing text, then resave layouts that retain other session tabs."""
     session_id = _session_id(window, data, boss)
     if not session_id:
         return
@@ -513,6 +540,8 @@ def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> Non
         _window_environment(window),
         {"closing_pane": capture},
     )
+    if _has_other_session_tab(window, boss, session_id):
+        _schedule(window, boss=boss)
 
 
 def on_set_user_var(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
