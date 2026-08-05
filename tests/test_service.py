@@ -4,16 +4,24 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from kitty_workbench.domain import ClosingPaneCapture, CommandEvent, KittyWindow, SessionContext
 from kitty_workbench.kitty_client import LiveTab
 from kitty_workbench.model import (
     SESSION_ID_VAR,
+    SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
 )
-from kitty_workbench.service import UnownedTabsAction, WorkbenchError, WorkbenchService
+from kitty_workbench.service import (
+    UnownedTabsAction,
+    UnownedTabsDecision,
+    UnownedTabsInfo,
+    WorkbenchError,
+    WorkbenchService,
+)
 from kitty_workbench.session_file import sanitize_session, snapshot_summary
-from kitty_workbench.store import SessionNotFound, SessionStore
+from kitty_workbench.store import SessionConflict, SessionNotFound, SessionStore
 from tests.fakes import FakeKitty
 
 UNSAFE_CAPTURE = (
@@ -458,7 +466,11 @@ class ServiceTests(unittest.TestCase):
         self.kitty.stamp_tab(target_tab, target.manifest)
         self.kitty.extra_tabs.extend((target_tab, scratch_tab))
 
-        self.assertEqual(self.service.unowned_tab_count(), 2)
+        with mock.patch("kitty_workbench.service.secrets.randbelow", return_value=0):
+            self.assertEqual(
+                self.service.unowned_tabs_info(),
+                UnownedTabsInfo(2, "Amber Badger"),
+            )
         with self.assertRaisesRegex(WorkbenchError, "2 unowned tab"):
             self.service.open(target.manifest.id)
 
@@ -466,7 +478,10 @@ class ServiceTests(unittest.TestCase):
         self.assertIsNone(scratch_tab.session_id())
         self.assertEqual(self.kitty.activated_sessions, [])
 
-        opened = self.service.open(target.manifest.id, UnownedTabsAction.ATTACH)
+        opened = self.service.open(
+            target.manifest.id,
+            UnownedTabsDecision(UnownedTabsAction.ATTACH),
+        )
 
         self.assertEqual(opened.manifest.id, target.manifest.id)
         self.assertEqual(self.kitty.tab.session_id(), target.manifest.id)
@@ -477,7 +492,97 @@ class ServiceTests(unittest.TestCase):
             (target.manifest.id, self.kitty.tab.tab_id),
         )
 
-    def test_open_can_save_unowned_tabs_as_an_auto_session_without_mixing(self) -> None:
+    def test_new_native_tab_inherits_its_multi_tab_session_without_a_prompt(self) -> None:
+        stored = self.store.create("Current Project", "/tmp/project")
+        native_name = str(stored.snapshot_path)
+        self.kitty.window["session_name"] = native_name
+        self.kitty.window["last_focused_at"] = 10.0
+        self.kitty.stamp_tab(self.kitty.tab, stored.manifest)
+        new_tab = LiveTab(
+            1,
+            8,
+            1,
+            "New shell",
+            "splits",
+            [
+                {
+                    "id": 12,
+                    "cwd": "/tmp/project",
+                    "session_name": native_name,
+                    "last_focused_at": 20.0,
+                    "user_vars": {},
+                }
+            ],
+            is_focused=True,
+            is_active=True,
+        )
+        self.kitty.extra_tabs.append(new_tab)
+        self.kitty.current_tab = new_tab
+        self.kitty.capture_session_text = (
+            "new_tab Existing\nlaunch --cwd=/tmp/project\n"
+            "new_tab New shell\nlaunch --cwd=/tmp/project\n"
+        )
+
+        self.assertIsNone(self.service.unowned_tabs_info())
+
+        self.assertEqual(new_tab.session_id(), stored.manifest.id)
+        saved = self.store.get(stored.manifest.id)
+        self.assertEqual(saved.manifest.summary.tab_count, 2)
+        self.assertEqual(saved.manifest.summary.pane_count, 2)
+
+    def test_new_tab_in_a_custom_live_session_uses_the_last_scoped_session(self) -> None:
+        older = self.store.create("Older", "/tmp/older")
+        current = self.store.create("Current", "/tmp/current")
+        self.kitty.window["last_focused_at"] = 10.0
+        self.kitty.window.setdefault("user_vars", {})[SESSION_SCOPE_VAR] = "1"
+        self.kitty.stamp_tab(self.kitty.tab, older.manifest)
+        current_tab = LiveTab(
+            1,
+            8,
+            1,
+            "Current",
+            "splits",
+            [
+                {
+                    "id": 12,
+                    "last_focused_at": 20.0,
+                    "user_vars": {SESSION_SCOPE_VAR: "1"},
+                }
+            ],
+        )
+        new_tab = LiveTab(
+            1,
+            9,
+            2,
+            "New shell",
+            "splits",
+            [{"id": 13, "user_vars": {}}],
+            is_focused=True,
+            is_active=True,
+        )
+        self.kitty.stamp_tab(current_tab, current.manifest)
+        self.kitty.extra_tabs.extend((current_tab, new_tab))
+        self.kitty.current_tab = new_tab
+
+        self.assertIsNone(self.service.unowned_tabs_info())
+
+        self.assertEqual(new_tab.session_id(), current.manifest.id)
+        self.assertEqual(self.kitty.tab.session_id(), older.manifest.id)
+
+    def test_random_unowned_name_skips_collisions_and_ignores_owned_tabs(self) -> None:
+        owned = self.store.create("Amber Badger", "/existing")
+        self.store.create("Amber Badger 2", "/another")
+
+        with mock.patch("kitty_workbench.service.secrets.randbelow", return_value=0):
+            self.assertEqual(
+                self.service.unowned_tabs_info(),
+                UnownedTabsInfo(1, "Amber Badger 3"),
+            )
+
+        self.kitty.stamp_tab(self.kitty.tab, owned.manifest)
+        self.assertIsNone(self.service.unowned_tabs_info())
+
+    def test_open_can_name_and_save_unowned_tabs_without_mixing(self) -> None:
         self.kitty.tab.title = "Shell"
         target = self.store.create("Requested Project", "/tmp/requested")
         target_snapshot = sanitize_session(
@@ -511,12 +616,15 @@ class ServiceTests(unittest.TestCase):
 
         opened = self.service.open(
             target.manifest.id,
-            UnownedTabsAction.SAVE_SEPARATELY,
+            UnownedTabsDecision(
+                UnownedTabsAction.SAVE_SEPARATELY,
+                "Focused research",
+            ),
         )
 
         sessions = self.store.list()
         auto = next(session for session in sessions if session.manifest.id != target.manifest.id)
-        self.assertEqual(auto.manifest.name, "project · auto")
+        self.assertEqual(auto.manifest.name, "Focused research")
         self.assertEqual(self.kitty.tab.session_id(), auto.manifest.id)
         self.assertEqual(scratch_tab.session_id(), auto.manifest.id)
         self.assertEqual(
@@ -528,6 +636,88 @@ class ServiceTests(unittest.TestCase):
             self.kitty.activated_sessions[-1],
             (target.manifest.id, restored_tab.tab_id),
         )
+
+    def test_open_can_discard_only_the_confirmed_unowned_tabs_after_activation(self) -> None:
+        target = self.store.create("Live target", "/tmp/target")
+        target_tab = LiveTab(
+            1,
+            8,
+            2,
+            "Target",
+            "splits",
+            [{"id": 12, "cwd": "/tmp/target", "user_vars": {}}],
+        )
+        scratch_tab = LiveTab(
+            1,
+            9,
+            1,
+            "Scratch",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/scratch", "user_vars": {}}],
+        )
+        self.kitty.stamp_tab(target_tab, target.manifest)
+        self.kitty.extra_tabs.extend((scratch_tab, target_tab))
+
+        opened = self.service.open(
+            target.manifest.id,
+            UnownedTabsDecision(UnownedTabsAction.DISCARD),
+        )
+
+        self.assertEqual(opened.manifest.id, target.manifest.id)
+        self.assertEqual(self.kitty.closed_tabs, [self.kitty.tab.tab_id, scratch_tab.tab_id])
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (target.manifest.id, target_tab.tab_id),
+        )
+        self.assertEqual([tab.tab_id for tab in self.kitty.tabs()], [target_tab.tab_id])
+        self.assertEqual(
+            [session.manifest.id for session in self.store.list()], [target.manifest.id]
+        )
+
+    def test_unowned_decision_validation_and_failed_open_never_discard_tabs(self) -> None:
+        target = self.store.create("Broken target", "/tmp/target")
+        snapshot = sanitize_session("new_tab Broken\nlaunch\n", target.manifest)
+        self.store.write_snapshot(
+            target.manifest.id,
+            snapshot,
+            snapshot_summary(snapshot),
+        )
+
+        with self.assertRaisesRegex(WorkbenchError, "only save-separately accepts"):
+            self.service.open(
+                target.manifest.id,
+                UnownedTabsDecision(UnownedTabsAction.ATTACH, "invalid"),
+            )
+        with self.assertRaisesRegex(WorkbenchError, "name cannot be empty"):
+            self.service.open(
+                target.manifest.id,
+                UnownedTabsDecision(UnownedTabsAction.SAVE_SEPARATELY, " "),
+            )
+        with self.assertRaisesRegex(SessionConflict, "session name already exists"):
+            self.service.open(
+                target.manifest.id,
+                UnownedTabsDecision(
+                    UnownedTabsAction.SAVE_SEPARATELY,
+                    "broken TARGET!",
+                ),
+            )
+        with (
+            mock.patch.object(
+                self.service,
+                "_open_inactive_snapshot",
+                side_effect=WorkbenchError("restore failed"),
+            ),
+            self.assertRaisesRegex(WorkbenchError, "restore failed"),
+        ):
+            self.service.open(
+                target.manifest.id,
+                UnownedTabsDecision(UnownedTabsAction.DISCARD),
+            )
+
+        self.assertEqual(self.kitty.closed_tabs, [])
+        self.assertTrue(self.kitty.include_tab)
+        self.assertIsNone(self.kitty.tab.session_id())
+        self.assertEqual([stored.manifest.id for stored in self.store.list()], [target.manifest.id])
 
     def test_add_tab_joins_an_already_live_multi_tab_session(self) -> None:
         target = self.store.create("Live Project", "/tmp/project")

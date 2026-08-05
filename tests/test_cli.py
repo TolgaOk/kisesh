@@ -55,6 +55,7 @@ from kitty_workbench.model import SessionManifest
 from kitty_workbench.service import (
     SessionView,
     UnownedTabsAction,
+    UnownedTabsDecision,
     WorkbenchError,
     WorkbenchService,
 )
@@ -119,6 +120,17 @@ class CliTests(unittest.TestCase):
         after = parse_arguments(["add-tab", "project", "--data-dir", "/tmp/workbench"])
         remove_alias = parse_arguments(["trash", "project"])
         attach = parse_arguments(["open", "project", "--unowned-tabs", "attach"])
+        named = parse_arguments(
+            [
+                "open",
+                "project",
+                "--unowned-tabs",
+                "save-separately",
+                "--unowned-name",
+                "Named scratch",
+            ]
+        )
+        discard = parse_arguments(["open", "project", "--unowned-tabs", "discard"])
 
         self.assertIsInstance(before.command, AddTab)
         self.assertEqual(before.socket, "unix:/tmp/kitty")
@@ -128,6 +140,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             cast(OpenSession, attach.command).unowned_tabs,
             UnownedTabsAction.ATTACH,
+        )
+        self.assertEqual(cast(OpenSession, named.command).unowned_name, "Named scratch")
+        self.assertEqual(
+            cast(OpenSession, discard.command).unowned_tabs,
+            UnownedTabsAction.DISCARD,
         )
 
     def test_only_live_operations_construct_an_eager_kitty_client(self) -> None:
@@ -216,9 +233,19 @@ class CliTests(unittest.TestCase):
             (CloseSession("project"), "save_and_close", ("project",)),
             (OpenSession("project"), "open", ("project", None)),
             (
-                OpenSession("project", UnownedTabsAction.SAVE_SEPARATELY),
+                OpenSession(
+                    "project",
+                    UnownedTabsAction.SAVE_SEPARATELY,
+                    "Named scratch",
+                ),
                 "open",
-                ("project", UnownedTabsAction.SAVE_SEPARATELY),
+                (
+                    "project",
+                    UnownedTabsDecision(
+                        UnownedTabsAction.SAVE_SEPARATELY,
+                        "Named scratch",
+                    ),
+                ),
             ),
         )
         for command, method_name, arguments in cases:
@@ -230,6 +257,13 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(_run_membership(command, service), 0)
             operation.assert_called_once_with(*arguments)
             self.assertEqual(output.getvalue(), "project\n")
+
+        service, _ = _service_mock(stored)
+        with self.assertRaisesRegex(
+            WorkbenchError,
+            "--unowned-name requires --unowned-tabs save-separately",
+        ):
+            _run_membership(OpenSession("project", None, "invalid"), service)
 
     def test_lifecycle_commands_route_and_print_stable_results(self) -> None:
         """Route all stored-session and reversible-tab lifecycle operations."""

@@ -173,6 +173,9 @@ class TuiBoundaryTests(unittest.TestCase):
         value.extend("ab")
         self.assertTrue(_edit_prompt_value(value, curses.KEY_BACKSPACE))
         self.assertEqual(value, ["a"])
+        self.assertTrue(_edit_prompt_value(value, "\x15"))
+        self.assertEqual(value, [])
+        self.assertFalse(_edit_prompt_value(value, "\x15"))
         self.assertFalse(_edit_prompt_value(value, curses.KEY_LEFT))
 
     def test_palette_path_time_and_panel_help_fallbacks_remain_theme_aware(self) -> None:

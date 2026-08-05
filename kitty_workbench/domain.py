@@ -23,6 +23,7 @@ class KittyWindow(TypedDict, total=False):
     id: Required[int]
     title: str
     cwd: str
+    session_name: str
     user_vars: dict[str, str]
     foreground_processes: list[KittyProcess]
     env: dict[str, str]

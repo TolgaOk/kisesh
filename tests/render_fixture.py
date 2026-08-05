@@ -15,7 +15,7 @@ from kitty_workbench.domain import (
 )
 from kitty_workbench.kitty_client import LiveTab
 from kitty_workbench.model import SessionManifest, SessionStatus, SnapshotSummary, slugify
-from kitty_workbench.service import SessionView, UnownedTabsAction
+from kitty_workbench.service import SessionView, UnownedTabsDecision, UnownedTabsInfo
 from kitty_workbench.store import StoredSession
 from kitty_workbench.tui import CursesGlyph, Palette, SessionManager
 
@@ -116,6 +116,7 @@ class StaticService:
         """Start with the representative live, saved, and archived fixtures."""
         self._rows = sample_views()
         self.unowned_count = 0
+        self.unowned_suggested_name = "Amber Badger"
 
     def views(self) -> list[SessionView]:
         """Return an isolated list of current rows."""
@@ -147,17 +148,19 @@ class StaticService:
         stored.manifest.status = "active"
         return stored
 
-    def unowned_tab_count(self) -> int:
-        """Return the configured number of tabs outside a session."""
-        return self.unowned_count
+    def unowned_tabs_info(self) -> UnownedTabsInfo | None:
+        """Return configured source-tab count and editable name suggestion."""
+        if not self.unowned_count:
+            return None
+        return UnownedTabsInfo(self.unowned_count, self.unowned_suggested_name)
 
     def open(
         self,
         slug_or_id: str,
-        unowned_action: UnownedTabsAction | None = None,
+        unowned_decision: UnownedTabsDecision | None = None,
     ) -> StoredSession:
         """Resolve the session that would be focused or restored."""
-        del unowned_action
+        del unowned_decision
         return self._stored(slug_or_id)
 
     def add_current_tab(self, slug_or_id: str) -> StoredSession:

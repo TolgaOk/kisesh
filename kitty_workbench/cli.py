@@ -15,7 +15,12 @@ from .domain import ClosingPaneCapture, CommandEvent, JsonObject, KittyWindow
 from .kitty_client import KittyClient, KittyError
 from .panel import PanelError, hide_quick_access_panel, is_panel_process
 from .paths import data_root
-from .service import UnownedTabsAction, WorkbenchError, WorkbenchService
+from .service import (
+    UnownedTabsAction,
+    UnownedTabsDecision,
+    WorkbenchError,
+    WorkbenchService,
+)
 from .shell_restore import run_restored_shell
 from .store import SessionStore, StoreError
 from .tui import SessionManager
@@ -131,7 +136,10 @@ class OpenSession:
     """Session name, slug, or identifier."""
 
     unowned_tabs: OptionalUnownedTabsAction = None
-    """Attach or preserve unowned source tabs before opening."""
+    """Attach, preserve, or discard unowned source tabs before opening."""
+
+    unowned_name: str | None = None
+    """Separate-session name used with save-separately."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,7 +354,16 @@ def _run_membership(command: MembershipCommand, service: WorkbenchService) -> in
     elif isinstance(command, CloseSession):
         stored = service.save_and_close(command.session)
     else:
-        stored = service.open(command.session, command.unowned_tabs)
+        if command.unowned_name is not None and (
+            command.unowned_tabs is not UnownedTabsAction.SAVE_SEPARATELY
+        ):
+            raise WorkbenchError("--unowned-name requires --unowned-tabs save-separately")
+        decision = (
+            UnownedTabsDecision(command.unowned_tabs, command.unowned_name)
+            if command.unowned_tabs is not None
+            else None
+        )
+        stored = service.open(command.session, decision)
     print(stored.manifest.slug)
     return 0
 

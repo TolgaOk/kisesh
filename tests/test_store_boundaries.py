@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from kitty_workbench.context import build_context
 from kitty_workbench.kitty_client import LiveTab
@@ -44,10 +43,7 @@ class StoreBoundaryTests(unittest.TestCase):
         self.store.ensure()
         collision = self.store.sessions_dir / "raced"
         collision.mkdir()
-        with (
-            mock.patch.object(self.store, "unique_slug", return_value="raced"),
-            self.assertRaisesRegex(SessionConflict, "directory already exists"),
-        ):
+        with self.assertRaisesRegex(SessionConflict, "directory already exists"):
             self.store.create("Raced", "/tmp")
 
     def test_snapshot_and_context_history_are_bounded_after_real_changes(self) -> None:

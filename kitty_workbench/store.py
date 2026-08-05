@@ -155,16 +155,6 @@ class SessionStore:
             for stored in self.list(include_archived=True)
         )
 
-    def unique_slug(self, name: str) -> str:
-        """Generate the first available slug for a display name."""
-        base = slugify(name)
-        candidate = base
-        suffix = 2
-        while not self.slug_available(candidate):
-            candidate = f"{base}-{suffix}"
-            suffix += 1
-        return candidate
-
     def create(
         self,
         name: str,
@@ -173,12 +163,14 @@ class SessionStore:
         session_id: str | None = None,
         now: str | None = None,
     ) -> StoredSession:
-        """Create an empty active session with a unique slug and stable UUID."""
+        """Create an empty active session with a unique name and stable UUID."""
         clean_name = name.strip()
         if not clean_name:
             raise ValueError("session name cannot be empty")
         with self.locked():
-            slug = self.unique_slug(clean_name)
+            slug = slugify(clean_name)
+            if not self.slug_available(slug):
+                raise SessionConflict(f"session name already exists: {clean_name}")
             timestamp = now or utc_now()
             manifest = SessionManifest(
                 name=clean_name,

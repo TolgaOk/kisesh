@@ -29,3 +29,14 @@
   usable with a text fallback when decorative glyphs are unavailable.
 - [x] Cover live and saved context, multi-tab and multi-agent sessions, empty tabs,
   long names, narrow rendering, and selection changes with reviewed render tests.
+
+## Unowned tabs during switching
+
+- [x] Offer an editable random unused name before saving unowned tabs separately.
+- [x] Reject duplicate names across active and archived sessions.
+- [x] Make newly opened Kitty-session tabs inherit ownership and autosave without
+  showing the unrelated-tab choice.
+- [x] Offer discard only behind explicit confirmation and close exact tab IDs only
+  after the target session opens successfully.
+- [x] Keep attach and cancel unchanged, and cover blank names, declined discard,
+  failed restore, failed save, CLI routing, and modal rendering.

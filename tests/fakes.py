@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 from kitty_workbench.domain import KittyOsWindowState, KittyWindow
 from kitty_workbench.kitty_client import LiveTab
 from kitty_workbench.model import (
     SESSION_ID_VAR,
+    SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
     SessionManifest,
 )
@@ -81,6 +82,7 @@ class FakeKitty:
         self.focused: list[int] = []
         self.activated_sessions: list[tuple[str, int]] = []
         self.closed_sessions: list[str] = []
+        self.closed_tabs: list[int] = []
         self.include_tab = True
         self.extra_tabs: list[LiveTab] = []
         self.current_tab = self.tab
@@ -202,6 +204,17 @@ class FakeKitty:
     def close_session_tabs(self, session_id: str) -> None:
         """Remove all matching fake tabs while recording the close boundary."""
         self.closed_sessions.append(session_id)
+        for tab in self.tabs():
+            for window in tab.windows:
+                window.setdefault("user_vars", {}).pop(SESSION_SCOPE_VAR, None)
         if self.tab.session_id() == session_id:
             self.include_tab = False
         self.extra_tabs = [tab for tab in self.extra_tabs if tab.session_id() != session_id]
+
+    def close_tabs(self, tab_ids: Iterable[int]) -> None:
+        """Remove exactly identified fake tabs and retain every other tab."""
+        identifiers = set(tab_ids)
+        self.closed_tabs.extend(tab.tab_id for tab in self.tabs() if tab.tab_id in identifiers)
+        if self.tab.tab_id in identifiers:
+            self.include_tab = False
+        self.extra_tabs = [tab for tab in self.extra_tabs if tab.tab_id not in identifiers]

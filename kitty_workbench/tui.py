@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from .preview import PanePreview, TabPreview, build_session_preview, is_shell_program
-from .service import SessionView, UnownedTabsAction
+from .service import (
+    SessionView,
+    UnownedTabsAction,
+    UnownedTabsDecision,
+    UnownedTabsInfo,
+)
 from .store import StoredSession
 
 ESCAPE_DELAY_MS = 25
@@ -80,13 +85,13 @@ class SessionOperations(Protocol):
     def unarchive(self, slug_or_id: str) -> StoredSession:
         """Return an archived session to the active list."""
 
-    def unowned_tab_count(self) -> int:
-        """Count source tabs requiring an explicit opening policy."""
+    def unowned_tabs_info(self) -> UnownedTabsInfo | None:
+        """Describe source tabs requiring an explicit opening policy."""
 
     def open(
         self,
         slug_or_id: str,
-        unowned_action: UnownedTabsAction | None = None,
+        unowned_decision: UnownedTabsDecision | None = None,
     ) -> StoredSession:
         """Focus or restore a session."""
 
@@ -817,18 +822,18 @@ class SessionManager:
 
     def _open_selected(self, screen: Screen, current: SessionView) -> int | None:
         """Resolve unowned tabs before focusing or restoring a selected row."""
-        unowned_action: UnownedTabsAction | None = None
-        count = self.service.unowned_tab_count()
-        if count:
-            unowned_action = self._choose_unowned_tabs(
+        unowned_decision: UnownedTabsDecision | None = None
+        unowned = self.service.unowned_tabs_info()
+        if unowned is not None:
+            unowned_decision = self._choose_unowned_tabs(
                 screen,
-                count,
+                unowned,
                 current.stored.manifest.name,
             )
-            if unowned_action is None:
+            if unowned_decision is None:
                 self.message = "open cancelled; tabs unchanged"
                 return None
-        self.service.open(current.stored.manifest.id, unowned_action)
+        self.service.open(current.stored.manifest.id, unowned_decision)
         if self.on_dismiss is None:
             return self._dismiss()
         self._refresh()
@@ -837,21 +842,22 @@ class SessionManager:
     def _choose_unowned_tabs(
         self,
         screen: Screen,
-        count: int,
+        unowned: UnownedTabsInfo,
         target_name: str,
-    ) -> UnownedTabsAction | None:
-        """Render and read the attach, preserve, or cancel opening decision."""
+    ) -> UnownedTabsDecision | None:
+        """Read attach, named-save, confirmed-discard, or cancel for source tabs."""
         height, width = screen.getmaxyx()
         box_width = max(4, min(72, width - 2))
-        box_height = min(6, height)
+        box_height = min(7, height)
         top = max(0, (height - box_height) // 2)
         left = max(0, (width - box_width) // 2)
         bottom = top + box_height - 1
         inner_width = max(0, box_width - 4)
         lines = (
-            ("", f"Unowned tabs · {count}", self.palette.accent | curses.A_BOLD),
+            ("", f"Unowned tabs · {unowned.count}", self.palette.accent | curses.A_BOLD),
             ("a", f"attach to {target_name}", self.palette.normal),
-            ("s", "save separately, then open", self.palette.normal),
+            ("s", "name + save separately", self.palette.normal),
+            ("d", "discard tabs without saving", self.palette.warning),
             ("q / Esc", "cancel; change nothing", self.palette.muted),
         )
 
@@ -886,9 +892,22 @@ class SessionManager:
         while True:
             pressed = screen.get_wch()
             if pressed in ("a", "A"):
-                return UnownedTabsAction.ATTACH
+                return UnownedTabsDecision(UnownedTabsAction.ATTACH)
             if pressed in ("s", "S"):
-                return UnownedTabsAction.SAVE_SEPARATELY
+                name = self._prompt(
+                    screen,
+                    "save tabs as · C-u clears",
+                    unowned.suggested_name,
+                )
+                return (
+                    UnownedTabsDecision(UnownedTabsAction.SAVE_SEPARATELY, name) if name else None
+                )
+            if pressed in ("d", "D"):
+                confirmed = self._confirm(
+                    screen,
+                    f"close {unowned.count} unowned tab(s) without saving?",
+                )
+                return UnownedTabsDecision(UnownedTabsAction.DISCARD) if confirmed else None
             if pressed in ("q", "Q", "\x1b"):
                 return None
 
@@ -989,7 +1008,11 @@ class SessionManager:
 
 
 def _edit_prompt_value(value: list[str], key: object) -> bool:
-    """Apply one backspace or printable key and report whether text changed."""
+    """Apply line clearing, backspace, or printable input and report a change."""
+    if key == "\x15":
+        changed = bool(value)
+        value.clear()
+        return changed
     if key in ("\b", "\x7f", curses.KEY_BACKSPACE):
         if not value:
             return False

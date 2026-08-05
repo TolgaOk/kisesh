@@ -8,11 +8,13 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 SESSION_ID_VAR = "kitty_workbench_session"
 SESSION_SLUG_VAR = "kitty_workbench_slug"
+SESSION_SCOPE_VAR = "kitty_workbench_scope"
 WORKBENCH_UI_VAR = "kitty_workbench_ui"
 DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
@@ -79,15 +81,36 @@ class WatcherWindow(Protocol):
 
 
 class WatcherBoss(Protocol):
-    """Subset of Kitty's Boss API used to find sibling panes."""
+    """Subset of Kitty's Boss API used for identity and internal remote control."""
 
     def match_tabs(self, expression: str) -> Iterable[Iterable[WatcherWindow]]:
         """Return tabs matching a Kitty remote-control expression."""
+
+    def call_remote_control(
+        self,
+        window: WatcherWindow,
+        command: tuple[str, ...],
+    ) -> object:
+        """Execute a remote-control command inside Kitty's process."""
 
 
 WatcherData = Mapping[str, object]
 CommandPayload = dict[str, object]
 AutosavePayload = dict[str, object]
+
+
+@dataclass(slots=True, frozen=True)
+class WindowIdentity:
+    """Ownership and focus metadata for one pane observed by the watcher."""
+
+    window: WatcherWindow
+    session_id: str | None
+    session_slug: str | None
+    session_scope: str | None
+    native_session_name: str | None
+    last_focused_at: float
+    workbench_ui: bool
+
 
 _timers: dict[str, threading.Timer] = {}
 _timer_generations: dict[str, int] = {}
@@ -114,6 +137,101 @@ def _window_environment(window: WatcherWindow) -> dict[str, str]:
         environment.update(_string_mapping(window.child.environ))
         environment.update(_string_mapping(window.child.foreground_environ))
     return environment
+
+
+def _window_identity(window: WatcherWindow) -> WindowIdentity:
+    """Normalize the unstable Kitty window object for inheritance decisions."""
+    try:
+        state = window.as_dict()
+    except Exception:
+        state = {}
+    variables = _string_mapping(window.user_vars)
+    native_name = state.get("session_name")
+    focused_at = state.get("last_focused_at")
+    return WindowIdentity(
+        window=window,
+        session_id=variables.get(SESSION_ID_VAR),
+        session_slug=variables.get(SESSION_SLUG_VAR),
+        session_scope=variables.get(SESSION_SCOPE_VAR),
+        native_session_name=(
+            native_name.strip() if isinstance(native_name, str) and native_name.strip() else None
+        ),
+        last_focused_at=(
+            float(focused_at)
+            if isinstance(focused_at, (int, float)) and not isinstance(focused_at, bool)
+            else 0.0
+        ),
+        workbench_ui=bool(variables.get(WORKBENCH_UI_VAR)),
+    )
+
+
+def _tab_inheritance(
+    window_id: int,
+    boss: WatcherBoss,
+) -> tuple[WindowIdentity, tuple[int, ...]] | None:
+    """Select one unambiguous native-session owner and unstamped target tab."""
+    try:
+        tabs = [
+            [_window_identity(candidate) for candidate in tab]
+            for tab in boss.match_tabs("state:focused_os_window")
+        ]
+    except Exception:
+        return None
+    source_tab = next(
+        (tab for tab in tabs if any(identity.window.id == window_id for identity in tab)),
+        None,
+    )
+    if source_tab is None:
+        return None
+    source = next(identity for identity in source_tab if identity.window.id == window_id)
+    if source.workbench_ui or source.session_id is not None:
+        return None
+    sibling_owners = [identity for identity in source_tab if identity.session_id is not None]
+    owners = sibling_owners
+    if not owners and source.native_session_name is not None:
+        owners = [
+            identity
+            for tab in tabs
+            for identity in tab
+            if identity.session_id is not None
+            and identity.native_session_name == source.native_session_name
+        ]
+    owner_ids = {identity.session_id for identity in owners}
+    if len(owner_ids) != 1:
+        return None
+    owner = max(owners, key=lambda identity: identity.last_focused_at)
+    if owner.session_id is None or owner.session_slug is None or owner.session_scope is None:
+        return None
+    targets = tuple(
+        identity.window.id
+        for identity in source_tab
+        if identity.session_id is None and not identity.workbench_ui
+    )
+    return (owner, targets) if targets else None
+
+
+def _inherit_tab_ownership(boss: WatcherBoss, window: WatcherWindow) -> str | None:
+    """Stamp a new native-session tab without launching an external process."""
+    inheritance = _tab_inheritance(window.id, boss)
+    if inheritance is None:
+        return None
+    owner, window_ids = inheritance
+    match = " or ".join(f"id:{window_id}" for window_id in window_ids)
+    try:
+        boss.call_remote_control(
+            window,
+            (
+                "set-user-vars",
+                "--match",
+                match,
+                f"{SESSION_ID_VAR}={owner.session_id}",
+                f"{SESSION_SLUG_VAR}={owner.session_slug}",
+                f"{SESSION_SCOPE_VAR}={owner.session_scope}",
+            ),
+        )
+    except Exception:
+        return None
+    return owner.session_id
 
 
 def _sibling_session_id(window_id: int, boss: WatcherBoss | None) -> str | None:
@@ -450,5 +568,11 @@ def on_cmd_startstop(boss: WatcherBoss, window: WatcherWindow, data: WatcherData
 
 
 def on_tab_bar_dirty(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
-    """Schedule a snapshot after tabs are created, moved, or retitled."""
-    _schedule(window, data, boss)
+    """Inherit new native-session tabs before scheduling their snapshot."""
+    inherited_session_id = _inherit_tab_ownership(boss, window)
+    inheritance_event = (
+        {"key": SESSION_ID_VAR, "value": inherited_session_id}
+        if inherited_session_id is not None
+        else data
+    )
+    _schedule(window, inheritance_event, boss)

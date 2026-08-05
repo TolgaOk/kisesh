@@ -292,8 +292,16 @@ class KittyClientBoundaryTests(unittest.TestCase):
 
         client.close_session_tabs(session_id)
 
-        self.assertEqual(runner.commands[-2][-1], "tab_bar_filter=all")
+        self.assertEqual(runner.commands[-4][-1], "tab_bar_filter=all")
+        self.assertEqual(runner.commands[-3][-1], "ls")
+        self.assertEqual(runner.commands[-2][-3:], ["--match", "id:9", SESSION_SCOPE_VAR])
         self.assertEqual(runner.commands[-1][-1], f"var:{SESSION_ID_VAR}={session_id}")
+
+        client.close_tabs([5, 5, 8])
+        self.assertEqual(runner.commands[-1][-2:], ["--match", "id:5 or id:8"])
+        command_count = len(runner.commands)
+        client.close_tabs([])
+        self.assertEqual(len(runner.commands), command_count)
 
     def test_session_close_never_kills_tabs_when_revealing_them_fails(self) -> None:
         runner = FailAtRunner(fail_at=0)

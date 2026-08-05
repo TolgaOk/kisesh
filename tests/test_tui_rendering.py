@@ -5,7 +5,7 @@ import unittest
 from collections.abc import Iterable
 from pathlib import Path
 
-from kitty_workbench.service import UnownedTabsAction
+from kitty_workbench.service import UnownedTabsAction, UnownedTabsDecision
 from kitty_workbench.store import StoredSession
 from kitty_workbench.tui import SessionManager
 from tests.render_fixture import Canvas, StaticService, rendered_manager
@@ -18,7 +18,7 @@ class RecordingService(StaticService):
         """Initialize deterministic rows and action ledgers."""
         super().__init__()
         self.opened: list[str] = []
-        self.open_actions: list[UnownedTabsAction | None] = []
+        self.open_decisions: list[UnownedTabsDecision | None] = []
         self.timeline: list[str] = []
         self.closed: list[str] = []
         self.unarchived: list[str] = []
@@ -30,11 +30,11 @@ class RecordingService(StaticService):
     def open(
         self,
         slug_or_id: str,
-        unowned_action: UnownedTabsAction | None = None,
+        unowned_decision: UnownedTabsDecision | None = None,
     ) -> StoredSession:
         """Record and resolve a focus or restore request."""
         self.opened.append(slug_or_id)
-        self.open_actions.append(unowned_action)
+        self.open_decisions.append(unowned_decision)
         self.timeline.append("open")
         return self._stored(slug_or_id)
 
@@ -341,44 +341,152 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertEqual(hidden, [])
         self.assertEqual(service.timeline, ["open"])
 
-    def test_unowned_tab_modal_is_complete_and_routes_attach_or_preserve(self) -> None:
-        for key, expected in (
-            ("A", UnownedTabsAction.ATTACH),
-            ("s", UnownedTabsAction.SAVE_SEPARATELY),
-        ):
+    def test_unowned_tab_modal_is_complete_and_routes_attach(self) -> None:
+        service = RecordingService()
+        service.unowned_count = 2
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 1
+        manager.palette = rendered_manager()[2]
+        screen = ScriptedCanvas(16, 100, ["ignored", "A"])
+        selected = manager.filtered[manager.selected]
+
+        self.assertEqual(manager._handle_key(screen, " "), 0)
+        self.assertEqual(service.opened, [selected.stored.manifest.id])
+        self.assertEqual(
+            service.open_decisions,
+            [UnownedTabsDecision(UnownedTabsAction.ATTACH)],
+        )
+        top = 4
+        left = 14
+        width = 72
+        bottom = top + 6
+        self.assertEqual(
+            "".join(screen.cells[top][left : left + width]),
+            "╭" + "─" * (width - 2) + "╮",
+        )
+        self.assertEqual(
+            "".join(screen.cells[bottom][left : left + width]),
+            "╰" + "─" * (width - 2) + "╯",
+        )
+        for y in range(top + 1, bottom):
+            self.assertEqual(screen.cells[y][left], "│")
+            self.assertEqual(screen.cells[y][left + width - 1], "│")
+        rendered = screen.render()
+        self.assertIn("Unowned tabs · 2", rendered)
+        self.assertIn("attach to Dotfiles", rendered)
+        self.assertIn("name + save separately", rendered)
+        self.assertIn("discard tabs without saving", rendered)
+        self.assertIn("cancel; change nothing", rendered)
+
+    def test_unowned_tab_modal_remains_complete_on_narrow_terminals(self) -> None:
+        for height, width in ((8, 48), (10, 60)):
             service = RecordingService()
             service.unowned_count = 2
             manager = SessionManager(service)
             manager._refresh()
-            manager.selected = 1
             manager.palette = rendered_manager()[2]
-            screen = ScriptedCanvas(16, 100, ["ignored", key])
-            selected = manager.filtered[manager.selected]
+            screen = ScriptedCanvas(height, width, ["q"])
 
-            with self.subTest(key=key):
-                self.assertEqual(manager._handle_key(screen, " "), 0)
-                self.assertEqual(service.opened, [selected.stored.manifest.id])
-                self.assertEqual(service.open_actions, [expected])
-                top = 5
-                left = 14
-                width = 72
-                bottom = top + 5
+            with self.subTest(height=height, width=width):
+                self.assertIsNone(manager._handle_key(screen, "l"))
+                box_width = width - 2
+                top = (height - 7) // 2
+                left = 1
+                bottom = top + 6
                 self.assertEqual(
-                    "".join(screen.cells[top][left : left + width]),
-                    "╭" + "─" * (width - 2) + "╮",
+                    "".join(screen.cells[top][left : left + box_width]),
+                    "╭" + "─" * (box_width - 2) + "╮",
                 )
                 self.assertEqual(
-                    "".join(screen.cells[bottom][left : left + width]),
-                    "╰" + "─" * (width - 2) + "╯",
+                    "".join(screen.cells[bottom][left : left + box_width]),
+                    "╰" + "─" * (box_width - 2) + "╯",
                 )
                 for y in range(top + 1, bottom):
                     self.assertEqual(screen.cells[y][left], "│")
-                    self.assertEqual(screen.cells[y][left + width - 1], "│")
-                rendered = screen.render()
-                self.assertIn("Unowned tabs · 2", rendered)
-                self.assertIn("attach to Dotfiles", rendered)
-                self.assertIn("save separately, then open", rendered)
-                self.assertIn("cancel; change nothing", rendered)
+                    self.assertEqual(screen.cells[y][left + box_width - 1], "│")
+                self.assertIn("discard tabs without saving", screen.render())
+                self.assertEqual(service.opened, [])
+
+    def test_unowned_tabs_can_be_saved_under_an_edited_suggested_name(self) -> None:
+        service = RecordingService()
+        service.unowned_count = 2
+        service.unowned_suggested_name = "Amber Badger"
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 1
+        manager.palette = rendered_manager()[2]
+        screen = ScriptedCanvas(
+            16,
+            100,
+            ["s", "\x15", *list("Research notes"), "\n"],
+        )
+
+        self.assertEqual(manager._handle_key(screen, " "), 0)
+
+        self.assertEqual(
+            service.open_decisions,
+            [
+                UnownedTabsDecision(
+                    UnownedTabsAction.SAVE_SEPARATELY,
+                    "Research notes",
+                )
+            ],
+        )
+        self.assertIn("save tabs as · C-u clears> Research notes", screen.render())
+
+    def test_random_unowned_name_can_be_accepted_unchanged(self) -> None:
+        service = RecordingService()
+        service.unowned_count = 2
+        service.unowned_suggested_name = "Amber Badger"
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.palette = rendered_manager()[2]
+        screen = ScriptedCanvas(16, 100, ["s", "\n"])
+
+        self.assertEqual(manager._handle_key(screen, "l"), 0)
+
+        self.assertEqual(
+            service.open_decisions,
+            [
+                UnownedTabsDecision(
+                    UnownedTabsAction.SAVE_SEPARATELY,
+                    "Amber Badger",
+                )
+            ],
+        )
+        self.assertIn("save tabs as · C-u clears> Amber Badger", screen.render())
+
+    def test_blank_unowned_name_or_declined_discard_cancels_without_changes(self) -> None:
+        for keys in (["s", "\x15", "\n"], ["d", "n"]):
+            service = RecordingService()
+            service.unowned_count = 3
+            manager = SessionManager(service)
+            manager._refresh()
+            manager.palette = rendered_manager()[2]
+            screen = ScriptedCanvas(16, 100, keys)
+
+            with self.subTest(keys=keys):
+                self.assertIsNone(manager._handle_key(screen, "l"))
+                self.assertEqual(service.opened, [])
+                self.assertEqual(service.open_decisions, [])
+                self.assertEqual(manager.message, "open cancelled; tabs unchanged")
+
+    def test_confirmed_discard_is_forwarded_as_an_explicit_switch_decision(self) -> None:
+        service = RecordingService()
+        service.unowned_count = 3
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.palette = rendered_manager()[2]
+        screen = ScriptedCanvas(16, 100, ["d", "y"])
+
+        self.assertEqual(manager._handle_key(screen, "l"), 0)
+
+        self.assertEqual(
+            service.open_decisions,
+            [UnownedTabsDecision(UnownedTabsAction.DISCARD)],
+        )
+        self.assertIn("close 3 unowned tab(s) without saving? [y/N]", screen.render())
 
     def test_canceling_unowned_tab_modal_changes_nothing_and_keeps_manager_open(self) -> None:
         service = RecordingService()
@@ -390,7 +498,7 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertIsNone(manager._handle_key(screen, "l"))
 
         self.assertEqual(service.opened, [])
-        self.assertEqual(service.open_actions, [])
+        self.assertEqual(service.open_decisions, [])
         self.assertEqual(manager.message, "open cancelled; tabs unchanged")
 
     def test_save_close_requires_confirmation_and_turns_live_row_into_saved(self) -> None:

@@ -6,6 +6,7 @@ import json
 import subprocess
 import unittest
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, cast
 from unittest import mock
@@ -61,6 +62,16 @@ class Screen(watcher.WatcherScreen):
         del callback
 
 
+@dataclass(slots=True, frozen=True)
+class WindowMetadata:
+    """Optional ownership metadata exposed by a fake Kitty pane."""
+
+    session_slug: str | None = None
+    session_scope: str | None = None
+    native_session_name: str | None = None
+    last_focused_at: float | None = None
+
+
 class Window(watcher.WatcherWindow):
     """Provide a controllable Kitty window for watcher scenarios."""
 
@@ -73,6 +84,7 @@ class Window(watcher.WatcherWindow):
         output: str = "",
         alternate_screen: bool = False,
         alternate_text: str = "",
+        metadata: WindowMetadata | None = None,
     ) -> None:
         """Initialize identity, terminal text, and close-time metadata."""
         self.id = window_id
@@ -80,6 +92,14 @@ class Window(watcher.WatcherWindow):
         self.user_vars: object = (
             {watcher.SESSION_ID_VAR: session_id} if session_id is not None else {}
         )
+        variables = self.user_vars
+        metadata = metadata or WindowMetadata()
+        if metadata.session_slug is not None:
+            variables[watcher.SESSION_SLUG_VAR] = metadata.session_slug
+        if metadata.session_scope is not None:
+            variables[watcher.SESSION_SCOPE_VAR] = metadata.session_scope
+        self.native_session_name = metadata.native_session_name
+        self.last_focused_at = metadata.last_focused_at
         self.history = history
         self.output = output
         self.alternate_screen = alternate_screen
@@ -89,7 +109,7 @@ class Window(watcher.WatcherWindow):
 
     def as_dict(self) -> Mapping[str, object]:
         """Return the pane state available immediately before destruction."""
-        return {
+        state: dict[str, object] = {
             "id": self.id,
             "title": "Shell",
             "cwd": "/tmp/project",
@@ -99,6 +119,11 @@ class Window(watcher.WatcherWindow):
             "at_prompt": False,
             "in_alternate_screen": self.alternate_screen,
         }
+        if self.native_session_name is not None:
+            state["session_name"] = self.native_session_name
+        if self.last_focused_at is not None:
+            state["last_focused_at"] = self.last_focused_at
+        return state
 
     def as_text(
         self,
@@ -121,21 +146,39 @@ class Window(watcher.WatcherWindow):
 class Boss(watcher.WatcherBoss):
     """Return configured tab membership for watcher identity and location queries."""
 
-    def __init__(self, tabs: Iterable[Iterable[watcher.WatcherWindow]] = ()) -> None:
+    def __init__(
+        self,
+        tabs: Iterable[Iterable[watcher.WatcherWindow]] = (),
+        *,
+        remote_error: bool = False,
+    ) -> None:
         """Copy tabs so repeated Kitty-style matching stays deterministic."""
         self.tabs = [list(tab) for tab in tabs]
         self.expressions: list[str] = []
+        self.remote_calls: list[tuple[int, tuple[str, ...]]] = []
+        self.remote_error = remote_error
 
     def match_tabs(self, expression: str) -> Iterable[Iterable[watcher.WatcherWindow]]:
         """Match all tabs or the tab containing one requested window."""
         self.expressions.append(expression)
-        if expression == "all":
+        if expression in {"all", "state:focused_os_window"}:
             return self.tabs
         prefix = "window_id:"
         if expression.startswith(prefix):
             window_id = int(expression.removeprefix(prefix))
             return [tab for tab in self.tabs if any(window.id == window_id for window in tab)]
         return []
+
+    def call_remote_control(
+        self,
+        window: watcher.WatcherWindow,
+        command: tuple[str, ...],
+    ) -> object:
+        """Record one in-process remote-control inheritance request."""
+        if self.remote_error:
+            raise RuntimeError("remote control unavailable")
+        self.remote_calls.append((window.id, command))
+        return None
 
 
 class BrokenWindow(Window):
@@ -152,6 +195,15 @@ class BrokenBoss(watcher.WatcherBoss):
     def match_tabs(self, expression: str) -> Iterable[Iterable[watcher.WatcherWindow]]:
         """Raise as Kitty may do once its OS window is disappearing."""
         raise RuntimeError(f"state unavailable for {expression}")
+
+    def call_remote_control(
+        self,
+        window: watcher.WatcherWindow,
+        command: tuple[str, ...],
+    ) -> object:
+        """Raise when Kitty can no longer mutate window ownership."""
+        del window, command
+        raise RuntimeError("state unavailable")
 
 
 class FakeTimer:
@@ -223,6 +275,128 @@ class WatcherTests(unittest.TestCase):
         new_pane = Window(3, session_id=None)
         self.assertEqual(
             watcher._session_id(new_pane, boss=Boss([[stamped, new_pane]])), "session-id"
+        )
+
+    def test_new_native_session_tab_is_stamped_before_its_autosave(self) -> None:
+        """Persist a new tab as part of the session it inherited from Kitty."""
+        owner = Window(
+            metadata=WindowMetadata(
+                session_slug="current-project",
+                session_scope="1",
+                native_session_name="/tmp/current.kitty-session",
+                last_focused_at=10.0,
+            )
+        )
+        new_tab = Window(
+            3,
+            session_id=None,
+            metadata=WindowMetadata(
+                native_session_name="/tmp/current.kitty-session",
+                last_focused_at=20.0,
+            ),
+        )
+        boss = Boss([[owner], [new_tab]])
+
+        with mock.patch.object(watcher, "_schedule") as schedule:
+            watcher.on_tab_bar_dirty(boss, new_tab, {"tabs": "changed"})
+
+        self.assertEqual(
+            boss.remote_calls,
+            [
+                (
+                    new_tab.id,
+                    (
+                        "set-user-vars",
+                        "--match",
+                        "id:3",
+                        f"{watcher.SESSION_ID_VAR}=session-id",
+                        f"{watcher.SESSION_SLUG_VAR}=current-project",
+                        f"{watcher.SESSION_SCOPE_VAR}=1",
+                    ),
+                )
+            ],
+        )
+        schedule.assert_called_once_with(
+            new_tab,
+            {"key": watcher.SESSION_ID_VAR, "value": "session-id"},
+            boss,
+        )
+
+    def test_unrelated_native_tab_remains_unowned(self) -> None:
+        """Keep the explicit switch choice for a tab outside the active session."""
+        owner = Window(
+            metadata=WindowMetadata(
+                session_slug="current-project",
+                session_scope="1",
+                native_session_name="/tmp/current.kitty-session",
+            )
+        )
+        unrelated = Window(
+            3,
+            session_id=None,
+            metadata=WindowMetadata(native_session_name="/tmp/other.kitty-session"),
+        )
+        boss = Boss([[owner], [unrelated]])
+        event = {"tabs": "changed"}
+
+        with mock.patch.object(watcher, "_schedule") as schedule:
+            watcher.on_tab_bar_dirty(boss, unrelated, event)
+
+        self.assertEqual(boss.remote_calls, [])
+        schedule.assert_called_once_with(unrelated, event, boss)
+
+    def test_new_split_receives_complete_identity_from_its_tab_sibling(self) -> None:
+        """Stamp every new pane so closing the original cannot orphan its tab."""
+        owner = Window(
+            metadata=WindowMetadata(
+                session_slug="current-project",
+                session_scope="1",
+                last_focused_at=10.0,
+            )
+        )
+        new_pane = Window(3, session_id=None)
+        boss = Boss([[owner, new_pane]])
+
+        self.assertEqual(watcher._inherit_tab_ownership(boss, new_pane), "session-id")
+
+        self.assertEqual(boss.remote_calls[0][1][2], "id:3")
+
+    def test_inheritance_failures_leave_tab_ownership_unchanged(self) -> None:
+        """Decline ambiguous, incomplete, unavailable, and transient UI inheritance."""
+        incomplete = Window()
+        new_pane = Window(3, session_id=None)
+        self.assertIsNone(watcher._tab_inheritance(3, Boss([[incomplete, new_pane]])))
+
+        already_owned = Window(4)
+        self.assertIsNone(watcher._tab_inheritance(4, Boss([[already_owned]])))
+
+        workbench_ui = Window(5, session_id=None)
+        workbench_ui.user_vars = {watcher.WORKBENCH_UI_VAR: "yes"}
+        self.assertIsNone(watcher._tab_inheritance(5, Boss([[workbench_ui]])))
+
+        broken_window = BrokenWindow(6, session_id=None)
+        identity = watcher._window_identity(broken_window)
+        self.assertIsNone(identity.native_session_name)
+        self.assertEqual(identity.last_focused_at, 0.0)
+        self.assertIsNone(watcher._tab_inheritance(6, BrokenBoss()))
+
+        owner = Window(
+            metadata=WindowMetadata(
+                session_slug="current-project",
+                session_scope="1",
+                native_session_name="/tmp/current.kitty-session",
+            )
+        )
+        new_tab = Window(
+            7,
+            session_id=None,
+            metadata=WindowMetadata(native_session_name="/tmp/current.kitty-session"),
+        )
+        self.assertIsNone(
+            watcher._inherit_tab_ownership(
+                Boss([[owner], [new_tab]], remote_error=True),
+                new_tab,
+            )
         )
 
     def test_transient_ui_never_inherits_a_sibling_session_identity(self) -> None:

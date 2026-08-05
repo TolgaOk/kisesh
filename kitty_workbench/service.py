@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
@@ -24,7 +25,7 @@ from .context import (
 from .domain import ClosingPaneCapture, KittyOsWindowState, SessionContext
 from .filesystem import temporary_path
 from .kitty_client import KittyClient, KittyController, KittyError, LiveTab
-from .model import SessionManifest
+from .model import SESSION_SCOPE_VAR, SessionManifest, slugify
 from .session_file import sanitize_session, snapshot_summary
 from .store import SessionStore, StoredSession, StoreError
 
@@ -38,6 +39,23 @@ class UnownedTabsAction(StrEnum):
 
     ATTACH = "attach"
     SAVE_SEPARATELY = "save-separately"
+    DISCARD = "discard"
+
+
+@dataclass(slots=True, frozen=True)
+class UnownedTabsInfo:
+    """Count and editable random name for current unowned tabs."""
+
+    count: int
+    suggested_name: str
+
+
+@dataclass(slots=True, frozen=True)
+class UnownedTabsDecision:
+    """Chosen unowned-tab policy with an optional separate-session name."""
+
+    action: UnownedTabsAction
+    name: str | None = None
 
 
 @dataclass(slots=True)
@@ -57,6 +75,39 @@ class SessionView:
 PaneTextReader = Callable[[int], str | None]
 KittyFactory = Callable[[], KittyController]
 
+_RANDOM_NAME_ADJECTIVES = (
+    "Amber",
+    "Brisk",
+    "Calm",
+    "Cedar",
+    "Cobalt",
+    "Coral",
+    "Daring",
+    "Ember",
+    "Gentle",
+    "Indigo",
+    "Lunar",
+    "Mellow",
+    "Quiet",
+    "Silver",
+    "Swift",
+    "Verdant",
+)
+_RANDOM_NAME_NOUNS = (
+    "Badger",
+    "Falcon",
+    "Heron",
+    "Lynx",
+    "Marten",
+    "Otter",
+    "Panda",
+    "Raven",
+    "Seal",
+    "Sparrow",
+    "Tiger",
+    "Wolf",
+)
+
 
 def _capture_pane_texts(
     tabs: Iterable[LiveTab],
@@ -75,13 +126,57 @@ def _capture_pane_texts(
     return captured
 
 
-def _automatic_session_name(tabs: list[LiveTab]) -> str:
-    """Build a readable, collision-safe base name for preserved unowned tabs."""
-    first = tabs[0]
-    title = first.title.strip()
-    if not title or title.casefold() in {"shell", "untitled", "zsh"}:
-        title = Path(first.suggested_root()).name or "tabs"
-    return f"{title} · auto"
+def _random_session_name(store: SessionStore) -> str:
+    """Build a readable random name that does not collide with a known session."""
+    noun_count = len(_RANDOM_NAME_NOUNS)
+    index = secrets.randbelow(len(_RANDOM_NAME_ADJECTIVES) * noun_count)
+    base = (
+        f"{_RANDOM_NAME_ADJECTIVES[index // noun_count]} {_RANDOM_NAME_NOUNS[index % noun_count]}"
+    )
+    candidate = base
+    suffix = 2
+    while not store.slug_available(slugify(candidate)):
+        candidate = f"{base} {suffix}"
+        suffix += 1
+    return candidate
+
+
+def _last_focused_at(tab: LiveTab) -> float:
+    """Return the newest valid pane-focus timestamp within a tab."""
+    timestamps = [
+        value
+        for window in tab.windows
+        if isinstance((value := window.get("last_focused_at")), (int, float))
+        and not isinstance(value, bool)
+    ]
+    return max(timestamps, default=0.0)
+
+
+def _inherited_session_id(source: LiveTab, tabs: list[LiveTab]) -> str | None:
+    """Infer ownership from Kitty's native session or the active Workbench scope."""
+    owned = [
+        tab
+        for tab in tabs
+        if tab.os_window_id == source.os_window_id and tab.session_id() is not None
+    ]
+    native_name = source.native_session_name()
+    if native_name is not None:
+        native_ids = {
+            session_id
+            for tab in owned
+            if tab.native_session_name() == native_name
+            if (session_id := tab.session_id()) is not None
+        }
+        return next(iter(native_ids)) if len(native_ids) == 1 else None
+    scope = str(source.os_window_id)
+    scoped = [
+        tab
+        for tab in owned
+        if any(
+            window.get("user_vars", {}).get(SESSION_SCOPE_VAR) == scope for window in tab.windows
+        )
+    ]
+    return max(scoped, key=_last_focused_at).session_id() if scoped else None
 
 
 class WorkbenchService:
@@ -181,26 +276,53 @@ class WorkbenchService:
         client: KittyController,
         state: list[KittyOsWindowState],
     ) -> list[LiveTab]:
-        """Return unowned tabs beside the manager's underlying source tab."""
+        """Join inherited tabs, then return genuinely unowned source-window tabs."""
         source = client.focused_tab(
             state,
             exclude_window_id=_environment_window_id(),
         )
         if source.session_id():
             return []
-        return sorted(
+        all_tabs = client.tabs(state)
+        unowned = sorted(
             (
                 tab
-                for tab in client.tabs(state)
+                for tab in all_tabs
                 if tab.os_window_id == source.os_window_id and tab.session_id() is None
             ),
             key=lambda tab: tab.index,
         )
+        session_id = _inherited_session_id(source, all_tabs)
+        if session_id is None:
+            return unowned
+        try:
+            stored = self.store.get(session_id)
+        except StoreError:
+            return unowned
+        native_name = source.native_session_name()
+        inherited = [
+            tab
+            for tab in unowned
+            if native_name is None or tab.native_session_name() == native_name
+        ]
+        try:
+            for tab in inherited:
+                client.stamp_tab(tab, stored.manifest)
+            self.save(stored.manifest.id)
+        except Exception:
+            for tab in inherited:
+                self._rollback_membership(partial(client.clear_tab_session, tab))
+            raise
+        inherited_ids = {tab.tab_id for tab in inherited}
+        return [tab for tab in unowned if tab.tab_id not in inherited_ids]
 
-    def unowned_tab_count(self) -> int:
-        """Count source-window tabs requiring a choice before session opening."""
+    def unowned_tabs_info(self) -> UnownedTabsInfo | None:
+        """Describe source-window tabs requiring a choice before session opening."""
         client = self._kitty()
-        return len(self._source_unowned_tabs(client, client.list_state()))
+        tabs = self._source_unowned_tabs(client, client.list_state())
+        if not tabs:
+            return None
+        return UnownedTabsInfo(len(tabs), _random_session_name(self.store))
 
     def add_current_tab(self, slug_or_id: str) -> StoredSession:
         """Attach the focused source tab to an already live selected session."""
@@ -387,10 +509,37 @@ class WorkbenchService:
         """Return a session's persisted command and terminal context."""
         return self.store.read_context(slug_or_id)
 
+    def _prepare_unowned_tabs(
+        self,
+        tabs: list[LiveTab],
+        decision: UnownedTabsDecision | None,
+    ) -> UnownedTabsAction | None:
+        """Validate a switch decision and persist a separately named source session."""
+        if decision is not None and (
+            decision.action is not UnownedTabsAction.SAVE_SEPARATELY and decision.name is not None
+        ):
+            raise WorkbenchError("only save-separately accepts an unowned session name")
+        if tabs and decision is None:
+            raise WorkbenchError(
+                f"{len(tabs)} unowned tab(s) require attach, save-separately, or discard"
+            )
+        action = decision.action if decision is not None else None
+        if tabs and action is UnownedTabsAction.SAVE_SEPARATELY:
+            requested_name = decision.name if decision is not None else None
+            separate_name = (requested_name or _random_session_name(self.store)).strip()
+            if not separate_name:
+                raise WorkbenchError("the separate session name cannot be empty")
+            self._create_tabs_session(
+                separate_name,
+                tabs[0].suggested_root(),
+                tabs,
+            )
+        return action
+
     def open(
         self,
         slug_or_id: str,
-        unowned_action: UnownedTabsAction | None = None,
+        unowned_decision: UnownedTabsDecision | None = None,
     ) -> StoredSession:
         """Resolve unowned tabs, then focus or restore an isolated session."""
         stored = self.store.get(slug_or_id)
@@ -400,16 +549,8 @@ class WorkbenchService:
         if not live_tabs and not stored.snapshot_path.is_file():
             raise WorkbenchError(f"session has no snapshot: {stored.manifest.name}")
         unowned_tabs = self._source_unowned_tabs(client, state)
-        if unowned_tabs and unowned_action is None:
-            raise WorkbenchError(
-                f"{len(unowned_tabs)} unowned tab(s) require attach or save-separately"
-            )
-        if unowned_tabs and unowned_action is UnownedTabsAction.SAVE_SEPARATELY:
-            self._create_tabs_session(
-                _automatic_session_name(unowned_tabs),
-                unowned_tabs[0].suggested_root(),
-                unowned_tabs,
-            )
+        action = self._prepare_unowned_tabs(unowned_tabs, unowned_decision)
+        if unowned_tabs and action is UnownedTabsAction.SAVE_SEPARATELY:
             state = client.list_state()
             live_tabs = client.tabs_for_session(stored.manifest.id, state)
 
@@ -425,7 +566,7 @@ class WorkbenchService:
                     remap_context_windows(context, live_tabs),
                 )
 
-        if unowned_tabs and unowned_action is UnownedTabsAction.ATTACH:
+        if unowned_tabs and action is UnownedTabsAction.ATTACH:
             if not live_tabs:
                 raise WorkbenchError("opened session did not create any live tabs")
             for tab in unowned_tabs:
@@ -449,6 +590,8 @@ class WorkbenchService:
                 live_tabs[0],
             )
             client.activate_session(stored.manifest.id, active_tab)
+            if unowned_tabs and action is UnownedTabsAction.DISCARD:
+                client.close_tabs(tab.tab_id for tab in unowned_tabs)
         return self.store.mark_used(stored.manifest.id)
 
     def _open_inactive_snapshot(

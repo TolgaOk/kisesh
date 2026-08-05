@@ -9,6 +9,7 @@ from kitty_workbench.domain import SessionContext
 from kitty_workbench.kitty_client import KittyError, LiveTab
 from kitty_workbench.service import (
     UnownedTabsAction,
+    UnownedTabsDecision,
     WorkbenchError,
     WorkbenchService,
     _capture_pane_texts,
@@ -80,6 +81,54 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.kitty.stamp_tab(self.kitty.tab, existing.manifest)
         with self.assertRaisesRegex(WorkbenchError, "already belongs"):
             self.service.create_from_active("Second")
+
+    def test_stale_native_owner_keeps_a_new_tab_explicitly_unowned(self) -> None:
+        stale = self.store.create("Removed", "/tmp")
+        native_name = str(stale.snapshot_path)
+        self.kitty.window["session_name"] = native_name
+        self.kitty.stamp_tab(self.kitty.tab, stale.manifest)
+        self.store.move_to_trash(stale.manifest.id)
+        new_tab = LiveTab(
+            1,
+            8,
+            1,
+            "New shell",
+            "splits",
+            [{"id": 12, "session_name": native_name, "user_vars": {}}],
+        )
+        self.kitty.extra_tabs.append(new_tab)
+        self.kitty.current_tab = new_tab
+
+        unowned = self.service.unowned_tabs_info()
+
+        self.assertIsNotNone(unowned)
+        assert unowned is not None
+        self.assertEqual(unowned.count, 1)
+        self.assertIsNone(new_tab.session_id())
+
+    def test_failed_inherited_tab_save_rolls_back_automatic_membership(self) -> None:
+        stored = self.store.create("Current", "/tmp")
+        native_name = str(stored.snapshot_path)
+        self.kitty.window["session_name"] = native_name
+        self.kitty.stamp_tab(self.kitty.tab, stored.manifest)
+        new_tab = LiveTab(
+            1,
+            8,
+            1,
+            "New shell",
+            "splits",
+            [{"id": 12, "session_name": native_name, "user_vars": {}}],
+        )
+        self.kitty.extra_tabs.append(new_tab)
+        self.kitty.current_tab = new_tab
+
+        with (
+            mock.patch.object(self.service, "save", side_effect=RuntimeError("disk full")),
+            self.assertRaisesRegex(RuntimeError, "disk full"),
+        ):
+            self.service.unowned_tabs_info()
+
+        self.assertIsNone(new_tab.session_id())
 
     def test_add_tab_rejects_archived_and_foreign_membership_and_is_idempotent(self) -> None:
         archived = self.store.archive(self.store.create("Archived", "/tmp").manifest.id)
@@ -250,7 +299,7 @@ class ServiceBoundaryTests(unittest.TestCase):
         ):
             self.service.open(
                 target.manifest.id,
-                UnownedTabsAction.SAVE_SEPARATELY,
+                UnownedTabsDecision(UnownedTabsAction.SAVE_SEPARATELY),
             )
 
         self.assertIsNone(self.kitty.tab.session_id())
@@ -278,7 +327,10 @@ class ServiceBoundaryTests(unittest.TestCase):
             mock.patch.object(self.service, "save", side_effect=StoreError("disk full")),
             self.assertRaisesRegex(StoreError, "disk full"),
         ):
-            self.service.open(target.manifest.id, UnownedTabsAction.ATTACH)
+            self.service.open(
+                target.manifest.id,
+                UnownedTabsDecision(UnownedTabsAction.ATTACH),
+            )
 
         self.assertIsNone(self.kitty.tab.session_id())
         self.assertEqual(target_tab.session_id(), target.manifest.id)
@@ -289,7 +341,10 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.snapshot(target.manifest.id, "Empty Restore")
 
         with self.assertRaisesRegex(WorkbenchError, "did not create any live tabs"):
-            self.service.open(target.manifest.id, UnownedTabsAction.ATTACH)
+            self.service.open(
+                target.manifest.id,
+                UnownedTabsDecision(UnownedTabsAction.ATTACH),
+            )
 
         self.assertIsNone(self.kitty.tab.session_id())
         self.assertEqual(self.kitty.activated_sessions, [])

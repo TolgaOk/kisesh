@@ -88,6 +88,13 @@ class LiveTab:
         """Return the stable Workbench session UUID stamped on this tab."""
         return _first_user_var(self.windows, SESSION_ID_VAR)
 
+    def native_session_name(self) -> str | None:
+        """Return Kitty's native session identity shared by inherited tabs."""
+        return next(
+            (name for window in self.windows if (name := window.get("session_name", "").strip())),
+            None,
+        )
+
     def suggested_root(self) -> str:
         """Infer a project root from the most recently focused live pane."""
         candidates = sorted(
@@ -181,6 +188,9 @@ class KittyController(Protocol):
 
     def close_session_tabs(self, session_id: str) -> None:
         """Reveal remaining tabs, then close every tab in one session."""
+
+    def close_tabs(self, tab_ids: Iterable[int]) -> None:
+        """Close an exact set of tabs without affecting other ownership groups."""
 
     def open_snapshot(self, path: Path) -> None:
         """Load a Kitty session snapshot."""
@@ -471,11 +481,26 @@ class KittyClient:
     def close_session_tabs(self, session_id: str) -> None:
         """Reset tab visibility before closing every tab owned by a session."""
         self.command("load-config", "--override", "tab_bar_filter=all")
+        scoped_windows = [
+            window["id"]
+            for tab in self.tabs()
+            for window in tab.windows
+            if SESSION_SCOPE_VAR in window.get("user_vars", {})
+        ]
+        self.set_user_vars(scoped_windows, {SESSION_SCOPE_VAR: None})
         self.command(
             "close-tab",
             "--match",
             f"var:{SESSION_ID_VAR}={session_id}",
         )
+
+    def close_tabs(self, tab_ids: Iterable[int]) -> None:
+        """Close explicitly identified tabs in one atomic remote request."""
+        unique_ids = tuple(dict.fromkeys(tab_ids))
+        if not unique_ids:
+            return
+        match = " or ".join(f"id:{tab_id}" for tab_id in unique_ids)
+        self.command("close-tab", "--match", match)
 
     def open_snapshot(self, path: Path) -> None:
         """Load a safe snapshot into the current Kitty operating-system window."""

@@ -55,17 +55,27 @@ class StoreTests(unittest.TestCase):
             self.store.create("  ", "/tmp")
         self.assertEqual(self.store.list(), [])
 
-    def test_unique_slugs_and_rename_conflicts(self) -> None:
+    def test_duplicate_names_and_rename_conflicts_are_rejected(self) -> None:
         first = self.store.create("Main Vault", "/vault")
-        second = self.store.create("main vault", "/vault/other")
         self.assertEqual(first.manifest.slug, "main-vault")
-        self.assertEqual(second.manifest.slug, "main-vault-2")
 
+        with self.assertRaisesRegex(SessionConflict, "session name already exists"):
+            self.store.create("main vault", "/vault/other")
+
+        self.store.archive(first.manifest.id)
+        with self.assertRaisesRegex(SessionConflict, "session name already exists"):
+            self.store.create("Main Vault!", "/vault/other")
+
+        second = self.store.create("Other", "/vault/other")
         with self.assertRaises(SessionConflict):
             self.store.rename(second.manifest.id, "Main Vault")
         with self.assertRaisesRegex(ValueError, "cannot be empty"):
             self.store.rename(first.manifest.id, "")
         self.assertEqual(self.store.get(first.manifest.id).manifest.slug, "main-vault")
+        self.assertEqual(
+            [stored.manifest.name for stored in self.store.list()],
+            ["Other", "Main Vault"],
+        )
 
     def test_snapshots_are_versioned_only_when_content_changes(self) -> None:
         stored = self.store.create("Demo", "/demo")

@@ -40,11 +40,15 @@ marks the focused pane, and `↻` marks saved state that can be restored or
 prefilled.
 
 If the current window contains unowned tabs, opening a session asks whether to
-attach them, save them together under an automatic name, or cancel unchanged.
-Use `x` to save all commands, scrollback, layout, and tabs before closing the
-live session. Reopening restores up to 2,000 history entries and scrollback
-lines, the last command output, safe `top` state, and Claude/Codex resume
-commands; unknown commands are left at the prompt without being run.
+attach them, edit a random unused name and save them separately, discard them
+after confirmation, or cancel unchanged. Session names are unique across the
+active and archived lists. A tab opened with Kitty's `new_tab_with_cwd` while a
+session is active joins and autosaves with that session, so this choice appears
+only for unrelated tabs. Use `x` to save all commands, scrollback, layout, and
+tabs before closing the live session. Reopening restores up to 2,000 history
+entries and scrollback lines, the last command output, safe `top` state, and
+Claude/Codex resume commands; unknown commands are left at the prompt without
+being run.
 
 Archive (`e`) moves an inactive session to the lower list. Remove (`D`) sends
 one to recoverable Workbench trash.

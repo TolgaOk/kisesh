@@ -104,6 +104,7 @@ class KittyClientTests(unittest.TestCase):
                         "windows": [
                             {
                                 "id": 3,
+                                "session_name": "/tmp/demo.kitty-session",
                                 "user_vars": {"kitty_workbench_session": "session-id"},
                                 "cwd": "/old",
                                 "foreground_processes": [{"cwd": "/new"}],
@@ -116,6 +117,7 @@ class KittyClientTests(unittest.TestCase):
         client = KittyClient(executable="/kitty", socket="unix:/tmp/test.sock")
         tab = client.tabs(state)[0]
         self.assertEqual(tab.session_id(), "session-id")
+        self.assertEqual(tab.native_session_name(), "/tmp/demo.kitty-session")
         self.assertEqual(tab.suggested_root(), "/new")
 
     def test_focused_tab_skips_a_standalone_manager_os_window(self) -> None:
