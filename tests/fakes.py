@@ -79,6 +79,8 @@ class FakeKitty:
         self.opened: list[Path] = []
         self.opened_contents: list[str] = []
         self.focused: list[int] = []
+        self.activated_sessions: list[tuple[str, int]] = []
+        self.closed_sessions: list[str] = []
         self.include_tab = True
         self.extra_tabs: list[LiveTab] = []
         self.current_tab = self.tab
@@ -89,6 +91,7 @@ class FakeKitty:
         self.terminal_history_hook: Callable[[int], None] | None = None
         self.sent_text: list[tuple[int, str]] = []
         self.next_open_window_id: int | None = None
+        self.next_open_tab: LiveTab | None = None
 
     def list_state(self) -> list[KittyOsWindowState]:
         """Return one focused operating-system window."""
@@ -178,6 +181,10 @@ class FakeKitty:
         """Record a snapshot open and expose its restored tab with a fresh ID."""
         self.opened.append(path)
         self.opened_contents.append(path.read_text(encoding="utf-8"))
+        if self.next_open_tab is not None:
+            self.extra_tabs.append(self.next_open_tab)
+            self.next_open_tab = None
+            return
         if self.next_open_window_id is not None:
             self.window["id"] = self.next_open_window_id
             self.next_open_window_id = None
@@ -186,3 +193,15 @@ class FakeKitty:
     def focus_tab(self, tab_id: int) -> None:
         """Record the tab selected through remote control."""
         self.focused.append(tab_id)
+
+    def activate_session(self, session_id: str, tab: LiveTab) -> None:
+        """Record the isolated session and its focused tab."""
+        self.activated_sessions.append((session_id, tab.tab_id))
+        self.focus_tab(tab.tab_id)
+
+    def close_session_tabs(self, session_id: str) -> None:
+        """Remove all matching fake tabs while recording the close boundary."""
+        self.closed_sessions.append(session_id)
+        if self.tab.session_id() == session_id:
+            self.include_tab = False
+        self.extra_tabs = [tab for tab in self.extra_tabs if tab.session_id() != session_id]

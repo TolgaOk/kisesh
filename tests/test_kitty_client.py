@@ -227,12 +227,12 @@ class KittyClientTests(unittest.TestCase):
 
         client.clear_tab_session(tab)
 
-        self.assertEqual(len(runner.commands), 2)
-        for window_id, command in zip((3, 4), runner.commands, strict=True):
-            self.assertIn(f"id:{window_id}", command)
-            self.assertIn(SESSION_ID_VAR, command)
-            self.assertIn(SESSION_SLUG_VAR, command)
-            self.assertNotIn(f"{SESSION_ID_VAR}=", command)
+        self.assertEqual(len(runner.commands), 1)
+        command = runner.commands[0]
+        self.assertIn("id:3 or id:4", command)
+        self.assertIn(SESSION_ID_VAR, command)
+        self.assertIn(SESSION_SLUG_VAR, command)
+        self.assertNotIn(f"{SESSION_ID_VAR}=", command)
 
 
 if __name__ == "__main__":

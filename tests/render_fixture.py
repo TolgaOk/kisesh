@@ -7,7 +7,7 @@ from pathlib import Path
 
 from kitty_workbench.kitty_client import LiveTab
 from kitty_workbench.model import SessionManifest, SessionStatus, SnapshotSummary, slugify
-from kitty_workbench.service import SessionView
+from kitty_workbench.service import SessionView, UnownedTabsAction
 from kitty_workbench.store import StoredSession
 from kitty_workbench.tui import CursesGlyph, Palette, SessionManager
 
@@ -107,6 +107,7 @@ class StaticService:
     def __init__(self) -> None:
         """Start with the representative live, saved, and archived fixtures."""
         self._rows = sample_views()
+        self.unowned_count = 0
 
     def views(self) -> list[SessionView]:
         """Return an isolated list of current rows."""
@@ -138,8 +139,17 @@ class StaticService:
         stored.manifest.status = "active"
         return stored
 
-    def open(self, slug_or_id: str) -> StoredSession:
+    def unowned_tab_count(self) -> int:
+        """Return the configured number of tabs outside a session."""
+        return self.unowned_count
+
+    def open(
+        self,
+        slug_or_id: str,
+        unowned_action: UnownedTabsAction | None = None,
+    ) -> StoredSession:
         """Resolve the session that would be focused or restored."""
+        del unowned_action
         return self._stored(slug_or_id)
 
     def add_current_tab(self, slug_or_id: str) -> StoredSession:
@@ -157,6 +167,13 @@ class StaticService:
     def save(self, slug_or_id: str) -> StoredSession:
         """Resolve the session that would be saved."""
         return self._stored(slug_or_id)
+
+    def save_and_close(self, slug_or_id: str) -> StoredSession:
+        """Save one fixture session and remove its live tab markers."""
+        stored = self._stored(slug_or_id)
+        row = next(row for row in self._rows if row.stored.manifest.id == slug_or_id)
+        row.live_tabs.clear()
+        return stored
 
     def rename(self, slug_or_id: str, new_name: str) -> StoredSession:
         """Rename one fixture session in place."""

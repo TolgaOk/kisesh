@@ -15,6 +15,7 @@ from .domain import JsonObject
 SCHEMA_VERSION = 1
 SESSION_ID_VAR = "kitty_workbench_session"
 SESSION_SLUG_VAR = "kitty_workbench_slug"
+SESSION_SCOPE_VAR = "kitty_workbench_scope"
 CAPTURE_VAR = "kitty_workbench_capture"
 WORKBENCH_UI_VAR = "kitty_workbench_ui"
 

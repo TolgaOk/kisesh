@@ -19,6 +19,7 @@ from kitty_workbench.cli import (
     ArchiveSession,
     AutosaveSession,
     CliConfig,
+    CloseSession,
     CopyTab,
     CreateSession,
     DetachTab,
@@ -51,7 +52,12 @@ from kitty_workbench.context import build_context
 from kitty_workbench.domain import ClosingPaneCapture
 from kitty_workbench.kitty_client import LiveTab
 from kitty_workbench.model import SessionManifest
-from kitty_workbench.service import SessionView, WorkbenchError, WorkbenchService
+from kitty_workbench.service import (
+    SessionView,
+    UnownedTabsAction,
+    WorkbenchError,
+    WorkbenchService,
+)
 from kitty_workbench.store import StoredSession
 
 
@@ -112,12 +118,17 @@ class CliTests(unittest.TestCase):
         before = parse_arguments(["--socket", "unix:/tmp/kitty", "add-tab", "project"])
         after = parse_arguments(["add-tab", "project", "--data-dir", "/tmp/workbench"])
         remove_alias = parse_arguments(["trash", "project"])
+        attach = parse_arguments(["open", "project", "--unowned-tabs", "attach"])
 
         self.assertIsInstance(before.command, AddTab)
         self.assertEqual(before.socket, "unix:/tmp/kitty")
         self.assertIsInstance(after.command, AddTab)
         self.assertEqual(after.data_dir, Path("/tmp/workbench"))
         self.assertIsInstance(remove_alias.command, RemoveSession)
+        self.assertEqual(
+            cast(OpenSession, attach.command).unowned_tabs,
+            UnownedTabsAction.ATTACH,
+        )
 
     def test_only_live_operations_construct_an_eager_kitty_client(self) -> None:
         """Keep stored-context reads offline unless a connection override is explicit."""
@@ -193,7 +204,7 @@ class CliTests(unittest.TestCase):
         restore.assert_called_once_with(stored, raw.context.return_value, 0, 0)
 
     def test_membership_commands_route_arguments_and_print_the_result_slug(self) -> None:
-        """Route create, attach, detach, copy, save, and open operations exactly once."""
+        """Route create, membership, save, close, and open operations exactly once."""
         stored = _stored()
         cases = (
             (CreateSession("Project", "/tmp/root"), "create_from_active", ("Project", "/tmp/root")),
@@ -202,7 +213,13 @@ class CliTests(unittest.TestCase):
             (CopyTab("project"), "copy_current_tab", ("project",)),
             (SaveSession("project"), "save", ("project",)),
             (SaveSession(), "save_current", ()),
-            (OpenSession("project"), "open", ("project",)),
+            (CloseSession("project"), "save_and_close", ("project",)),
+            (OpenSession("project"), "open", ("project", None)),
+            (
+                OpenSession("project", UnownedTabsAction.SAVE_SEPARATELY),
+                "open",
+                ("project", UnownedTabsAction.SAVE_SEPARATELY),
+            ),
         )
         for command, method_name, arguments in cases:
             service, raw = _service_mock(stored)

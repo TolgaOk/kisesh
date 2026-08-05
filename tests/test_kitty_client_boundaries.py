@@ -22,7 +22,12 @@ from kitty_workbench.kitty_client import (
     _require_snapshot,
     _run_command,
 )
-from kitty_workbench.model import CAPTURE_VAR, SESSION_ID_VAR, SESSION_SLUG_VAR
+from kitty_workbench.model import (
+    CAPTURE_VAR,
+    SESSION_ID_VAR,
+    SESSION_SCOPE_VAR,
+    SESSION_SLUG_VAR,
+)
 from tests.fakes import RecordingCommandRunner
 
 
@@ -230,10 +235,76 @@ class KittyClientBoundaryTests(unittest.TestCase):
         client.open_snapshot(Path("/tmp/session.kitty-session"))
 
         set_commands = [command for command in runner.commands if "set-user-vars" in command]
-        self.assertEqual(len(set_commands), 2)
-        self.assertTrue(all(f"{SESSION_SLUG_VAR}=renamed" in command for command in set_commands))
+        self.assertEqual(len(set_commands), 1)
+        self.assertIn("id:3 or id:4", set_commands[0])
+        self.assertIn(f"{SESSION_SLUG_VAR}=renamed", set_commands[0])
         self.assertIn("focus-tab", runner.commands[-2])
         self.assertIn("goto_session", runner.commands[-1])
+
+    def test_session_activation_filters_only_its_os_window_and_close_reveals_first(
+        self,
+    ) -> None:
+        session_id = "session-id"
+        state: list[KittyOsWindowState] = [
+            {
+                "id": 1,
+                "tabs": [
+                    {
+                        "id": 2,
+                        "windows": [
+                            {"id": 3, "user_vars": {SESSION_ID_VAR: session_id}},
+                            {"id": 4, "user_vars": {SESSION_ID_VAR: session_id}},
+                        ],
+                    },
+                    {"id": 5, "windows": [{"id": 6, "user_vars": {}}]},
+                ],
+            },
+            {
+                "id": 7,
+                "tabs": [
+                    {
+                        "id": 8,
+                        "windows": [{"id": 9, "user_vars": {SESSION_SCOPE_VAR: "stale"}}],
+                    }
+                ],
+            },
+        ]
+        runner = RecordingCommandRunner(stdout=json.dumps(state))
+        client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
+        target = client.tabs(state)[0]
+
+        client.activate_session(session_id, target)
+
+        scope_commands = [
+            command for command in runner.commands if SESSION_SCOPE_VAR in " ".join(command)
+        ]
+        self.assertEqual(
+            [command[command.index("--match") + 1] for command in scope_commands[:-1]],
+            ["id:3 or id:4 or id:6", "id:9"],
+        )
+        self.assertEqual(scope_commands[0][-1], f"{SESSION_SCOPE_VAR}=1")
+        self.assertEqual(scope_commands[1][-1], SESSION_SCOPE_VAR)
+        self.assertEqual(runner.commands[-2][-1], "id:2")
+        self.assertEqual(
+            runner.commands[-1][-1],
+            f"tab_bar_filter=var:{SESSION_ID_VAR}={session_id} or not var:{SESSION_SCOPE_VAR}=1",
+        )
+
+        client.close_session_tabs(session_id)
+
+        self.assertEqual(runner.commands[-2][-1], "tab_bar_filter=all")
+        self.assertEqual(runner.commands[-1][-1], f"var:{SESSION_ID_VAR}={session_id}")
+
+    def test_session_close_never_kills_tabs_when_revealing_them_fails(self) -> None:
+        runner = FailAtRunner(fail_at=0)
+        client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
+
+        with self.assertRaisesRegex(KittyError, "capture failed"):
+            client.close_session_tabs("session-id")
+
+        self.assertEqual(len(runner.commands), 1)
+        self.assertIn("load-config", runner.commands[0])
+        self.assertNotIn("close-tab", runner.commands[0])
 
     def test_capture_operations_validate_files_and_always_clear_temporary_markers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -253,7 +324,7 @@ class KittyClientBoundaryTests(unittest.TestCase):
             capture_commands = [
                 command for command in runner.commands if CAPTURE_VAR in " ".join(command)
             ]
-            self.assertEqual(len(capture_commands), 5)
+            self.assertEqual(len(capture_commands), 3)
             self.assertTrue(
                 any(f"{CAPTURE_VAR}=capture-id" in command for command in capture_commands)
             )

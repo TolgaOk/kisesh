@@ -16,6 +16,7 @@ from .domain import KittyOsWindowState, KittyWindow
 from .model import (
     CAPTURE_VAR,
     SESSION_ID_VAR,
+    SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
     WORKBENCH_UI_VAR,
     SessionManifest,
@@ -174,6 +175,12 @@ class KittyController(Protocol):
 
     def focus_tab(self, tab_id: int) -> None:
         """Focus one tab by ID."""
+
+    def activate_session(self, session_id: str, tab: LiveTab) -> None:
+        """Focus a session and restrict the tab bar to its live tabs."""
+
+    def close_session_tabs(self, session_id: str) -> None:
+        """Reveal remaining tabs, then close every tab in one session."""
 
     def open_snapshot(self, path: Path) -> None:
         """Load a Kitty session snapshot."""
@@ -355,12 +362,15 @@ class KittyClient:
         window_ids: Iterable[int],
         variables: Mapping[str, str | None],
     ) -> None:
-        """Set or clear user variables on each supplied pane ID."""
+        """Set or clear user variables for all supplied panes in one request."""
+        unique_ids = tuple(dict.fromkeys(window_ids))
+        if not unique_ids:
+            return
         encoded = [
             name if value is None else f"{name}={value}" for name, value in variables.items()
         ]
-        for window_id in window_ids:
-            self.command("set-user-vars", "--match", f"id:{window_id}", *encoded)
+        match = " or ".join(f"id:{window_id}" for window_id in unique_ids)
+        self.command("set-user-vars", "--match", match, *encoded)
 
     def stamp_tab(
         self,
@@ -429,6 +439,43 @@ class KittyClient:
     def focus_tab(self, tab_id: int) -> None:
         """Focus a live tab by its Kitty ID."""
         self.command("focus-tab", "--match", f"id:{tab_id}")
+
+    def activate_session(self, session_id: str, tab: LiveTab) -> None:
+        """Focus one session while leaving unrelated OS windows unfiltered."""
+        scope = str(tab.os_window_id)
+        tabs = self.tabs()
+        scoped_windows = [
+            window["id"]
+            for candidate in tabs
+            if candidate.os_window_id == tab.os_window_id
+            for window in candidate.windows
+            if window.get("user_vars", {}).get(SESSION_SCOPE_VAR) != scope
+        ]
+        outside_windows = [
+            window["id"]
+            for candidate in tabs
+            if candidate.os_window_id != tab.os_window_id
+            for window in candidate.windows
+            if SESSION_SCOPE_VAR in window.get("user_vars", {})
+        ]
+        self.set_user_vars(scoped_windows, {SESSION_SCOPE_VAR: scope})
+        self.set_user_vars(outside_windows, {SESSION_SCOPE_VAR: None})
+        self.focus_tab(tab.tab_id)
+        self.command(
+            "load-config",
+            "--override",
+            "tab_bar_filter="
+            f"var:{SESSION_ID_VAR}={session_id} or not var:{SESSION_SCOPE_VAR}={scope}",
+        )
+
+    def close_session_tabs(self, session_id: str) -> None:
+        """Reset tab visibility before closing every tab owned by a session."""
+        self.command("load-config", "--override", "tab_bar_filter=all")
+        self.command(
+            "close-tab",
+            "--match",
+            f"var:{SESSION_ID_VAR}={session_id}",
+        )
 
     def open_snapshot(self, path: Path) -> None:
         """Load a safe snapshot into the current Kitty operating-system window."""

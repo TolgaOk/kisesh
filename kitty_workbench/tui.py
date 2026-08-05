@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
 
-from .service import SessionView
+from .service import SessionView, UnownedTabsAction
 from .store import StoredSession
 
 ESCAPE_DELAY_MS = 25
@@ -78,7 +78,14 @@ class SessionOperations(Protocol):
     def unarchive(self, slug_or_id: str) -> StoredSession:
         """Return an archived session to the active list."""
 
-    def open(self, slug_or_id: str) -> StoredSession:
+    def unowned_tab_count(self) -> int:
+        """Count source tabs requiring an explicit opening policy."""
+
+    def open(
+        self,
+        slug_or_id: str,
+        unowned_action: UnownedTabsAction | None = None,
+    ) -> StoredSession:
         """Focus or restore a session."""
 
     def add_current_tab(self, slug_or_id: str) -> StoredSession:
@@ -92,6 +99,9 @@ class SessionOperations(Protocol):
 
     def save(self, slug_or_id: str) -> StoredSession:
         """Save a live session."""
+
+    def save_and_close(self, slug_or_id: str) -> StoredSession:
+        """Save a live session before closing its tabs."""
 
     def rename(self, slug_or_id: str, new_name: str) -> StoredSession:
         """Rename a session."""
@@ -121,6 +131,7 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
             ("● live", "Owned tabs are running."),
             ("○ saved", "Restorable snapshot; no live tab."),
             ("○ archived", "Dormant snapshot; u returns it."),
+            ("switch", "Other sessions stay live but leave the tab bar."),
         ),
     ),
     (
@@ -136,6 +147,7 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
         (
             ("n", "Create from the source tab."),
             ("s", "Snapshot all owned live tabs."),
+            ("x", "Save successfully, then close all live tabs."),
             ("r", "Rename session."),
             ("e / u", "Archive / unarchive."),
             ("D", "Remove inactive session to trash."),
@@ -375,14 +387,22 @@ class SessionManager:
                 ("n", "new"),
                 ("u", "unarchive"),
             )
+        elif selected is not None and selected.live:
+            navigation = (
+                ("j/k", "move"),
+                ("g/G", "ends"),
+                ("l/↵/Space", "focus"),
+                ("/", "search"),
+                ("s", "save"),
+                ("x", "save+close"),
+            )
         else:
             navigation = (
                 ("j/k", "move"),
                 ("g/G", "ends"),
-                ("l/↵/Space", "focus/open"),
+                ("l/↵/Space", "open"),
                 ("/", "search"),
                 ("n", "new"),
-                ("s", "save"),
             )
         _draw_hints(screen, footer_y + 1, width, navigation, self.palette)
         if self.message:
@@ -395,10 +415,16 @@ class SessionManager:
                 ("?", "help"),
                 ("q", self._dismiss_label()),
             )
-        else:
+        elif selected is not None and selected.live:
             actions = (
                 ("a", "add tab"),
                 ("d", "detach tab"),
+                ("r", "rename"),
+                ("?", "help"),
+                ("q", self._dismiss_label()),
+            )
+        else:
+            actions = (
                 ("c", "copy tab"),
                 ("r", "rename"),
                 ("e", "archive"),
@@ -597,7 +623,17 @@ class SessionManager:
             self._refresh()
             return None
         if key in ("l", " ", "\n", "\r", curses.KEY_ENTER):
-            return self._open_selected(identifier)
+            return self._open_selected(screen, current)
+        if key == "x":
+            if not current.live:
+                self.message = "only a live session can be saved and closed"
+                return None
+            name = current.stored.manifest.name
+            if self._confirm(screen, f"save and close {name}?"):
+                closed = self.service.save_and_close(identifier)
+                self._refresh()
+                self.message = f"saved and closed {closed.manifest.name}"
+            return None
         actions: dict[str, tuple[Callable[[str], StoredSession], str]] = {
             "a": (self.service.add_current_tab, "added source tab to {name}"),
             "d": (self.service.detach_current_tab, "detached source tab from {name}"),
@@ -627,13 +663,82 @@ class SessionManager:
                 self.message = f"removed {name} to recoverable trash"
         return None
 
-    def _open_selected(self, identifier: str) -> int | None:
-        """Open a row without racing the resident panel's focus-loss hide."""
-        self.service.open(identifier)
+    def _open_selected(self, screen: Screen, current: SessionView) -> int | None:
+        """Resolve unowned tabs before focusing or restoring a selected row."""
+        unowned_action: UnownedTabsAction | None = None
+        count = self.service.unowned_tab_count()
+        if count:
+            unowned_action = self._choose_unowned_tabs(
+                screen,
+                count,
+                current.stored.manifest.name,
+            )
+            if unowned_action is None:
+                self.message = "open cancelled; tabs unchanged"
+                return None
+        self.service.open(current.stored.manifest.id, unowned_action)
         if self.on_dismiss is None:
             return self._dismiss()
         self._refresh()
         return None
+
+    def _choose_unowned_tabs(
+        self,
+        screen: Screen,
+        count: int,
+        target_name: str,
+    ) -> UnownedTabsAction | None:
+        """Render and read the attach, preserve, or cancel opening decision."""
+        height, width = screen.getmaxyx()
+        box_width = max(4, min(72, width - 2))
+        box_height = min(6, height)
+        top = max(0, (height - box_height) // 2)
+        left = max(0, (width - box_width) // 2)
+        bottom = top + box_height - 1
+        inner_width = max(0, box_width - 4)
+        lines = (
+            ("", f"Unowned tabs · {count}", self.palette.accent | curses.A_BOLD),
+            ("a", f"attach to {target_name}", self.palette.normal),
+            ("s", "save separately, then open", self.palette.normal),
+            ("q / Esc", "cancel; change nothing", self.palette.muted),
+        )
+
+        _safe_addstr(screen, top, left, "╭", self.palette.muted)
+        _safe_hline(screen, top, left + 1, box_width - 2, self.palette.muted)
+        _safe_addstr(screen, top, left + box_width - 1, "╮", self.palette.muted)
+        for y in range(top + 1, bottom):
+            _safe_addstr(screen, y, left + 1, " " * max(0, box_width - 2), self.palette.normal)
+        _safe_vline(screen, top + 1, left, box_height - 2, self.palette.normal)
+        _safe_vline(screen, top + 1, left + box_width - 1, box_height - 2, self.palette.normal)
+        _safe_addstr(screen, bottom, left, "╰", self.palette.muted)
+        _safe_hline(screen, bottom, left + 1, box_width - 2, self.palette.muted)
+        _safe_addstr(screen, bottom, left + box_width - 1, "╯", self.palette.muted)
+
+        for offset, (label, description, style) in enumerate(lines):
+            y = top + 1 + offset
+            if label:
+                prefix = f"{label:<8}"
+                _safe_addstr(screen, y, left + 2, prefix[:inner_width], self.palette.accent)
+                available = max(0, inner_width - len(prefix))
+                _safe_addstr(
+                    screen,
+                    y,
+                    left + 2 + len(prefix),
+                    description[:available],
+                    style,
+                )
+            else:
+                _safe_addstr(screen, y, left + 2, description[:inner_width], style)
+        screen.refresh()
+
+        while True:
+            pressed = screen.get_wch()
+            if pressed in ("a", "A"):
+                return UnownedTabsAction.ATTACH
+            if pressed in ("s", "S"):
+                return UnownedTabsAction.SAVE_SEPARATELY
+            if pressed in ("q", "Q", "\x1b"):
+                return None
 
     def _dismiss(self) -> int | None:
         """Close a standalone manager or hide and refresh a resident panel."""

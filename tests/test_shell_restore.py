@@ -151,6 +151,7 @@ class ShellRestoreTests(unittest.TestCase):
                 "0",
             ]
             environment = os.environ.copy()
+            environment["HOME"] = str(root)
             environment["TERM"] = "xterm-kitty"
             pid, master = pty.fork()
             if pid == 0:  # pragma: no cover - assertions run in the parent

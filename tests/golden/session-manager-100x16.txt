@@ -12,5 +12,5 @@
 
   ~/dotfiles
  ──────────────────────────────────────────────────────────────────────────────────────────────────
-   j/k  move  g/G  ends  l/↵/Space  focus/open  /  search  n  new  s  save
-   a  add tab  d  detach tab  c  copy tab  r  rename  e  archive  D  remove  ?  help  q  close
+   j/k  move  g/G  ends  l/↵/Space  open  /  search  n  new
+   c  copy tab  r  rename  e  archive  D  remove  ?  help  q  close

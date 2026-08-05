@@ -2,7 +2,7 @@
 
 Kitty-native, recoverable sessions without a terminal multiplexer.
 
-`experimental` · `Kitty overlay` · `macOS` · `Python 3.11+` · `Vim keys`
+`experimental` · `Kitty 0.47.2+` · `tested 0.48.2` · `macOS` · `Vim keys`
 
 A session can contain many Kitty tabs and panes. Workbench saves their layout,
 working directories, bounded terminal context, and safe foreground-app restore
@@ -29,36 +29,27 @@ keeps one backup beside `kitty.conf`.
 
 ## Example
 
-Build a research workspace like this:
+Name the current project with `Alt+S`, then `n`. Attach its other tabs with
+`a`; a session may contain many tabs and panes. Opening another session shows
+only that session's tabs in the current Kitty window while every other session
+keeps running. Other Kitty OS windows retain their normal tab bars.
 
-```text
-Research
-├─ Agents: 3 panes — Claude, Codex, top
-└─ Build:  1 pane  — shell, tests, Git history
-```
+If the current window contains unowned tabs, opening a session asks whether to
+attach them, save them together under an automatic name, or cancel unchanged.
+Use `x` to save all commands, scrollback, layout, and tabs before closing the
+live session. Reopening restores up to 2,000 history entries and scrollback
+lines, the last command output, safe `top` state, and Claude/Codex resume
+commands; unknown commands are left at the prompt without being run.
 
-Open `Alt+S`, select `Research`, then use `a` from each source tab to attach it.
-Use `d` to detach a tab without closing it, or `c` to copy only the current
-tab's safe layout into an inactive session.
-
-After a command, tab action, or layout change, autosave is triggered and
-debounced. If a pane is closed with `Cmd+W`, its state is captured before Kitty
-destroys the screen. Opening the session restores:
-
-- tabs, panes, layout, titles, and working directories;
-- up to 2,000 shell commands as recallable history, never startup code;
-- up to 2,000 lines of normal scrollback and the last completed command output;
-- approved interactive apps such as `top`, plus stable Claude and Codex resume
-  commands; an unknown command is written at the prompt but not executed.
-
-Archive (`e`) only declutters an inactive session; `u` returns it. Remove (`D`)
-moves an inactive session to Workbench trash after confirmation.
+Archive (`e`) moves an inactive session to the lower list. Remove (`D`) sends
+one to recoverable Workbench trash.
 
 ## Keys
 
-`j/k` move · `g/G` ends · `Ctrl-d/u` half-page · `/` live search ·
+`j/k` move · `g/G` ends · `Ctrl-d/u` half-page · `/` search ·
 `l/Enter/Space` open · `n` new · `a/d/c` add/detach/copy tab · `s` save ·
-`r` rename · `e/u` archive/unarchive · `D` remove · `?` help · `q/Esc/h` close
+`x` save+close · `r` rename · `e/u` archive/unarchive · `D` remove ·
+`?` help · `q/Esc/h` close
 
 ## Verify
 

@@ -6,7 +6,10 @@ import hashlib
 import os
 import uuid
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
+from enum import StrEnum
+from functools import partial
 from pathlib import Path
 
 from .context import (
@@ -18,7 +21,7 @@ from .context import (
     restore_session,
     update_context_for_closing_pane,
 )
-from .domain import ClosingPaneCapture, SessionContext
+from .domain import ClosingPaneCapture, KittyOsWindowState, SessionContext
 from .filesystem import temporary_path
 from .kitty_client import KittyClient, KittyController, KittyError, LiveTab
 from .model import SessionManifest
@@ -28,6 +31,13 @@ from .store import SessionStore, StoredSession, StoreError
 
 class WorkbenchError(RuntimeError):
     """Raised when a requested session operation violates lifecycle rules."""
+
+
+class UnownedTabsAction(StrEnum):
+    """Explicit policy for tabs outside Workbench when opening a session."""
+
+    ATTACH = "attach"
+    SAVE_SEPARATELY = "save-separately"
 
 
 @dataclass(slots=True)
@@ -63,6 +73,15 @@ def _capture_pane_texts(
             if isinstance(text, str):
                 captured[window["id"]] = text
     return captured
+
+
+def _automatic_session_name(tabs: list[LiveTab]) -> str:
+    """Build a readable, collision-safe base name for preserved unowned tabs."""
+    first = tabs[0]
+    title = first.title.strip()
+    if not title or title.casefold() in {"shell", "untitled", "zsh"}:
+        title = Path(first.suggested_root()).name or "tabs"
+    return f"{title} · auto"
 
 
 class WorkbenchService:
@@ -129,9 +148,59 @@ class WorkbenchService:
         )
         if tab.session_id():
             raise WorkbenchError("the current tab already belongs to a session")
-        stored = self.store.create(clean_name, project_root or tab.suggested_root())
-        client.stamp_tab(tab, stored.manifest)
-        return self.save(stored.manifest.id)
+        stored = self._create_tabs_session(
+            clean_name,
+            project_root or tab.suggested_root(),
+            [tab],
+        )
+        client.activate_session(stored.manifest.id, tab)
+        return stored
+
+    def _create_tabs_session(
+        self,
+        name: str,
+        project_root: str,
+        tabs: list[LiveTab],
+    ) -> StoredSession:
+        """Create, stamp, and save a session with recoverable failure cleanup."""
+        client = self._kitty()
+        stored = self.store.create(name, project_root)
+        try:
+            for tab in tabs:
+                client.stamp_tab(tab, stored.manifest)
+            return self.save(stored.manifest.id)
+        except Exception:
+            for tab in tabs:
+                self._rollback_membership(partial(client.clear_tab_session, tab))
+            with suppress(StoreError):
+                self.store.move_to_trash(stored.manifest.id)
+            raise
+
+    def _source_unowned_tabs(
+        self,
+        client: KittyController,
+        state: list[KittyOsWindowState],
+    ) -> list[LiveTab]:
+        """Return unowned tabs beside the manager's underlying source tab."""
+        source = client.focused_tab(
+            state,
+            exclude_window_id=_environment_window_id(),
+        )
+        if source.session_id():
+            return []
+        return sorted(
+            (
+                tab
+                for tab in client.tabs(state)
+                if tab.os_window_id == source.os_window_id and tab.session_id() is None
+            ),
+            key=lambda tab: tab.index,
+        )
+
+    def unowned_tab_count(self) -> int:
+        """Count source-window tabs requiring a choice before session opening."""
+        client = self._kitty()
+        return len(self._source_unowned_tabs(client, client.list_state()))
 
     def add_current_tab(self, slug_or_id: str) -> StoredSession:
         """Attach the focused source tab to an already live selected session."""
@@ -298,6 +367,12 @@ class WorkbenchService:
 
         return self.store.update_context(updated.manifest.id, merge_latest)
 
+    def save_and_close(self, slug_or_id: str) -> StoredSession:
+        """Persist a live session completely before closing any of its tabs."""
+        stored = self.save(slug_or_id)
+        self._kitty().close_session_tabs(stored.manifest.id)
+        return stored
+
     def _capture_live_session(self, client: KittyController, session_id: str) -> str:
         """Capture a complete live session through an isolated temporary file."""
         with temporary_path(
@@ -312,26 +387,68 @@ class WorkbenchService:
         """Return a session's persisted command and terminal context."""
         return self.store.read_context(slug_or_id)
 
-    def open(self, slug_or_id: str) -> StoredSession:
-        """Focus a live session or restore an inactive safe snapshot."""
+    def open(
+        self,
+        slug_or_id: str,
+        unowned_action: UnownedTabsAction | None = None,
+    ) -> StoredSession:
+        """Resolve unowned tabs, then focus or restore an isolated session."""
         stored = self.store.get(slug_or_id)
         client = self._kitty()
-        live_tabs = client.tabs_for_session(stored.manifest.id)
-        if live_tabs:
-            client.focus_tab(live_tabs[0].tab_id)
-            return self.store.mark_used(stored.manifest.id)
-        if stored.manifest.status == "archived":
-            stored = self.store.restore_archive(stored.manifest.id)
-        if not stored.snapshot_path.is_file():
+        state = client.list_state()
+        live_tabs = client.tabs_for_session(stored.manifest.id, state)
+        if not live_tabs and not stored.snapshot_path.is_file():
             raise WorkbenchError(f"session has no snapshot: {stored.manifest.name}")
-        context = self.store.read_context(stored.manifest.id)
-        self._open_inactive_snapshot(client, stored, context)
-        opened_tabs = self._focus_and_prefill(client, stored.manifest.id, context)
-        if context is not None and opened_tabs:
-            self.store.write_context(
-                stored.manifest.id,
-                remap_context_windows(context, opened_tabs),
+        unowned_tabs = self._source_unowned_tabs(client, state)
+        if unowned_tabs and unowned_action is None:
+            raise WorkbenchError(
+                f"{len(unowned_tabs)} unowned tab(s) require attach or save-separately"
             )
+        if unowned_tabs and unowned_action is UnownedTabsAction.SAVE_SEPARATELY:
+            self._create_tabs_session(
+                _automatic_session_name(unowned_tabs),
+                unowned_tabs[0].suggested_root(),
+                unowned_tabs,
+            )
+            state = client.list_state()
+            live_tabs = client.tabs_for_session(stored.manifest.id, state)
+
+        if not live_tabs:
+            if stored.manifest.status == "archived":
+                stored = self.store.restore_archive(stored.manifest.id)
+            context = self.store.read_context(stored.manifest.id)
+            self._open_inactive_snapshot(client, stored, context)
+            live_tabs = self._opened_tabs_and_prefill(client, stored.manifest.id, context)
+            if context is not None and live_tabs:
+                self.store.write_context(
+                    stored.manifest.id,
+                    remap_context_windows(context, live_tabs),
+                )
+
+        if unowned_tabs and unowned_action is UnownedTabsAction.ATTACH:
+            if not live_tabs:
+                raise WorkbenchError("opened session did not create any live tabs")
+            for tab in unowned_tabs:
+                client.stamp_tab(tab, stored.manifest)
+            try:
+                stored = self.save(stored.manifest.id)
+            except Exception:
+                for tab in unowned_tabs:
+                    self._rollback_membership(partial(client.clear_tab_session, tab))
+                raise
+            live_tabs = client.tabs_for_session(stored.manifest.id)
+
+        if live_tabs:
+            source_os_window_id = unowned_tabs[0].os_window_id if unowned_tabs else None
+            active_tab = next(
+                (
+                    tab
+                    for tab in live_tabs
+                    if source_os_window_id is not None and tab.os_window_id == source_os_window_id
+                ),
+                live_tabs[0],
+            )
+            client.activate_session(stored.manifest.id, active_tab)
         return self.store.mark_used(stored.manifest.id)
 
     def _open_inactive_snapshot(
@@ -361,17 +478,16 @@ class WorkbenchService:
             restore_path.write_text(resumable, encoding="utf-8")
             client.open_snapshot(restore_path)
 
-    def _focus_and_prefill(
+    def _opened_tabs_and_prefill(
         self,
         client: KittyController,
         session_id: str,
         context: SessionContext | None,
     ) -> list[LiveTab]:
-        """Focus restored tabs, prefill reminders, and return their current IDs."""
+        """Prefill restored reminders and return current live tab identities."""
         opened_tabs = client.tabs_for_session(session_id)
         if not opened_tabs:
             return []
-        client.focus_tab(opened_tabs[0].tab_id)
         for (tab_index, pane_index), command in pending_restore_commands(context).items():
             if not 0 <= tab_index < len(opened_tabs):
                 continue

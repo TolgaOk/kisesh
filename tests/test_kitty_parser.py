@@ -27,6 +27,47 @@ PARSE_SESSION_PROGRAM = (
 
 class RealKittyParserTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
+    def test_session_filter_keeps_other_os_windows_visible_with_real_query_parser(
+        self,
+    ) -> None:
+        """Validate the scoped Boolean filter using Kitty's own search engine."""
+
+        program = """
+import json
+from kitty.search_query_parser import search
+
+query = (
+    "var:kitty_workbench_session=target "
+    "or not var:kitty_workbench_scope=1"
+)
+universal = {"target", "same-window-other", "other-os-window"}
+
+def get_matches(
+    location,
+    value,
+    candidates,
+    matches={
+        "kitty_workbench_session=target": {"target"},
+        "kitty_workbench_scope=1": {"target", "same-window-other"},
+    },
+):
+    assert location == "var"
+    return matches.get(value, set()) & candidates
+
+print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
+"""
+        result = subprocess.run(
+            [shutil.which("kitty") or "kitty", "+runpy", program],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["other-os-window", "target"])
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_safe_multi_tab_snapshot_is_accepted_by_installed_kitty(self) -> None:
         """Exercise Kitty's real parser, not a workbench imitation of it."""
 

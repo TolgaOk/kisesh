@@ -15,13 +15,17 @@ from .domain import ClosingPaneCapture, CommandEvent, JsonObject, KittyWindow
 from .kitty_client import KittyClient, KittyError
 from .panel import PanelError, hide_quick_access_panel, is_panel_process
 from .paths import data_root
-from .service import WorkbenchError, WorkbenchService
+from .service import UnownedTabsAction, WorkbenchError, WorkbenchService
 from .shell_restore import run_restored_shell
 from .store import SessionStore, StoreError
 from .tui import SessionManager
 
 PositionalString = Annotated[str, tyro.conf.Positional]
 OptionalPositionalString = Annotated[str | None, tyro.conf.Positional]
+OptionalUnownedTabsAction = Annotated[
+    UnownedTabsAction | None,
+    tyro.conf.EnumChoicesFromValues,
+]
 INVALID_EVENTS_MESSAGE = "autosave command events must be a JSON list of objects"
 INVALID_PAYLOAD_MESSAGE = "autosave input must be a JSON object"
 INVALID_CLOSE_MESSAGE = "autosave closing-pane input is incomplete"
@@ -126,6 +130,17 @@ class OpenSession:
     session: PositionalString
     """Session name, slug, or identifier."""
 
+    unowned_tabs: OptionalUnownedTabsAction = None
+    """Attach or preserve unowned source tabs before opening."""
+
+
+@dataclass(frozen=True, slots=True)
+class CloseSession:
+    """Save a live session completely, then close all of its tabs."""
+
+    session: PositionalString
+    """Session name, slug, or identifier."""
+
 
 @dataclass(frozen=True, slots=True)
 class RenameSession:
@@ -196,6 +211,7 @@ Command = (
     | Annotated[CopyTab, tyro.conf.subcommand(name="copy-tab")]
     | Annotated[SaveSession, tyro.conf.subcommand(name="save")]
     | Annotated[OpenSession, tyro.conf.subcommand(name="open")]
+    | Annotated[CloseSession, tyro.conf.subcommand(name="close")]
     | Annotated[RenameSession, tyro.conf.subcommand(name="rename")]
     | Annotated[ArchiveSession, tyro.conf.subcommand(name="archive")]
     | Annotated[
@@ -211,7 +227,9 @@ Command = (
 )
 
 ReadCommand = ListSessions | ShowContext | PrintLastOutput | RestoreShell
-MembershipCommand = CreateSession | AddTab | DetachTab | CopyTab | SaveSession | OpenSession
+MembershipCommand = (
+    CreateSession | AddTab | DetachTab | CopyTab | SaveSession | OpenSession | CloseSession
+)
 LifecycleCommand = RenameSession | ArchiveSession | UnarchiveSession | RemoveSession
 MaintenanceCommand = AutosaveSession | Doctor
 
@@ -325,8 +343,10 @@ def _run_membership(command: MembershipCommand, service: WorkbenchService) -> in
         stored = service.copy_current_tab(command.session)
     elif isinstance(command, SaveSession):
         stored = service.save(command.session) if command.session else service.save_current()
+    elif isinstance(command, CloseSession):
+        stored = service.save_and_close(command.session)
     else:
-        stored = service.open(command.session)
+        stored = service.open(command.session, command.unowned_tabs)
     print(stored.manifest.slug)
     return 0
 
@@ -425,7 +445,10 @@ def _dispatch(config: CliConfig, service: WorkbenchService) -> int:
         return _run_manager(service)
     if isinstance(command, (ListSessions, ShowContext, PrintLastOutput, RestoreShell)):
         return _run_read(command, service)
-    if isinstance(command, (CreateSession, AddTab, DetachTab, CopyTab, SaveSession, OpenSession)):
+    if isinstance(
+        command,
+        (CreateSession, AddTab, DetachTab, CopyTab, SaveSession, OpenSession, CloseSession),
+    ):
         return _run_membership(command, service)
     if isinstance(
         command,

@@ -8,6 +8,7 @@ from unittest import mock
 from kitty_workbench.domain import SessionContext
 from kitty_workbench.kitty_client import KittyError, LiveTab
 from kitty_workbench.service import (
+    UnownedTabsAction,
     WorkbenchError,
     WorkbenchService,
     _capture_pane_texts,
@@ -149,6 +150,7 @@ class ServiceBoundaryTests(unittest.TestCase):
         stored = self.service.create_from_active("Current")
         self.assertEqual(self.service.current_session().manifest.id, stored.manifest.id)
         self.assertEqual(self.service.save_current().manifest.id, stored.manifest.id)
+        self.assertIsNotNone(self.service.context(stored.manifest.id))
 
         self.kitty.include_tab = False
         with self.assertRaisesRegex(WorkbenchError, "session is not live"):
@@ -222,6 +224,75 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.kitty.include_tab = False
         with mock.patch.object(self.kitty, "tabs_for_session", return_value=[]):
             self.service.open(stored.manifest.id)
+
+    def test_failed_save_close_keeps_every_live_tab_running(self) -> None:
+        stored = self.service.create_from_active("Still Live")
+
+        with (
+            mock.patch.object(self.service, "save", side_effect=StoreError("disk full")),
+            self.assertRaisesRegex(StoreError, "disk full"),
+        ):
+            self.service.save_and_close(stored.manifest.id)
+
+        self.assertTrue(self.kitty.include_tab)
+        self.assertEqual(self.kitty.closed_sessions, [])
+        self.assertEqual(self.kitty.tab.session_id(), stored.manifest.id)
+
+    def test_failed_auto_session_save_rolls_back_tabs_and_moves_partial_state_to_trash(
+        self,
+    ) -> None:
+        target = self.store.create("Requested", "/tmp/requested")
+        self.snapshot(target.manifest.id, "Requested")
+
+        with (
+            mock.patch.object(self.service, "save", side_effect=StoreError("disk full")),
+            self.assertRaisesRegex(StoreError, "disk full"),
+        ):
+            self.service.open(
+                target.manifest.id,
+                UnownedTabsAction.SAVE_SEPARATELY,
+            )
+
+        self.assertIsNone(self.kitty.tab.session_id())
+        self.assertEqual(
+            [stored.manifest.id for stored in self.store.list()],
+            [target.manifest.id],
+        )
+        self.assertEqual(len(list(self.store.trash_dir.iterdir())), 1)
+        self.assertEqual(self.kitty.opened, [])
+
+    def test_failed_attach_save_restores_unowned_markers_without_closing_target(self) -> None:
+        target = self.store.create("Target", "/tmp/target")
+        target_tab = LiveTab(
+            1,
+            8,
+            1,
+            "Target",
+            "splits",
+            [{"id": 12, "cwd": "/tmp/target", "user_vars": {}}],
+        )
+        self.kitty.stamp_tab(target_tab, target.manifest)
+        self.kitty.extra_tabs.append(target_tab)
+
+        with (
+            mock.patch.object(self.service, "save", side_effect=StoreError("disk full")),
+            self.assertRaisesRegex(StoreError, "disk full"),
+        ):
+            self.service.open(target.manifest.id, UnownedTabsAction.ATTACH)
+
+        self.assertIsNone(self.kitty.tab.session_id())
+        self.assertEqual(target_tab.session_id(), target.manifest.id)
+        self.assertEqual(self.kitty.closed_sessions, [])
+
+    def test_attach_rejects_a_snapshot_that_opens_no_live_tabs(self) -> None:
+        target = self.store.create("Empty Restore", "/tmp/target")
+        self.snapshot(target.manifest.id, "Empty Restore")
+
+        with self.assertRaisesRegex(WorkbenchError, "did not create any live tabs"):
+            self.service.open(target.manifest.id, UnownedTabsAction.ATTACH)
+
+        self.assertIsNone(self.kitty.tab.session_id())
+        self.assertEqual(self.kitty.activated_sessions, [])
 
     def test_rename_without_snapshot_and_failed_live_restamp_still_persists(self) -> None:
         stored = self.store.create("Old", "/tmp")

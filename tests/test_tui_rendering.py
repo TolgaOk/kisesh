@@ -4,6 +4,7 @@ import unittest
 from collections.abc import Iterable
 from pathlib import Path
 
+from kitty_workbench.service import UnownedTabsAction
 from kitty_workbench.store import StoredSession
 from kitty_workbench.tui import SessionManager
 from tests.render_fixture import Canvas, StaticService, rendered_manager
@@ -16,18 +17,31 @@ class RecordingService(StaticService):
         """Initialize deterministic rows and action ledgers."""
         super().__init__()
         self.opened: list[str] = []
+        self.open_actions: list[UnownedTabsAction | None] = []
         self.timeline: list[str] = []
+        self.closed: list[str] = []
         self.unarchived: list[str] = []
         self.added: list[str] = []
         self.detached: list[str] = []
         self.copied: list[str] = []
         self.removed: list[str] = []
 
-    def open(self, identifier: str) -> StoredSession:
+    def open(
+        self,
+        slug_or_id: str,
+        unowned_action: UnownedTabsAction | None = None,
+    ) -> StoredSession:
         """Record and resolve a focus or restore request."""
-        self.opened.append(identifier)
+        self.opened.append(slug_or_id)
+        self.open_actions.append(unowned_action)
         self.timeline.append("open")
-        return self._stored(identifier)
+        return self._stored(slug_or_id)
+
+    def save_and_close(self, slug_or_id: str) -> StoredSession:
+        """Record a successful save-close transition and update live state."""
+        self.closed.append(slug_or_id)
+        self.timeline.append("save-close")
+        return super().save_and_close(slug_or_id)
 
     def unarchive(self, identifier: str) -> StoredSession:
         """Record and apply an unarchive request."""
@@ -208,6 +222,75 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertEqual(service.opened, [selected_id])
         self.assertEqual(hidden, [])
         self.assertEqual(service.timeline, ["open"])
+
+    def test_unowned_tab_modal_is_complete_and_routes_attach_or_preserve(self) -> None:
+        for key, expected in (
+            ("A", UnownedTabsAction.ATTACH),
+            ("s", UnownedTabsAction.SAVE_SEPARATELY),
+        ):
+            service = RecordingService()
+            service.unowned_count = 2
+            manager = SessionManager(service)
+            manager._refresh()
+            manager.selected = 1
+            manager.palette = rendered_manager()[2]
+            screen = ScriptedCanvas(16, 100, ["ignored", key])
+            selected = manager.filtered[manager.selected]
+
+            with self.subTest(key=key):
+                self.assertEqual(manager._handle_key(screen, " "), 0)
+                self.assertEqual(service.opened, [selected.stored.manifest.id])
+                self.assertEqual(service.open_actions, [expected])
+                top = 5
+                left = 14
+                width = 72
+                bottom = top + 5
+                self.assertEqual(
+                    "".join(screen.cells[top][left : left + width]),
+                    "╭" + "─" * (width - 2) + "╮",
+                )
+                self.assertEqual(
+                    "".join(screen.cells[bottom][left : left + width]),
+                    "╰" + "─" * (width - 2) + "╯",
+                )
+                for y in range(top + 1, bottom):
+                    self.assertEqual(screen.cells[y][left], "│")
+                    self.assertEqual(screen.cells[y][left + width - 1], "│")
+                rendered = screen.render()
+                self.assertIn("Unowned tabs · 2", rendered)
+                self.assertIn("attach to Dotfiles", rendered)
+                self.assertIn("save separately, then open", rendered)
+                self.assertIn("cancel; change nothing", rendered)
+
+    def test_canceling_unowned_tab_modal_changes_nothing_and_keeps_manager_open(self) -> None:
+        service = RecordingService()
+        service.unowned_count = 3
+        manager = SessionManager(service)
+        manager._refresh()
+        screen = ScriptedCanvas(16, 100, ["\x1b"])
+
+        self.assertIsNone(manager._handle_key(screen, "l"))
+
+        self.assertEqual(service.opened, [])
+        self.assertEqual(service.open_actions, [])
+        self.assertEqual(manager.message, "open cancelled; tabs unchanged")
+
+    def test_save_close_requires_confirmation_and_turns_live_row_into_saved(self) -> None:
+        service = RecordingService()
+        manager = SessionManager(service)
+        manager._refresh()
+        live_id = manager.filtered[0].stored.manifest.id
+
+        manager._handle_key(ScriptedCanvas(16, 100, ["n"]), "x")
+        self.assertEqual(service.closed, [])
+        self.assertTrue(manager.filtered[0].live)
+
+        manager._handle_key(ScriptedCanvas(16, 100, ["y"]), "x")
+
+        self.assertEqual(service.closed, [live_id])
+        closed_row = next(row for row in manager.filtered if row.stored.manifest.id == live_id)
+        self.assertFalse(closed_row.live)
+        self.assertEqual(manager.message, "saved and closed JAX Agents")
 
     def test_search_filters_after_each_keystroke_without_waiting_for_enter(self) -> None:
         manager = TrackingSearchManager(StaticService())

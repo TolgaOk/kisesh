@@ -122,9 +122,10 @@ class TuiBoundaryTests(unittest.TestCase):
         screen = Canvas(16, 100)
         manager._handle_key(screen, "u")
         self.assertIn("archived list", manager.message)
-        self.assertIsNone(manager._handle_key(screen, "x"))
-
         manager.selected = 1
+        self.assertIsNone(manager._handle_key(screen, "x"))
+        self.assertIn("only a live session", manager.message)
+
         manager._handle_key(screen, "s")
         self.assertIn("saved Dotfiles", manager.message)
         manager._handle_key(screen, "e")
@@ -137,6 +138,7 @@ class TuiBoundaryTests(unittest.TestCase):
 
         with mock.patch.object(manager, "_prompt", return_value=""):
             manager._handle_key(screen, "r")
+        self.assertIsNone(manager._handle_key(screen, "z"))
 
     def test_help_supports_all_vim_scroll_keys_back_quit_and_unrecognized_input(self) -> None:
         manager = SessionManager(StaticService())

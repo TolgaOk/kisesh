@@ -11,7 +11,7 @@ from kitty_workbench.model import (
     SESSION_ID_VAR,
     SESSION_SLUG_VAR,
 )
-from kitty_workbench.service import WorkbenchError, WorkbenchService
+from kitty_workbench.service import UnownedTabsAction, WorkbenchError, WorkbenchService
 from kitty_workbench.session_file import sanitize_session, snapshot_summary
 from kitty_workbench.store import SessionNotFound, SessionStore
 from tests.fakes import FakeKitty
@@ -367,6 +367,167 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual(new_pane["user_vars"][SESSION_ID_VAR], created.manifest.id)
         self.assertEqual(new_pane["user_vars"][SESSION_SLUG_VAR], "growing-session")
+
+    def test_switching_live_sessions_hides_neither_processes_nor_owned_tabs(self) -> None:
+        first = self.service.create_from_active("First Project")
+        second = self.store.create("Second Project", "/tmp/second")
+        second_tab = LiveTab(
+            1,
+            8,
+            1,
+            "Second",
+            "splits",
+            [{"id": 12, "cwd": "/tmp/second", "user_vars": {}}],
+        )
+        self.kitty.stamp_tab(second_tab, second.manifest)
+        self.kitty.extra_tabs.append(second_tab)
+
+        opened = self.service.open(second.manifest.id)
+
+        self.assertEqual(opened.manifest.id, second.manifest.id)
+        self.assertEqual(self.kitty.tab.session_id(), first.manifest.id)
+        self.assertEqual(second_tab.session_id(), second.manifest.id)
+        self.assertEqual(len(self.kitty.tabs()), 2)
+        self.assertEqual(self.kitty.closed_sessions, [])
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (second.manifest.id, second_tab.tab_id),
+        )
+
+    def test_save_and_close_preserves_context_before_kill_and_reopens_it(self) -> None:
+        self.kitty.window.update(
+            {
+                "last_reported_cmdline": "pwd",
+                "last_cmd_exit_status": 0,
+                "at_prompt": True,
+            }
+        )
+        self.kitty.command_outputs[11] = "/tmp/project\n"
+        self.kitty.terminal_histories[11] = "pwd\n/tmp/project\n"
+        stored = self.service.create_from_active("Recoverable")
+        self.kitty.window.update(
+            {
+                "last_reported_cmdline": "git status",
+                "last_cmd_exit_status": 0,
+            }
+        )
+        self.kitty.command_outputs[11] = "working tree clean\n"
+        self.kitty.terminal_histories[11] = "pwd\n/tmp/project\ngit status\nworking tree clean\n"
+
+        closed = self.service.save_and_close(stored.manifest.id)
+        context_at_close = self.store.read_context(stored.manifest.id)
+
+        self.assertEqual(closed.manifest.id, stored.manifest.id)
+        self.assertEqual(self.kitty.closed_sessions, [stored.manifest.id])
+        self.assertFalse(self.kitty.include_tab)
+        self.assertIsNotNone(context_at_close)
+        assert context_at_close is not None
+        self.assertEqual(
+            context_at_close["tabs"][0]["panes"][0]["terminal_history"],
+            "pwd\n/tmp/project\ngit status\nworking tree clean\n",
+        )
+        self.assertEqual(
+            context_at_close["tabs"][0]["panes"][0]["last_command"],
+            "git status",
+        )
+
+        reopened = self.service.open(stored.manifest.id)
+
+        self.assertEqual(reopened.manifest.id, stored.manifest.id)
+        self.assertTrue(self.kitty.include_tab)
+        self.assertIn("restore-shell", self.kitty.opened_contents[-1])
+
+    def test_open_requires_a_choice_then_can_attach_all_current_unowned_tabs(self) -> None:
+        target = self.store.create("Existing Project", "/tmp/existing")
+        target_tab = LiveTab(
+            1,
+            8,
+            1,
+            "Existing",
+            "splits",
+            [{"id": 12, "cwd": "/tmp/existing", "user_vars": {}}],
+        )
+        scratch_tab = LiveTab(
+            1,
+            9,
+            2,
+            "Notes",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/notes", "user_vars": {}}],
+        )
+        self.kitty.stamp_tab(target_tab, target.manifest)
+        self.kitty.extra_tabs.extend((target_tab, scratch_tab))
+
+        self.assertEqual(self.service.unowned_tab_count(), 2)
+        with self.assertRaisesRegex(WorkbenchError, "2 unowned tab"):
+            self.service.open(target.manifest.id)
+
+        self.assertIsNone(self.kitty.tab.session_id())
+        self.assertIsNone(scratch_tab.session_id())
+        self.assertEqual(self.kitty.activated_sessions, [])
+
+        opened = self.service.open(target.manifest.id, UnownedTabsAction.ATTACH)
+
+        self.assertEqual(opened.manifest.id, target.manifest.id)
+        self.assertEqual(self.kitty.tab.session_id(), target.manifest.id)
+        self.assertEqual(scratch_tab.session_id(), target.manifest.id)
+        self.assertEqual(len(self.kitty.tabs_for_session(target.manifest.id)), 3)
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (target.manifest.id, self.kitty.tab.tab_id),
+        )
+
+    def test_open_can_save_unowned_tabs_as_an_auto_session_without_mixing(self) -> None:
+        self.kitty.tab.title = "Shell"
+        target = self.store.create("Requested Project", "/tmp/requested")
+        target_snapshot = sanitize_session(
+            "new_tab Requested\nlaunch --cwd=/tmp/requested\n",
+            target.manifest,
+        )
+        self.store.write_snapshot(
+            target.manifest.id,
+            target_snapshot,
+            snapshot_summary(target_snapshot),
+        )
+        scratch_tab = LiveTab(
+            1,
+            9,
+            1,
+            "Notes",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/notes", "user_vars": {}}],
+        )
+        restored_tab = LiveTab(
+            1,
+            10,
+            2,
+            "Requested",
+            "splits",
+            [{"id": 14, "cwd": "/tmp/requested", "user_vars": {}}],
+        )
+        self.kitty.stamp_tab(restored_tab, target.manifest)
+        self.kitty.extra_tabs.append(scratch_tab)
+        self.kitty.next_open_tab = restored_tab
+
+        opened = self.service.open(
+            target.manifest.id,
+            UnownedTabsAction.SAVE_SEPARATELY,
+        )
+
+        sessions = self.store.list()
+        auto = next(session for session in sessions if session.manifest.id != target.manifest.id)
+        self.assertEqual(auto.manifest.name, "project · auto")
+        self.assertEqual(self.kitty.tab.session_id(), auto.manifest.id)
+        self.assertEqual(scratch_tab.session_id(), auto.manifest.id)
+        self.assertEqual(
+            [tab.tab_id for tab in self.kitty.tabs_for_session(target.manifest.id)],
+            [restored_tab.tab_id],
+        )
+        self.assertEqual(opened.manifest.id, target.manifest.id)
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (target.manifest.id, restored_tab.tab_id),
+        )
 
     def test_add_tab_joins_an_already_live_multi_tab_session(self) -> None:
         target = self.store.create("Live Project", "/tmp/project")
