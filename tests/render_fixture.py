@@ -5,6 +5,14 @@ from __future__ import annotations
 import curses
 from pathlib import Path
 
+from kitty_workbench.domain import (
+    KittyWindow,
+    PaneContext,
+    RestoreKind,
+    RestoreSpec,
+    SessionContext,
+    TabContext,
+)
 from kitty_workbench.kitty_client import LiveTab
 from kitty_workbench.model import SessionManifest, SessionStatus, SnapshotSummary, slugify
 from kitty_workbench.service import SessionView, UnownedTabsAction
@@ -202,7 +210,8 @@ def _view(
     tabs: int,
     panes: int,
     status: SessionStatus = "active",
-    live: bool = False,
+    live_tabs: list[LiveTab] | None = None,
+    context: SessionContext | None = None,
 ) -> SessionView:
     """Build one display row with stable timestamps and summary counts."""
     manifest = SessionManifest(
@@ -215,13 +224,177 @@ def _view(
         last_used_at="2026-08-04T11:30:00Z",
         summary=SnapshotSummary(tab_count=tabs, pane_count=panes, tab_titles=[name]),
     )
-    live_tabs = [LiveTab(1, 10, 0, name, "splits", [{"id": 20}])] if live else []
-    return SessionView(StoredSession(manifest, Path("/tmp") / slug), live_tabs)
+    return SessionView(
+        StoredSession(manifest, Path("/tmp") / slug),
+        list(live_tabs or []),
+        context,
+    )
+
+
+def _live_window(
+    window_id: int,
+    program: str,
+    *,
+    active: bool = False,
+    last_command: str = "",
+    needs_attention: bool = False,
+) -> KittyWindow:
+    """Build representative current Kitty pane metadata."""
+    return {
+        "id": window_id,
+        "title": Path(program).name,
+        "cwd": "/tmp/project",
+        "foreground_processes": [
+            {"cmdline": [program], "cwd": "/tmp/project", "pid": window_id + 1000}
+        ],
+        "is_active": active,
+        "is_focused": active,
+        "at_prompt": False,
+        "last_reported_cmdline": last_command,
+        "needs_attention": needs_attention,
+    }
+
+
+def _pane_context(
+    window_id: int,
+    program: str,
+    *,
+    agent: str | None = None,
+    last_command: str | None = None,
+    restorable: bool = False,
+    focused_at: float | None = None,
+) -> PaneContext:
+    """Build a complete saved pane with practical restore and command state."""
+    restore: RestoreSpec | None = None
+    if restorable:
+        kind: RestoreKind = "agent" if agent else "foreground"
+        restore = {
+            "argv": [program],
+            "command": program,
+            "kind": kind,
+            "auto_run": True,
+        }
+    pane: PaneContext = {
+        "window_id": window_id,
+        "title": program,
+        "cwd": "/tmp/project",
+        "program": program,
+        "agent": agent,
+        "foreground_argv": [program],
+        "foreground_command": program,
+        "restore": restore,
+        "at_prompt": program == "zsh",
+        "alternate_screen": program != "zsh",
+        "last_exit_status": 0,
+        "needs_attention": False,
+        "had_activity": False,
+        "command_history": (
+            [{"command": last_command, "completed_at": "2026-08-04T11:29:00Z"}]
+            if last_command
+            else []
+        ),
+        "last_command": last_command,
+        "last_command_output": None,
+        "last_command_output_truncated": False,
+        "last_output_command": None,
+        "terminal_history": None,
+        "terminal_history_truncated": False,
+        "alternate_screen_text": None,
+        "alternate_screen_text_truncated": False,
+    }
+    if focused_at is not None:
+        pane["last_focused_at"] = focused_at
+    return pane
+
+
+def _saved_context(tabs: list[TabContext]) -> SessionContext:
+    """Build a coherent context around representative saved tabs."""
+    panes = [pane for tab in tabs for pane in tab["panes"]]
+    return {
+        "schema_version": 1,
+        "captured_at": "2026-08-04T11:30:00Z",
+        "programs": sorted({pane["program"] for pane in panes if pane["program"]}),
+        "agents": sorted({pane["agent"] for pane in panes if pane["agent"]}),
+        "command_count": sum(len(pane["command_history"]) for pane in panes),
+        "restore_commands": [],
+        "tabs": tabs,
+    }
 
 
 def sample_views() -> list[SessionView]:
     """Return representative rows for layout and lifecycle rendering."""
     home = str(Path.home())
+    live_tabs = [
+        LiveTab(
+            1,
+            10,
+            0,
+            "agents",
+            "splits",
+            [
+                _live_window(20, "/opt/homebrew/bin/claude", active=True),
+                _live_window(21, "/opt/homebrew/bin/codex"),
+            ],
+            is_focused=True,
+            is_active=True,
+        ),
+        LiveTab(
+            1,
+            11,
+            1,
+            "editor + tests",
+            "tall",
+            [
+                _live_window(22, "nvim"),
+                _live_window(23, "pytest", last_command="pytest -q"),
+                _live_window(24, "zsh", last_command="git status"),
+            ],
+        ),
+        LiveTab(
+            1,
+            12,
+            2,
+            "monitor",
+            "stack",
+            [_live_window(25, "top", needs_attention=True)],
+        ),
+    ]
+    dotfiles_context = _saved_context(
+        [
+            {
+                "title": "editor",
+                "layout": "splits",
+                "focused": True,
+                "panes": [
+                    _pane_context(
+                        30,
+                        "claude",
+                        agent="claude",
+                        last_command="claude --continue",
+                        restorable=True,
+                        focused_at=12.0,
+                    ),
+                    _pane_context(31, "nvim", restorable=True, focused_at=10.0),
+                ],
+            },
+            {
+                "title": "shell",
+                "layout": "tall",
+                "focused": False,
+                "panes": [_pane_context(32, "zsh", last_command="git status")],
+            },
+        ]
+    )
+    vault_context = _saved_context(
+        [
+            {
+                "title": "notes",
+                "layout": "splits",
+                "focused": False,
+                "panes": [_pane_context(40, "nvim", restorable=True)],
+            }
+        ]
+    )
     return [
         _view(
             "JAX Agents",
@@ -229,9 +402,16 @@ def sample_views() -> list[SessionView]:
             f"{home}/research/jaxtor",
             tabs=3,
             panes=6,
-            live=True,
+            live_tabs=live_tabs,
         ),
-        _view("Dotfiles", "dotfiles", f"{home}/dotfiles", tabs=2, panes=3),
+        _view(
+            "Dotfiles",
+            "dotfiles",
+            f"{home}/dotfiles",
+            tabs=2,
+            panes=3,
+            context=dotfiles_context,
+        ),
         _view(
             "Main Vault",
             "main-vault",
@@ -239,6 +419,7 @@ def sample_views() -> list[SessionView]:
             tabs=1,
             panes=1,
             status="archived",
+            context=vault_context,
         ),
     ]
 

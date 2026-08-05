@@ -13,6 +13,7 @@ from kitty_workbench.tui import (
     _compact_path,
     _configure_palette,
     _edit_prompt_value,
+    _ellipsize,
     _format_row_time,
     _help_lines,
     _safe_hline,
@@ -33,6 +34,12 @@ class BrokenRuleCanvas(Canvas):
 
 
 class TuiBoundaryTests(unittest.TestCase):
+    def test_preview_ellipsis_handles_zero_single_and_unclipped_cell_budgets(self) -> None:
+        self.assertEqual(_ellipsize("agent", 0), "")
+        self.assertEqual(_ellipsize("agent", 1), "…")
+        self.assertEqual(_ellipsize("agent", 5), "agent")
+        self.assertEqual(_ellipsize("agent", 4), "age…")
+
     def test_main_loop_surfaces_action_errors_then_continues_until_close(self) -> None:
         manager = SessionManager(StaticService())
         screen = ScriptedCanvas(16, 100, ["x", "q"])

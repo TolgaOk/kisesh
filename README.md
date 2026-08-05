@@ -34,6 +34,11 @@ Name the current project with `Alt+S`, then `n`. Attach its other tabs with
 only that session's tabs in the current Kitty window while every other session
 keeps running. Other Kitty OS windows retain their normal tab bars.
 
+Moving with `j/k` expands only the selected session: each tab is followed by a
+comma-separated pane row. `✻ Claude` and `◇ Codex` identify agent panes, `•`
+marks the focused pane, and `↻` marks saved state that can be restored or
+prefilled.
+
 If the current window contains unowned tabs, opening a session asks whether to
 attach them, save them together under an automatic name, or cancel unchanged.
 Use `x` to save all commands, scrollback, layout, and tabs before closing the

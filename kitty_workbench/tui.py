@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
 
+from .preview import PanePreview, TabPreview, build_session_preview, is_shell_program
 from .service import SessionView, UnownedTabsAction
 from .store import StoredSession
 
@@ -24,7 +25,8 @@ HALF_PAGE_ROWS = 5
 
 Hint = tuple[str, str]
 Hints = tuple[Hint, ...]
-TextEntryKind = Literal["empty", "spacer", "heading"]
+TextEntryKind = Literal["empty", "spacer", "heading", "preview_empty"]
+PreviewLineKind = Literal["tab", "panes"]
 HelpSection = tuple[str, tuple[Hint, ...]]
 CursesGlyph = str | bytes | int
 
@@ -135,6 +137,15 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
         ),
     ),
     (
+        "SESSION CONTENTS",
+        (
+            ("├─ / └─", "Tabs inside the selected session."),
+            ("✻ / ◇", "Claude / Codex pane."),
+            ("•", "Focused pane."),
+            ("↻", "Saved command can be restored or prefilled."),
+        ),
+    ),
+    (
         "TAB MEMBERSHIP",
         (
             ("a", "Add the source tab to a live session."),
@@ -207,7 +218,17 @@ class TextEntry:
     text: str
 
 
-ListEntry = SessionEntry | TextEntry
+@dataclass(slots=True, frozen=True)
+class PreviewEntry:
+    """One tab or pane-detail line beneath the selected session."""
+
+    tab: TabPreview
+    tab_index: int
+    tab_count: int
+    line: PreviewLineKind
+
+
+ListEntry = SessionEntry | TextEntry | PreviewEntry
 
 
 class SessionManager:
@@ -312,7 +333,7 @@ class SessionManager:
         screen.refresh()
 
     def _list_entries(self) -> list[ListEntry]:
-        """Build typed table entries in active-then-archived display order."""
+        """Build table rows and expand only the selected session's contents."""
         entries: list[ListEntry] = [
             SessionEntry(row, index) for index, row in enumerate(self.active_rows)
         ]
@@ -329,6 +350,29 @@ class SessionManager:
             SessionEntry(row, len(self.active_rows) + index)
             for index, row in enumerate(self.archived_rows)
         )
+        selected_match = next(
+            (
+                (index, entry)
+                for index, entry in enumerate(entries)
+                if isinstance(entry, SessionEntry) and entry.selection_index == self.selected
+            ),
+            None,
+        )
+        if selected_match is None:
+            return entries
+        selected_entry, selected_session = selected_match
+        preview = build_session_preview(selected_session.view)
+        details: list[ListEntry] = []
+        for tab_index, tab in enumerate(preview.tabs):
+            details.extend(
+                (
+                    PreviewEntry(tab, tab_index, len(preview.tabs), "tab"),
+                    PreviewEntry(tab, tab_index, len(preview.tabs), "panes"),
+                )
+            )
+        if not details:
+            details.append(TextEntry("preview_empty", "└─ no tabs captured"))
+        entries[selected_entry + 1 : selected_entry + 1] = details
         return entries
 
     def _draw_entries(
@@ -348,7 +392,16 @@ class SessionManager:
             ),
             0,
         )
-        start = max(0, selected_entry - content_height + 1)
+        preview_count = 0
+        for entry in entries[selected_entry + 1 :]:
+            if isinstance(entry, PreviewEntry) or (
+                isinstance(entry, TextEntry) and entry.kind == "preview_empty"
+            ):
+                preview_count += 1
+                continue
+            break
+        visible_preview = min(preview_count, max(0, content_height - 1))
+        start = max(0, selected_entry + 1 + visible_preview - content_height)
         for offset, entry in enumerate(entries[start : start + content_height]):
             y = 3 + offset
             if isinstance(entry, SessionEntry):
@@ -359,6 +412,8 @@ class SessionManager:
                     entry.view,
                     entry.selection_index,
                 )
+            elif isinstance(entry, PreviewEntry):
+                self._draw_preview(screen, y, width, entry)
             elif entry.kind == "heading":
                 _safe_addstr(
                     screen,
@@ -367,7 +422,7 @@ class SessionManager:
                     entry.text[: width - 4],
                     self.palette.muted | curses.A_BOLD,
                 )
-            elif entry.kind == "empty":
+            elif entry.kind in {"empty", "preview_empty"}:
                 _safe_addstr(screen, y, 4, entry.text[: width - 8], self.palette.muted)
 
     def _draw_footer(self, screen: Screen, height: int, width: int) -> None:
@@ -497,6 +552,93 @@ class SessionManager:
             self.palette.muted,
         )
 
+    def _draw_preview(
+        self,
+        screen: Screen,
+        y: int,
+        width: int,
+        entry: PreviewEntry,
+    ) -> None:
+        """Render one themed tree line for a selected session tab or its panes."""
+        tab = entry.tab
+        last_tab = entry.tab_index == entry.tab_count - 1
+        connector = "└─ " if last_tab else "├─ "
+        continuation = "   " if last_tab else "│  "
+        left = 4
+        right = max(left, width - 2)
+        available = max(0, right - left)
+        if entry.line == "tab":
+            pane_count = len(tab.panes)
+            pane_label = "pane" if pane_count == 1 else "panes"
+            metadata = (
+                " · snapshot" if not tab.details_available else f" · {pane_count} {pane_label}"
+            )
+            if tab.layout:
+                metadata += f" · {tab.layout}"
+            if tab.focused:
+                metadata += " · focused"
+            title_width = max(1, available - len(connector) - len(metadata))
+            title = _ellipsize(tab.title, title_width)
+            _safe_addstr(screen, y, left, connector, self.palette.muted)
+            _safe_addstr(
+                screen,
+                y,
+                left + len(connector),
+                title,
+                self.palette.accent | curses.A_BOLD,
+            )
+            metadata_x = left + len(connector) + len(title)
+            _safe_addstr(
+                screen,
+                y,
+                metadata_x,
+                metadata[: max(0, right - metadata_x)],
+                self.palette.muted,
+            )
+            return
+
+        _safe_addstr(screen, y, left, continuation, self.palette.muted)
+        pane_x = left + len(continuation)
+        if not tab.details_available:
+            _safe_addstr(
+                screen,
+                y,
+                pane_x,
+                "pane details unavailable"[: max(0, right - pane_x)],
+                self.palette.muted,
+            )
+            return
+        if not tab.panes:
+            _safe_addstr(
+                screen,
+                y,
+                pane_x,
+                "empty tab"[: max(0, right - pane_x)],
+                self.palette.muted,
+            )
+            return
+
+        labels = [_pane_preview_label(pane) for pane in tab.panes]
+        for index, (pane, label) in enumerate(zip(tab.panes, labels, strict=True)):
+            if index:
+                separator = ", "[: max(0, right - pane_x)]
+                _safe_addstr(screen, y, pane_x, separator, self.palette.muted)
+                pane_x += len(separator)
+            remaining = len(labels) - index
+            separators = max(0, remaining - 1) * 2
+            label_width = max(1, (max(0, right - pane_x - separators)) // remaining)
+            rendered = _ellipsize(label, label_width)
+            if pane.needs_attention:
+                style = self.palette.warning
+            elif pane.agent == "claude":
+                style = self.palette.accent | curses.A_BOLD
+            elif pane.agent == "codex" or pane.active:
+                style = self.palette.good | curses.A_BOLD
+            else:
+                style = self.palette.normal
+            _safe_addstr(screen, y, pane_x, rendered, style)
+            pane_x += len(rendered)
+
     def _draw_session(
         self,
         screen: Screen,
@@ -513,8 +655,12 @@ class SessionManager:
             symbol, status_style = "○", self.palette.muted
         else:
             symbol, status_style = "○", self.palette.accent
-        tabs = manifest.summary.tab_count
-        panes = manifest.summary.pane_count
+        tabs = len(view.live_tabs) if view.live else manifest.summary.tab_count
+        panes = (
+            sum(len(tab.windows) for tab in view.live_tabs)
+            if view.live
+            else manifest.summary.pane_count
+        )
         selected = selection_index == self.selected
         style = self.palette.selected if selected else self.palette.normal
         prefix = "›" if selected else " "
@@ -847,6 +993,32 @@ def _edit_prompt_value(value: list[str], key: object) -> bool:
         value.append(key)
         return True
     return False
+
+
+def _pane_preview_label(pane: PanePreview) -> str:
+    """Format one pane with agent, focus, command, and restore indicators."""
+    agent_labels = {"claude": "✻ Claude", "codex": "◇ Codex"}
+    label = agent_labels.get(pane.agent or "", pane.agent.title() if pane.agent else pane.program)
+    if pane.active:
+        label = f"• {label}"
+    if pane.restore_available:
+        label += " ↻"
+    if pane.last_command and is_shell_program(pane.program):
+        label += f" · last: {pane.last_command}"
+    if pane.needs_attention:
+        label += " !"
+    return label
+
+
+def _ellipsize(value: str, width: int) -> str:
+    """Fit text to a positive cell budget while keeping truncation visible."""
+    if width <= 0:
+        return ""
+    if len(value) <= width:
+        return value
+    if width == 1:
+        return "…"
+    return value[: width - 1] + "…"
 
 
 def _configure_palette() -> Palette:

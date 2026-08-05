@@ -19,13 +19,13 @@
 
 ## Selected session contents
 
-- Expand the focused session row like a folder tree without expanding every
+- [x] Expand the focused session row like a folder tree without expanding every
   session in the list.
-- Show its tabs as child rows and each tab's panes or foreground programs on a
+- [x] Show its tabs as child rows and each tab's panes or foreground programs on a
   compact second row, separated by commas.
-- Mark each Claude and Codex pane with a recognizable agent symbol plus concise
+- [x] Mark each Claude and Codex pane with a recognizable agent symbol plus concise
   useful context such as pane count, active command, and restore availability.
-- Keep the preview theme-aware, Vim-navigable, readable in narrow overlays, and
+- [x] Keep the preview theme-aware, Vim-navigable, readable in narrow overlays, and
   usable with a text fallback when decorative glyphs are unavailable.
-- Cover live and saved context, multi-tab and multi-agent sessions, empty tabs,
+- [x] Cover live and saved context, multi-tab and multi-agent sessions, empty tabs,
   long names, narrow rendering, and selection changes with reviewed render tests.

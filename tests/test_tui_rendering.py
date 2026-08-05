@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import curses
 import unittest
 from collections.abc import Iterable
 from pathlib import Path
@@ -118,6 +119,123 @@ class TuiRenderingTests(unittest.TestCase):
         actual, _, _ = rendered_manager()
         golden = Path(__file__).parent / "golden" / "session-manager-100x16.txt"
         self.assertMultiLineEqual(actual, golden.read_text(encoding="utf-8"))
+
+    def test_selected_saved_session_expands_into_two_line_tab_contents(self) -> None:
+        rendered, canvas, palette = rendered_manager()
+        lines = rendered.splitlines()
+
+        editor_row = next(index for index, line in enumerate(lines) if "├─ editor" in line)
+        shell_row = next(index for index, line in enumerate(lines) if "└─ shell" in line)
+        self.assertEqual(lines[editor_row + 1].strip(), "│  • ✻ Claude ↻, nvim ↻")
+        self.assertEqual(lines[shell_row + 1].strip(), "zsh · last: git status")
+        self.assertIn("2 panes · splits · focused", lines[editor_row])
+        self.assertIn("1 pane · tall", lines[shell_row])
+        self.assertNotIn("├─ agents", rendered)
+        claude_x = lines[editor_row + 1].index("✻")
+        self.assertEqual(
+            canvas.styles[editor_row + 1][claude_x],
+            palette.accent | curses.A_BOLD,
+        )
+
+    def test_selected_live_session_uses_current_agents_focus_and_attention(self) -> None:
+        manager = SessionManager(StaticService())
+        manager._refresh()
+        manager.selected = 0
+        _, _, palette = rendered_manager()
+        manager.palette = palette
+        screen = Canvas(18, 100)
+
+        manager._draw(screen)
+        rendered = screen.render()
+        lines = rendered.splitlines()
+
+        self.assertIn("├─ agents · 2 panes · splits · focused", rendered)
+        self.assertIn("│  • ✻ Claude, ◇ Codex", rendered)
+        self.assertIn("├─ editor + tests · 3 panes · tall", rendered)
+        self.assertIn("nvim, pytest, zsh · last: git status", rendered)
+        self.assertIn("└─ monitor · 1 pane · stack", rendered)
+        self.assertIn("top !", rendered)
+        self.assertNotIn("↻", rendered)
+        agent_row = next(index for index, line in enumerate(lines) if "◇ Codex" in line)
+        codex_x = lines[agent_row].index("◇")
+        self.assertEqual(
+            screen.styles[agent_row][codex_x],
+            palette.good | curses.A_BOLD,
+        )
+        attention_row = next(index for index, line in enumerate(lines) if "top !" in line)
+        attention_x = lines[attention_row].index("top")
+        self.assertEqual(screen.styles[attention_row][attention_x], palette.warning)
+
+    def test_preview_follows_vim_selection_without_expanding_other_sessions(self) -> None:
+        manager = SessionManager(StaticService())
+        manager._refresh()
+        manager.selected = 2
+        manager.palette = rendered_manager()[2]
+        screen = Canvas(16, 100)
+
+        manager._draw(screen)
+        archived = screen.render()
+        self.assertIn("└─ notes · 1 pane · splits", archived)
+        self.assertNotIn("├─ editor", archived)
+        self.assertNotIn("├─ agents", archived)
+
+        manager._handle_navigation_key("k")
+        manager._draw(screen)
+        saved = screen.render()
+        self.assertIn("├─ editor", saved)
+        self.assertNotIn("└─ notes", saved)
+
+    def test_preview_is_height_aware_and_clips_long_saved_details(self) -> None:
+        tiny, _, _ = rendered_manager(48, 8)
+        self.assertNotIn("├─", tiny)
+        self.assertNotIn("└─", tiny)
+
+        service = StaticService()
+        context = service._rows[1].context
+        self.assertIsNotNone(context)
+        assert context is not None
+        context["tabs"][0]["title"] = "editor-" + "very-long-" * 20
+        context["tabs"][0]["panes"][0]["last_command"] = "command " * 50
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 1
+        manager.palette = rendered_manager()[2]
+        screen = Canvas(10, 60)
+
+        manager._draw(screen)
+        rendered = screen.render()
+        self.assertIn("…", rendered)
+        self.assertIn("2 panes", rendered)
+        self.assertTrue(all(len(line) <= 60 for line in rendered.splitlines()))
+
+    def test_empty_and_summary_only_tabs_have_honest_preview_fallbacks(self) -> None:
+        service = StaticService()
+        context = service._rows[1].context
+        self.assertIsNotNone(context)
+        assert context is not None
+        context["tabs"][0]["panes"] = []
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 1
+        manager.palette = rendered_manager()[2]
+        screen = Canvas(12, 100)
+
+        manager._draw(screen)
+        self.assertIn("empty tab", screen.render())
+
+        service._rows[1].context = None
+        service._rows[1].stored.manifest.summary.tab_titles = ["known tab"]
+        manager._refresh()
+        manager._draw(screen)
+        summary = screen.render()
+        self.assertIn("known tab · snapshot", summary)
+        self.assertIn("pane details unavailable", summary)
+
+        service._rows[1].stored.manifest.summary.tab_count = 0
+        service._rows[1].stored.manifest.summary.tab_titles = []
+        manager._refresh()
+        manager._draw(screen)
+        self.assertIn("└─ no tabs captured", screen.render())
 
     def test_rendering_stays_inside_practical_terminal_sizes(self) -> None:
         for width, height in ((48, 8), (60, 10), (80, 12), (120, 24)):
