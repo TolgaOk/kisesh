@@ -60,6 +60,141 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(safe.count(f"{SESSION_ID_VAR}={stored.manifest.id}"), 2)
         self.assertTrue(stored.context_path.is_file())
 
+    def test_new_session_can_group_every_unowned_tab_in_its_kitty_window(self) -> None:
+        scratch = LiveTab(
+            1,
+            9,
+            1,
+            "Notes",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/notes", "user_vars": {}}],
+            is_focused=True,
+            is_active=True,
+        )
+        other_window = LiveTab(
+            2,
+            20,
+            0,
+            "Other window",
+            "splits",
+            [{"id": 21, "cwd": "/tmp/other", "user_vars": {}}],
+        )
+        self.kitty.extra_tabs.extend((scratch, other_window))
+        self.kitty.current_tab = scratch
+        self.kitty.capture_session_text = (
+            "new_tab Shell\nlaunch --cwd=/tmp/project\nnew_tab Notes\nlaunch --cwd=/tmp/notes\n"
+        )
+
+        created = self.service.create_from_unowned(
+            "Research",
+            UnownedTabsDecision(UnownedTabsAction.ATTACH),
+        )
+
+        self.assertEqual(self.kitty.tab.session_id(), created.manifest.id)
+        self.assertEqual(scratch.session_id(), created.manifest.id)
+        self.assertIsNone(other_window.session_id())
+        self.assertEqual(created.manifest.project_root, "/tmp/notes")
+        self.assertEqual(created.manifest.summary.tab_count, 2)
+        self.assertEqual(self.kitty.opened, [])
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (created.manifest.id, scratch.tab_id),
+        )
+
+    def test_new_session_can_preserve_current_tabs_then_open_one_fresh_shell(self) -> None:
+        self.kitty.window["cwd"] = "/tmp/Current Project"
+        self.kitty.window["foreground_processes"] = [
+            {"cmdline": ["-zsh"], "cwd": "/tmp/Current Project"}
+        ]
+        scratch = LiveTab(
+            1,
+            9,
+            1,
+            "Notes",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/notes", "user_vars": {}}],
+        )
+        fresh_shell = LiveTab(
+            1,
+            10,
+            2,
+            "Fresh Shell",
+            "splits",
+            [{"id": 14, "cwd": "/tmp/Current Project", "user_vars": {}}],
+            is_focused=True,
+            is_active=True,
+        )
+        self.kitty.extra_tabs.append(scratch)
+        self.kitty.next_open_tab = fresh_shell
+        self.kitty.capture_session_text = (
+            "new_tab Project\nlaunch --cwd='/tmp/Current Project'\n"
+            "new_tab Notes\nlaunch --cwd=/tmp/notes\n"
+        )
+
+        created = self.service.create_from_unowned(
+            "Clean Room",
+            UnownedTabsDecision(
+                UnownedTabsAction.SAVE_SEPARATELY,
+                "Earlier Work",
+            ),
+        )
+
+        sessions = {stored.manifest.name: stored for stored in self.store.list()}
+        preserved = sessions["Earlier Work"]
+        self.assertEqual(created.manifest.name, "Clean Room")
+        self.assertEqual(created.manifest.summary.tab_count, 1)
+        self.assertEqual(created.manifest.summary.pane_count, 1)
+        self.assertEqual(
+            created.manifest.summary.working_directories,
+            ["/tmp/Current Project"],
+        )
+        self.assertEqual(created.manifest.project_root, "/tmp/Current Project")
+        self.assertEqual(self.kitty.tab.session_id(), preserved.manifest.id)
+        self.assertEqual(scratch.session_id(), preserved.manifest.id)
+        self.assertEqual(fresh_shell.session_id(), created.manifest.id)
+        self.assertEqual(preserved.manifest.summary.tab_count, 2)
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (created.manifest.id, fresh_shell.tab_id),
+        )
+
+    def test_new_session_discards_exact_source_tabs_only_after_fresh_shell_opens(self) -> None:
+        scratch = LiveTab(
+            1,
+            9,
+            1,
+            "Throwaway",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/scratch", "user_vars": {}}],
+        )
+        fresh_shell = LiveTab(
+            1,
+            10,
+            2,
+            "Fresh Shell",
+            "splits",
+            [{"id": 14, "cwd": "/tmp/project", "user_vars": {}}],
+        )
+        self.kitty.extra_tabs.append(scratch)
+        self.kitty.next_open_tab = fresh_shell
+
+        created = self.service.create_from_unowned(
+            "Fresh Start",
+            UnownedTabsDecision(UnownedTabsAction.DISCARD),
+        )
+
+        self.assertEqual(self.kitty.closed_tabs, [self.kitty.tab.tab_id, scratch.tab_id])
+        self.assertEqual([tab.tab_id for tab in self.kitty.tabs()], [fresh_shell.tab_id])
+        self.assertEqual(fresh_shell.session_id(), created.manifest.id)
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (created.manifest.id, fresh_shell.tab_id),
+        )
+        self.assertEqual(
+            [stored.manifest.name for stored in self.store.list()],
+            ["Fresh Start"],
+        )
+
     def test_save_records_completed_history_and_restores_live_agent_context(self) -> None:
         self.kitty.window.update(
             {

@@ -13,6 +13,12 @@
   - auto-name and save those tabs as a separate session, then open the requested
     session without mixing their tabs; or
   - cancel without changing tabs or session state.
+- [x] When `n` is pressed in a Kitty window with no attached session, ask whether
+  the new session should:
+  - contain every current unowned tab without adding another tab;
+  - preserve those tabs under an editable random unused name and start with one
+    fresh shell; or
+  - discard those tabs after confirmation and start with one fresh shell.
 - [x] Cover multi-tab sessions, multiple simultaneously live sessions, failed saves,
   canceled prompts, and accidental-close recovery with practical rendering and
   end-to-end tests.

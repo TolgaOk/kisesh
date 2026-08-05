@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import shlex
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
@@ -250,6 +251,66 @@ class WorkbenchService:
         )
         client.activate_session(stored.manifest.id, tab)
         return stored
+
+    def create_from_unowned(
+        self,
+        name: str,
+        decision: UnownedTabsDecision,
+        project_root: str | None = None,
+    ) -> StoredSession:
+        """Create a session after explicitly resolving every unowned source tab."""
+        clean_name = name.strip()
+        if not clean_name:
+            raise WorkbenchError("session name cannot be empty")
+        if decision.action is not UnownedTabsAction.SAVE_SEPARATELY and decision.name is not None:
+            raise WorkbenchError("only save-separately accepts an unowned session name")
+
+        client = self._kitty()
+        state = client.list_state()
+        source = client.focused_tab(state, exclude_window_id=_environment_window_id())
+        tabs = self._source_unowned_tabs(client, state)
+        if not tabs:
+            raise WorkbenchError("the current Kitty window has no unowned tabs")
+        root = project_root or source.suggested_root()
+
+        if decision.action is UnownedTabsAction.ATTACH:
+            stored = self._create_tabs_session(clean_name, root, tabs)
+            active_tab = next((tab for tab in tabs if tab.tab_id == source.tab_id), tabs[0])
+            client.activate_session(stored.manifest.id, active_tab)
+            return stored
+
+        blank = self._create_blank_session(clean_name, root)
+        try:
+            return self.open(blank.manifest.id, decision)
+        except Exception:
+            self._remove_unopened_session(client, blank.manifest.id)
+            raise
+
+    def _create_blank_session(self, name: str, project_root: str) -> StoredSession:
+        """Persist a one-shell snapshot that Kitty can open as a native session."""
+        stored = self.store.create(name, project_root)
+        try:
+            raw = shlex.join(("launch", f"--cwd={project_root}"))
+            safe = sanitize_session(raw, stored.manifest)
+            return self.store.write_snapshot(
+                stored.manifest.id,
+                safe,
+                snapshot_summary(safe),
+            )
+        except Exception:
+            with suppress(StoreError):
+                self.store.move_to_trash(stored.manifest.id)
+            raise
+
+    def _remove_unopened_session(self, client: KittyController, session_id: str) -> None:
+        """Remove a failed blank session only when Kitty has no live tab for it."""
+        try:
+            live = client.tabs_for_session(session_id)
+        except KittyError:
+            return
+        if not live:
+            with suppress(StoreError):
+                self.store.move_to_trash(session_id)
 
     def _create_tabs_session(
         self,

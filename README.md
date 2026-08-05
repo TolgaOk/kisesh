@@ -16,10 +16,12 @@ From this checkout:
 ./install
 ```
 
-Restart Kitty once, press `Alt+S`, then `n` to name the current tab as a
-session. `Alt+S` toggles the overlay; it never creates a split or a manager
-pane. The installer validates the complete Kitty config before changing it and
-keeps one backup beside `kitty.conf`.
+Restart Kitty once, press `Alt+S`, then `n` to name a session. In an unattached
+Kitty window, choose whether it contains all current tabs or starts with one
+fresh shell after the existing tabs are preserved or discarded. `Alt+S` toggles
+the overlay; it never creates a split or a manager pane. The installer validates
+the complete Kitty config before changing it and keeps one backup beside
+`kitty.conf`.
 
 ```sh
 ./install --disable    # keep code and sessions
@@ -29,10 +31,12 @@ keeps one backup beside `kitty.conf`.
 
 ## Example
 
-Name the current project with `Alt+S`, then `n`. Attach its other tabs with
-`a`; a session may contain many tabs and panes. Opening another session shows
-only that session's tabs in the current Kitty window while every other session
-keeps running. Other Kitty OS windows retain their normal tab bars.
+Name the current project with `Alt+S`, then `n`. If several unattached tabs are
+already open, use them all as one session, preserve them under the suggested
+editable name and start fresh, or discard them after confirmation. A session
+may contain many tabs and panes. Opening another session shows only that
+session's tabs in the current Kitty window while every other session keeps
+running. Other Kitty OS windows retain their normal tab bars.
 
 Moving with `j/k` expands only the selected session: each tab is followed by a
 comma-separated pane row. `✻ Claude` and `◇ Codex` identify agent panes, `•`

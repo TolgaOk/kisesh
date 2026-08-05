@@ -117,6 +117,7 @@ class StaticService:
         self._rows = sample_views()
         self.unowned_count = 0
         self.unowned_suggested_name = "Amber Badger"
+        self.unowned_creations: list[tuple[str, UnownedTabsDecision]] = []
 
     def views(self) -> list[SessionView]:
         """Return an isolated list of current rows."""
@@ -141,6 +142,16 @@ class StaticService:
         )
         self._rows.append(view)
         return view.stored
+
+    def create_from_unowned(
+        self,
+        name: str,
+        decision: UnownedTabsDecision,
+        project_root: str | None = None,
+    ) -> StoredSession:
+        """Append a fixture session after accepting an explicit tab decision."""
+        self.unowned_creations.append((name, decision))
+        return self.create_from_active(name, project_root)
 
     def unarchive(self, slug_or_id: str) -> StoredSession:
         """Mark one fixture session active."""

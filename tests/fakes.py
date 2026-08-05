@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
@@ -182,8 +183,18 @@ class FakeKitty:
     def open_snapshot(self, path: Path) -> None:
         """Record a snapshot open and expose its restored tab with a fresh ID."""
         self.opened.append(path)
-        self.opened_contents.append(path.read_text(encoding="utf-8"))
+        content = path.read_text(encoding="utf-8")
+        self.opened_contents.append(content)
         if self.next_open_tab is not None:
+            variables = {
+                name: value
+                for line in content.splitlines()
+                for token in shlex.split(line)
+                if token.startswith("--var=") and "=" in token.removeprefix("--var=")
+                for name, value in (token.removeprefix("--var=").split("=", 1),)
+            }
+            for window in self.next_open_tab.windows:
+                window.setdefault("user_vars", {}).update(variables)
             self.extra_tabs.append(self.next_open_tab)
             self.next_open_tab = None
             return

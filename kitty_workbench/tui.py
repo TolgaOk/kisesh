@@ -82,6 +82,14 @@ class SessionOperations(Protocol):
     def create_from_active(self, name: str, project_root: str | None = None) -> StoredSession:
         """Create a session from the source tab."""
 
+    def create_from_unowned(
+        self,
+        name: str,
+        decision: UnownedTabsDecision,
+        project_root: str | None = None,
+    ) -> StoredSession:
+        """Create a session after resolving all unowned source-window tabs."""
+
     def unarchive(self, slug_or_id: str) -> StoredSession:
         """Return an archived session to the active list."""
 
@@ -161,7 +169,7 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
     (
         "SESSION ACTIONS",
         (
-            ("n", "Create from the source tab."),
+            ("n", "Create; resolve unowned tabs first."),
             ("s", "Snapshot all owned live tabs."),
             ("x", "Save successfully, then close all live tabs."),
             ("r", "Rename session."),
@@ -726,12 +734,26 @@ class SessionManager:
         return True, result
 
     def _create_session(self, screen: Screen) -> None:
-        """Prompt for and create a non-empty session name."""
+        """Name a session and explicitly resolve unowned source-window tabs."""
         name = self._prompt(screen, "new session")
-        if name:
+        if not name:
+            return
+        unowned = self.service.unowned_tabs_info()
+        if unowned is None:
             created = self.service.create_from_active(name)
-            self.message = f"created {created.manifest.name}"
-            self._refresh()
+        else:
+            decision = self._choose_unowned_tabs(
+                screen,
+                unowned,
+                name,
+                creating=True,
+            )
+            if decision is None:
+                self.message = "create cancelled; tabs unchanged"
+                return
+            created = self.service.create_from_unowned(name, decision)
+        self.message = f"created {created.manifest.name}"
+        self._refresh()
 
     def _handle_navigation_key(self, key: object) -> bool:
         """Move selection for Vim, arrow, and half-page navigation keys."""
@@ -844,6 +866,8 @@ class SessionManager:
         screen: Screen,
         unowned: UnownedTabsInfo,
         target_name: str,
+        *,
+        creating: bool = False,
     ) -> UnownedTabsDecision | None:
         """Read attach, named-save, confirmed-discard, or cancel for source tabs."""
         height, width = screen.getmaxyx()
@@ -853,11 +877,21 @@ class SessionManager:
         left = max(0, (width - box_width) // 2)
         bottom = top + box_height - 1
         inner_width = max(0, box_width - 4)
+        if creating:
+            heading = f"New session · {unowned.count} unowned tabs"
+            attach_label = f"use all tabs for {target_name}"
+            save_label = "save separately; start fresh shell"
+            discard_label = "discard; start fresh shell"
+        else:
+            heading = f"Unowned tabs · {unowned.count}"
+            attach_label = f"attach to {target_name}"
+            save_label = "name + save separately"
+            discard_label = "discard tabs without saving"
         lines = (
-            ("", f"Unowned tabs · {unowned.count}", self.palette.accent | curses.A_BOLD),
-            ("a", f"attach to {target_name}", self.palette.normal),
-            ("s", "name + save separately", self.palette.normal),
-            ("d", "discard tabs without saving", self.palette.warning),
+            ("", heading, self.palette.accent | curses.A_BOLD),
+            ("a", attach_label, self.palette.normal),
+            ("s", save_label, self.palette.normal),
+            ("d", discard_label, self.palette.warning),
             ("q / Esc", "cancel; change nothing", self.palette.muted),
         )
 

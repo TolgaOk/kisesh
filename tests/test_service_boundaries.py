@@ -16,7 +16,7 @@ from kitty_workbench.service import (
     _environment_window_id,
 )
 from kitty_workbench.session_file import sanitize_session, snapshot_summary
-from kitty_workbench.store import SessionStore, StoreError
+from kitty_workbench.store import SessionStore, StoredSession, StoreError
 from tests.fakes import FakeKitty
 
 
@@ -81,6 +81,214 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.kitty.stamp_tab(self.kitty.tab, existing.manifest)
         with self.assertRaisesRegex(WorkbenchError, "already belongs"):
             self.service.create_from_active("Second")
+
+    def test_unowned_creation_validates_names_decisions_and_current_window_state(self) -> None:
+        with self.assertRaisesRegex(WorkbenchError, "name cannot be empty"):
+            self.service.create_from_unowned(
+                "   ",
+                UnownedTabsDecision(UnownedTabsAction.ATTACH),
+            )
+        with self.assertRaisesRegex(WorkbenchError, "only save-separately accepts"):
+            self.service.create_from_unowned(
+                "New",
+                UnownedTabsDecision(UnownedTabsAction.ATTACH, "Unexpected"),
+            )
+
+        owned = self.store.create("Existing", "/tmp")
+        self.kitty.stamp_tab(self.kitty.tab, owned.manifest)
+        with self.assertRaisesRegex(WorkbenchError, "no unowned tabs"):
+            self.service.create_from_unowned(
+                "New",
+                UnownedTabsDecision(UnownedTabsAction.DISCARD),
+            )
+        self.assertEqual(
+            [stored.manifest.name for stored in self.store.list()],
+            ["Existing"],
+        )
+
+    def test_unowned_creation_tolerates_focus_race_and_honors_root_override(self) -> None:
+        raced_tab = LiveTab(
+            1,
+            8,
+            1,
+            "Raced focus",
+            "splits",
+            [{"id": 12, "cwd": "/tmp/raced", "user_vars": {}}],
+        )
+        self.kitty.extra_tabs.append(raced_tab)
+
+        with mock.patch.object(
+            self.service,
+            "_source_unowned_tabs",
+            return_value=[raced_tab],
+        ):
+            created = self.service.create_from_unowned(
+                "Selected",
+                UnownedTabsDecision(UnownedTabsAction.ATTACH),
+                "/tmp/override",
+            )
+
+        self.assertEqual(created.manifest.project_root, "/tmp/override")
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (created.manifest.id, raced_tab.tab_id),
+        )
+        self.assertIsNone(self.kitty.tab.session_id())
+
+    def test_failed_blank_snapshot_write_removes_the_partial_session(self) -> None:
+        with (
+            mock.patch.object(
+                self.store,
+                "write_snapshot",
+                side_effect=OSError("disk full"),
+            ),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            self.service.create_from_unowned(
+                "No Trace",
+                UnownedTabsDecision(UnownedTabsAction.DISCARD),
+            )
+
+        self.assertEqual(self.store.list(), [])
+        self.assertTrue(self.kitty.include_tab)
+        self.assertEqual(self.kitty.opened, [])
+
+    def test_failed_blank_snapshot_cleanup_does_not_hide_the_write_error(self) -> None:
+        with (
+            mock.patch.object(
+                self.store,
+                "write_snapshot",
+                side_effect=OSError("disk full"),
+            ),
+            mock.patch.object(
+                self.store,
+                "move_to_trash",
+                side_effect=StoreError("trash unavailable"),
+            ),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            self.service.create_from_unowned(
+                "Recoverable Partial",
+                UnownedTabsDecision(UnownedTabsAction.DISCARD),
+            )
+
+        self.assertEqual(
+            [stored.manifest.name for stored in self.store.list()],
+            ["Recoverable Partial"],
+        )
+
+    def test_failed_fresh_shell_open_removes_blank_but_never_discards_source_tabs(self) -> None:
+        with (
+            mock.patch.object(
+                self.service,
+                "_open_inactive_snapshot",
+                side_effect=WorkbenchError("fresh shell failed"),
+            ),
+            self.assertRaisesRegex(WorkbenchError, "fresh shell failed"),
+        ):
+            self.service.create_from_unowned(
+                "Failed Fresh Start",
+                UnownedTabsDecision(UnownedTabsAction.DISCARD),
+            )
+
+        self.assertEqual(self.store.list(), [])
+        self.assertTrue(self.kitty.include_tab)
+        self.assertEqual(self.kitty.closed_tabs, [])
+        self.assertIsNone(self.kitty.tab.session_id())
+
+    def test_failed_fresh_shell_after_preservation_keeps_the_recoverable_source(self) -> None:
+        with (
+            mock.patch.object(
+                self.service,
+                "_open_inactive_snapshot",
+                side_effect=WorkbenchError("fresh shell failed"),
+            ),
+            self.assertRaisesRegex(WorkbenchError, "fresh shell failed"),
+        ):
+            self.service.create_from_unowned(
+                "Failed Target",
+                UnownedTabsDecision(
+                    UnownedTabsAction.SAVE_SEPARATELY,
+                    "Safe Source",
+                ),
+            )
+
+        sessions = self.store.list()
+        self.assertEqual([stored.manifest.name for stored in sessions], ["Safe Source"])
+        self.assertEqual(self.kitty.tab.session_id(), sessions[0].manifest.id)
+        self.assertTrue(sessions[0].snapshot_path.is_file())
+        self.assertEqual(self.kitty.closed_tabs, [])
+
+    def test_failed_open_retains_a_blank_session_if_kitty_reports_it_live(self) -> None:
+        fresh_shell = LiveTab(
+            1,
+            8,
+            1,
+            "Fresh shell",
+            "splits",
+            [{"id": 12, "cwd": "/tmp", "user_vars": {}}],
+        )
+
+        def fail_after_open(identifier: str, decision: UnownedTabsDecision) -> StoredSession:
+            stored = self.store.get(identifier)
+            self.kitty.stamp_tab(fresh_shell, stored.manifest)
+            self.kitty.extra_tabs.append(fresh_shell)
+            raise WorkbenchError(f"activation failed after {decision.action}")
+
+        with (
+            mock.patch.object(self.service, "open", side_effect=fail_after_open),
+            self.assertRaisesRegex(WorkbenchError, "activation failed"),
+        ):
+            self.service.create_from_unowned(
+                "Still Recoverable",
+                UnownedTabsDecision(UnownedTabsAction.DISCARD),
+            )
+
+        sessions = self.store.list()
+        self.assertEqual([stored.manifest.name for stored in sessions], ["Still Recoverable"])
+        self.assertEqual(fresh_shell.session_id(), sessions[0].manifest.id)
+        self.assertTrue(self.kitty.include_tab)
+
+    def test_failed_open_keeps_blank_when_live_state_or_cleanup_is_unavailable(self) -> None:
+        for failure in (KittyError("socket gone"), None):
+            with self.subTest(failure=failure):
+                root = self.root / ("socket" if failure is not None else "trash")
+                store = SessionStore(root)
+                kitty = FakeKitty()
+                service = WorkbenchService(store, kitty)
+                patches = [
+                    mock.patch.object(
+                        service,
+                        "open",
+                        side_effect=WorkbenchError("open failed"),
+                    )
+                ]
+                if failure is not None:
+                    patches.append(
+                        mock.patch.object(kitty, "tabs_for_session", side_effect=failure)
+                    )
+                else:
+                    patches.append(
+                        mock.patch.object(
+                            store,
+                            "move_to_trash",
+                            side_effect=StoreError("trash unavailable"),
+                        )
+                    )
+                with (
+                    patches[0],
+                    patches[1],
+                    self.assertRaisesRegex(WorkbenchError, "open failed"),
+                ):
+                    service.create_from_unowned(
+                        "Retained Blank",
+                        UnownedTabsDecision(UnownedTabsAction.DISCARD),
+                    )
+
+                self.assertEqual(
+                    [stored.manifest.name for stored in store.list()],
+                    ["Retained Blank"],
+                )
 
     def test_stale_native_owner_keeps_a_new_tab_explicitly_unowned(self) -> None:
         stale = self.store.create("Removed", "/tmp")

@@ -379,6 +379,74 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertIn("discard tabs without saving", rendered)
         self.assertIn("cancel; change nothing", rendered)
 
+    def test_new_session_modal_groups_all_unowned_tabs_without_adding_a_blank_tab(self) -> None:
+        service = RecordingService()
+        service.unowned_count = 3
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.palette = rendered_manager()[2]
+        screen = ScriptedCanvas(16, 100, [*list("Research"), "\n", "a"])
+
+        manager._handle_key(screen, "n")
+
+        decision = UnownedTabsDecision(UnownedTabsAction.ATTACH)
+        self.assertEqual(service.unowned_creations, [("Research", decision)])
+        self.assertEqual(service._rows[-1].stored.manifest.name, "Research")
+        self.assertEqual(manager.message, "created Research")
+        rendered = screen.render()
+        self.assertIn("New session · 3 unowned tabs", rendered)
+        self.assertIn("use all tabs for Research", rendered)
+        self.assertIn("save separately; start fresh shell", rendered)
+        self.assertIn("discard; start fresh shell", rendered)
+        top, left, width = 4, 14, 72
+        self.assertEqual(
+            "".join(screen.cells[top][left : left + width]),
+            "╭" + "─" * (width - 2) + "╮",
+        )
+        self.assertEqual(
+            "".join(screen.cells[top + 6][left : left + width]),
+            "╰" + "─" * (width - 2) + "╯",
+        )
+
+    def test_new_session_can_preserve_tabs_under_the_default_name_and_start_fresh(self) -> None:
+        service = RecordingService()
+        service.unowned_count = 2
+        service.unowned_suggested_name = "Amber Badger"
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.palette = rendered_manager()[2]
+        screen = ScriptedCanvas(16, 100, [*list("Clean Room"), "\n", "s", "\n"])
+
+        manager._handle_key(screen, "n")
+
+        self.assertEqual(
+            service.unowned_creations,
+            [
+                (
+                    "Clean Room",
+                    UnownedTabsDecision(
+                        UnownedTabsAction.SAVE_SEPARATELY,
+                        "Amber Badger",
+                    ),
+                )
+            ],
+        )
+        self.assertIn("save tabs as · C-u clears> Amber Badger", screen.render())
+
+    def test_canceling_new_session_resolution_preserves_tabs_and_session_list(self) -> None:
+        service = RecordingService()
+        service.unowned_count = 2
+        manager = SessionManager(service)
+        manager._refresh()
+        original_ids = [row.stored.manifest.id for row in service._rows]
+        screen = ScriptedCanvas(16, 100, [*list("Cancelled"), "\n", "q"])
+
+        manager._handle_key(screen, "n")
+
+        self.assertEqual(service.unowned_creations, [])
+        self.assertEqual([row.stored.manifest.id for row in service._rows], original_ids)
+        self.assertEqual(manager.message, "create cancelled; tabs unchanged")
+
     def test_unowned_tab_modal_remains_complete_on_narrow_terminals(self) -> None:
         for height, width in ((8, 48), (10, 60)):
             service = RecordingService()
