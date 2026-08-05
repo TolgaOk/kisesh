@@ -58,16 +58,16 @@
 
 ## Persistent session bar
 
-- [ ] Prototype one native custom tab-bar row that combines session identity and
+- [x] Prototype one native custom tab-bar row that combines session identity and
   Kitty tabs without a resident process, terminal layer, or separate panel.
-  - Prefer `● Research │ shell │ tests │ ✻ Claude`, with a clear unattached state.
+  - Render ` Research │ 󰓩 shell │ 󰓩 tests ✻`, with `○ Unattached` as fallback.
   - Let `tab_bar_edge` place the same design at the top or bottom.
   - Read cached Kitty session/user-variable metadata only; never run subprocesses
     or read session files in the draw path.
   - Preserve the active theme, compact gracefully, and compare reviewed top and
     bottom renders before choosing a default.
-- [ ] Decide whether the first version shows only session name and tab count or
-  also cached autosave and agent indicators. Treat a true second tab-bar row as
-  out of scope unless Kitty gains a native multi-row rendering hook.
-- [ ] Replace the existing custom tab bar's legacy `ksm` lookup only in a dedicated
+- [x] Show exact session names and cached agent indicators while leaving counts
+  implicit in Kitty's visible tabs. Treat a true second tab-bar row as out of
+  scope unless Kitty gains a native multi-row rendering hook.
+- [x] Replace the existing custom tab bar's legacy `ksm` lookup only in a dedicated
   integration change; do not rewrite unrelated Kitty font or theme settings.

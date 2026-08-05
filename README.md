@@ -21,7 +21,7 @@ Kitty window, choose whether it contains all current tabs or starts with one
 fresh shell after the existing tabs are preserved or discarded. `Alt+S` toggles
 the overlay; it never creates a split or a manager pane. The installer validates
 the complete Kitty config before changing it and keeps one backup beside
-`kitty.conf`.
+`kitty.conf`. It also restores any previous custom tab bar on disable.
 
 ```sh
 ./install --disable    # keep code and sessions
@@ -41,7 +41,8 @@ running. Other Kitty OS windows retain their normal tab bars.
 Moving with `j/k` expands only the selected session: each tab is followed by a
 comma-separated pane row. `✻ Claude` and `◇ Codex` identify agent panes, `•`
 marks the focused pane, and `↻` marks saved state that can be restored or
-prefilled.
+prefilled. Kitty's native bar shows ` Session`, `󰓩` tabs, and cached `✻`/`◇`
+agent markers without a multiplexer or resident helper.
 
 If the current window contains unowned tabs, opening a session asks whether to
 attach them, edit a random unused name and save them separately, discard them
