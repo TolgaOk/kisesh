@@ -41,7 +41,8 @@ already open, use them all as one session, preserve them under the suggested
 editable name and start fresh, or discard them after confirmation. A session
 may contain many tabs and panes. Opening another session shows only that
 session's tabs in the current Kitty window while every other session keeps
-running. Other Kitty OS windows retain their normal tab bars.
+running. Runtime font zoom and theme state remain unchanged. Other Kitty OS
+windows retain their normal tab bars.
 
 Moving with `j/k` expands only the selected session: each tab is followed by a
 comma-separated pane row. Configured icons such as `✻ Claude`, `󰋙 Codex`, and

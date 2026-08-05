@@ -24,6 +24,8 @@ from .model import (
     session_marker_name,
 )
 
+SESSION_FILTER_KITTEN = Path(__file__).resolve().parents[1] / "integration" / "session_filter.py"
+
 
 class KittyError(RuntimeError):
     """Raised when Kitty state is unavailable, invalid, or rejects a command."""
@@ -482,15 +484,14 @@ class KittyClient:
         self.set_user_vars(outside_windows, {SESSION_SCOPE_VAR: None})
         self.focus_tab(tab.tab_id)
         self.command(
-            "load-config",
-            "--override",
-            "tab_bar_filter="
+            "kitten",
+            str(SESSION_FILTER_KITTEN),
             f"var:{SESSION_ID_VAR}={session_id} or not var:{SESSION_SCOPE_VAR}={scope}",
         )
 
     def close_session_tabs(self, session_id: str) -> None:
         """Reset tab visibility before closing every tab owned by a session."""
-        self.command("load-config", "--override", "tab_bar_filter=all")
+        self.command("kitten", str(SESSION_FILTER_KITTEN), "all")
         scoped_windows = [
             window["id"]
             for tab in self.tabs()

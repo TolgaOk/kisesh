@@ -73,6 +73,8 @@
   tab-bar row as out of scope unless Kitty gains a native multi-row rendering hook.
 - [x] Replace the existing custom tab bar's legacy `ksm` lookup only in a dedicated
   integration change; do not rewrite unrelated Kitty font or theme settings.
+- [x] Switch the live tab filter in-process without reloading Kitty configuration
+  or resetting runtime font size.
 
 ## Application profiles
 

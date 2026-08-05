@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from kitty_workbench.domain import KittyOsWindowState, KittyTabState, KittyWindow
+from kitty_workbench.kitty_client import KittyClient
 from kitty_workbench.model import SESSION_ID_VAR, SESSION_SLUG_VAR, WORKBENCH_UI_VAR
 from kitty_workbench.store import SessionStore
 
@@ -53,6 +54,7 @@ class IsolatedKitty:
         self.config.write_text(
             "allow_remote_control yes\n"
             f"listen_on {self.socket}\n"
+            "font_size 13\n"
             "confirm_os_window_close 0\n"
             "include ~/.local/lib/kitty-workbench/integration/kitty-workbench.conf\n",
             encoding="utf-8",
@@ -319,6 +321,51 @@ class LiveKittyCloseTests(unittest.TestCase):
                 self.assertEqual(len(_session_tabs(promoted, successor.manifest.id)), 1)
                 self.assertEqual(store.get(closing.manifest.id).manifest.summary.tab_count, 1)
                 self.assertIsNotNone(store.read_context(closing.manifest.id))
+            finally:
+                server.stop()
+
+
+@unittest.skipUnless(LIVE_TESTS_ENABLED, LIVE_TEST_REASON)
+@unittest.skipUnless(shutil.which("kitty") and shutil.which("kitten"), "Kitty is required")
+class LiveKittyFilterTests(unittest.TestCase):
+    """Exercise a real session switch after applying a runtime font zoom."""
+
+    def test_session_switch_preserves_nondefault_os_window_font_size(self) -> None:
+        """Keep a runtime font size distinct from the isolated config default."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            root = Path(temporary)
+            server = IsolatedKitty(root)
+            probe = root / "font_probe.py"
+            probe.write_text(
+                '"""Report the active Kitty OS window font size."""\n'
+                "from kittens.tui.handler import result_handler\n"
+                "from kitty.fast_data_types import os_window_font_size\n"
+                "def main(args):\n"
+                "    del args\n"
+                "@result_handler(no_ui=True)\n"
+                "def handle_result(args, answer, target_window_id, boss):\n"
+                "    del args, answer, target_window_id\n"
+                "    return str(os_window_font_size(boss.active_window.os_window_id))\n",
+                encoding="utf-8",
+            )
+            try:
+                server.start()
+                server.remote(
+                    "set-user-vars",
+                    "--match",
+                    "all",
+                    f"{SESSION_ID_VAR}=session-id",
+                )
+                server.remote("set-font-size", "21")
+                before = server.remote("kitten", str(probe)).stdout.strip()
+
+                client = KittyClient(executable=server.kitty, socket=server.socket)
+                client.activate_session("session-id", client.tabs()[0])
+
+                after = server.remote("kitten", str(probe)).stdout.strip()
+                self.assertEqual(before, "21.0")
+                self.assertEqual(after, before)
+                self.assertNotEqual(after, "13.0")
             finally:
                 server.stop()
 

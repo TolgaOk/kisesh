@@ -149,11 +149,13 @@ def _validate_source(paths: InstallPaths) -> None:
         paths.source / "integration" / "kitty-workbench.conf",
         paths.source / "integration" / "reload_tab_bar.py",
         paths.source / "integration" / "safe_close.py",
+        paths.source / "integration" / "session_filter.py",
         paths.source / "integration" / "tab_bar.py",
         paths.source / "kitty_workbench" / "close_guard.py",
         paths.source / "kitty_workbench" / "app_profiles.py",
         paths.source / "kitty_workbench" / "default_apps.toml",
         paths.source / "kitty_workbench" / "session_bar.py",
+        paths.source / "kitty_workbench" / "session_filter.py",
         paths.source / "kitty_workbench" / "watcher.py",
     )
     missing = [str(path) for path in required if not path.is_file()]

@@ -13,6 +13,7 @@ from unittest import mock
 
 from kitty_workbench.domain import KittyOsWindowState
 from kitty_workbench.kitty_client import (
+    SESSION_FILTER_KITTEN,
     KittyClient,
     KittyError,
     LiveTab,
@@ -243,7 +244,7 @@ class KittyClientBoundaryTests(unittest.TestCase):
         self.assertIn("focus-tab", runner.commands[-2])
         self.assertIn("goto_session", runner.commands[-1])
 
-    def test_session_activation_filters_only_its_os_window_and_close_reveals_first(
+    def test_session_activation_filters_without_reloading_runtime_options_and_close_reveals_first(
         self,
     ) -> None:
         session_id = "session-id"
@@ -288,13 +289,21 @@ class KittyClientBoundaryTests(unittest.TestCase):
         self.assertEqual(scope_commands[1][-1], SESSION_SCOPE_VAR)
         self.assertEqual(runner.commands[-2][-1], "id:2")
         self.assertEqual(
-            runner.commands[-1][-1],
-            f"tab_bar_filter=var:{SESSION_ID_VAR}={session_id} or not var:{SESSION_SCOPE_VAR}=1",
+            runner.commands[-1][-3:],
+            [
+                "kitten",
+                str(SESSION_FILTER_KITTEN),
+                f"var:{SESSION_ID_VAR}={session_id} or not var:{SESSION_SCOPE_VAR}=1",
+            ],
         )
+        self.assertFalse(any("load-config" in command for command in runner.commands))
 
         client.close_session_tabs(session_id)
 
-        self.assertEqual(runner.commands[-4][-1], "tab_bar_filter=all")
+        self.assertEqual(
+            runner.commands[-4][-3:],
+            ["kitten", str(SESSION_FILTER_KITTEN), "all"],
+        )
         self.assertEqual(runner.commands[-3][-1], "ls")
         self.assertEqual(runner.commands[-2][-3:], ["--match", "id:9", SESSION_SCOPE_VAR])
         self.assertEqual(runner.commands[-1][-1], f"var:{SESSION_ID_VAR}={session_id}")
@@ -313,7 +322,8 @@ class KittyClientBoundaryTests(unittest.TestCase):
             client.close_session_tabs("session-id")
 
         self.assertEqual(len(runner.commands), 1)
-        self.assertIn("load-config", runner.commands[0])
+        self.assertIn("kitten", runner.commands[0])
+        self.assertNotIn("load-config", runner.commands[0])
         self.assertNotIn("close-tab", runner.commands[0])
 
     def test_capture_operations_validate_files_and_always_clear_temporary_markers(self) -> None:
