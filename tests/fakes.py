@@ -17,6 +17,7 @@ from kitty_workbench.model import (
     SessionManifest,
     session_marker_name,
 )
+from kitty_workbench.session_file import rename_snapshot_tab
 
 DEFAULT_CAPTURE = "new_tab Project\nlaunch --cwd=/tmp/project\n"
 
@@ -83,6 +84,7 @@ class FakeKitty:
         self.opened: list[Path] = []
         self.opened_contents: list[str] = []
         self.focused: list[int] = []
+        self.renamed_tabs: list[tuple[int, str]] = []
         self.activated_sessions: list[tuple[str, int]] = []
         self.closed_sessions: list[str] = []
         self.closed_tabs: list[int] = []
@@ -211,6 +213,25 @@ class FakeKitty:
     def focus_tab(self, tab_id: int) -> None:
         """Record the tab selected through remote control."""
         self.focused.append(tab_id)
+
+    def rename_tab(self, tab_id: int, title: str) -> None:
+        """Rename one live tab and the fake serialization Kitty would capture."""
+        tabs = self.tabs()
+        tab = next((candidate for candidate in tabs if candidate.tab_id == tab_id), None)
+        if tab is None:
+            raise AssertionError("unknown tab rename")
+        tab.title = title
+        self.renamed_tabs.append((tab_id, title))
+        session_id = tab.session_id()
+        session_tabs = self.tabs_for_session(session_id) if session_id is not None else tabs
+        tab_index = next(
+            index for index, candidate in enumerate(session_tabs) if candidate.tab_id == tab_id
+        )
+        self.capture_session_text = rename_snapshot_tab(
+            self.capture_session_text,
+            tab_index,
+            title,
+        )
 
     def activate_session(self, session_id: str, tab: LiveTab) -> None:
         """Record the isolated session and its focused tab."""

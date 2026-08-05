@@ -35,7 +35,7 @@
   usable with a text fallback when decorative glyphs are unavailable.
 - [x] Cover live and saved context, multi-tab and multi-agent sessions, empty tabs,
   long names, narrow rendering, and selection changes with reviewed render tests.
-- [ ] Rename a live or saved tab from its expanded row with a theme-aware modal;
+- [x] Rename a live or saved tab from its expanded row with a theme-aware modal;
   update Kitty immediately when live and autosave the persisted title.
 
 ## Unowned tabs during switching

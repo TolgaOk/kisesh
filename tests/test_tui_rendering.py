@@ -27,6 +27,7 @@ class RecordingService(StaticService):
         self.detached: list[str] = []
         self.copied: list[str] = []
         self.removed: list[str] = []
+        self.renamed_tabs: list[tuple[str, int, str]] = []
 
     def open(
         self,
@@ -66,6 +67,11 @@ class RecordingService(StaticService):
         """Record the saved session selected for a safe tab copy."""
         self.copied.append(identifier)
         return self._stored(identifier)
+
+    def rename_tab(self, identifier: str, tab_index: int, new_title: str) -> StoredSession:
+        """Record and apply one tab-title change."""
+        self.renamed_tabs.append((identifier, tab_index, new_title))
+        return super().rename_tab(identifier, tab_index, new_title)
 
     def remove(self, identifier: str) -> Path:
         """Record and remove one inactive session from visible rows."""
@@ -725,6 +731,156 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertEqual(service.detached, [live_id])
         self.assertEqual(service.copied, [saved_id])
 
+    def test_shift_r_renames_a_chosen_saved_tab_through_prefilled_modals(self) -> None:
+        service = RecordingService()
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 1
+        manager.palette = rendered_manager()[2]
+        selected_id = manager.filtered[1].stored.manifest.id
+        screen = ScriptedCanvas(
+            16,
+            100,
+            ["j", "\n", "\x15", *list("Build logs"), "\n"],
+        )
+
+        manager._handle_key(screen, "R")
+
+        self.assertEqual(service.renamed_tabs, [(selected_id, 1, "Build logs")])
+        context = service._rows[1].context
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(
+            [tab["title"] for tab in context["tabs"]],
+            ["editor", "Build logs"],
+        )
+        self.assertEqual(manager.message, "renamed tab in Dotfiles to Build logs")
+        rendered = screen.render()
+        self.assertIn("Rename tab · 2/2", rendered)
+        self.assertIn("> Build logs", rendered)
+        top, left, height, width = 3, 16, 6, 68
+        self.assertEqual(
+            "".join(screen.cells[top][left : left + width]),
+            "╭" + "─" * (width - 2) + "╮",
+        )
+        self.assertEqual(
+            "".join(screen.cells[top + height - 1][left : left + width]),
+            "╰" + "─" * (width - 2) + "╯",
+        )
+        self.assertEqual(screen.styles[top + 1][left + 2], manager.palette.accent | curses.A_BOLD)
+
+    def test_live_tab_picker_starts_at_focus_and_rejects_blank_before_saving(self) -> None:
+        service = RecordingService()
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 0
+        manager.palette = rendered_manager()[2]
+        selected_id = manager.filtered[0].stored.manifest.id
+        screen = ScriptedCanvas(
+            16,
+            100,
+            ["\n", "\x15", "\n", *list("Agent desk"), "\n"],
+        )
+
+        manager._handle_key(screen, "R")
+
+        self.assertEqual(service.renamed_tabs, [(selected_id, 0, "Agent desk")])
+        self.assertEqual(service._rows[0].live_tabs[0].title, "Agent desk")
+        self.assertEqual(screen.keys, [])
+
+    def test_tab_rename_cancel_and_unchanged_paths_never_mutate_a_session(self) -> None:
+        for keys, expected in (
+            (["\x1b"], "cancelled"),
+            (["\n", "\x1b"], "cancelled"),
+            (["\n", "\n"], "unchanged"),
+        ):
+            with self.subTest(keys=keys):
+                service = RecordingService()
+                manager = SessionManager(service)
+                manager._refresh()
+                manager.selected = 1
+                manager.palette = rendered_manager()[2]
+                screen = ScriptedCanvas(16, 100, keys)
+
+                manager._handle_key(screen, "R")
+
+                self.assertEqual(service.renamed_tabs, [])
+                self.assertIn(expected, manager.message)
+
+    def test_tab_picker_supports_vim_navigation_and_complete_small_rendering(self) -> None:
+        service = RecordingService()
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 0
+        manager.palette = rendered_manager()[2]
+        screen = ScriptedCanvas(
+            8,
+            48,
+            [
+                "k",
+                "j",
+                "G",
+                "g",
+                "\x04",
+                "\x15",
+                curses.KEY_DOWN,
+                curses.KEY_UP,
+                curses.KEY_F1,
+                "q",
+            ],
+        )
+
+        manager._handle_key(screen, "R")
+
+        self.assertEqual(service.renamed_tabs, [])
+        self.assertEqual(manager.message, "tab rename cancelled")
+        rendered = screen.render()
+        self.assertIn("Rename tab · 1/3", rendered)
+        self.assertIn("󰓩 agents · focused", rendered)
+        self.assertIn("j/k move · l/↵/Space edit", rendered)
+        top, left, height, width = 0, 4, 5, 40
+        self.assertEqual(
+            "".join(screen.cells[top][left : left + width]),
+            "╭" + "─" * (width - 2) + "╮",
+        )
+        self.assertEqual(
+            "".join(screen.cells[top + height - 1][left : left + width]),
+            "╰" + "─" * (width - 2) + "╯",
+        )
+        for y in range(top + 1, top + height - 1):
+            self.assertEqual(screen.cells[y][left], "│")
+            self.assertEqual(screen.cells[y][left + width - 1], "│")
+
+    def test_tab_title_editor_clips_a_long_prefill_inside_minimum_size(self) -> None:
+        service = RecordingService()
+        service._rows[0].live_tabs[0].title = "very-long-title-" * 10
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 0
+        manager.palette = rendered_manager()[2]
+        screen = ScriptedCanvas(8, 48, [" ", curses.KEY_F1, "\x1b"])
+
+        manager._handle_key(screen, "R")
+
+        rendered = screen.render()
+        self.assertIn("…", rendered)
+        self.assertIn("Backspace edit", rendered)
+        self.assertEqual(manager.message, "tab rename cancelled")
+
+    def test_tab_rename_reports_a_session_without_any_captured_tabs(self) -> None:
+        service = RecordingService()
+        service._rows[1].context = None
+        service._rows[1].stored.manifest.summary.tab_count = 0
+        service._rows[1].stored.manifest.summary.tab_titles = []
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 1
+
+        manager._handle_key(Canvas(16, 100), "R")
+
+        self.assertEqual(service.renamed_tabs, [])
+        self.assertEqual(manager.message, "selected session has no captured tabs")
+
     def test_help_is_a_comprehensive_theme_aware_modal(self) -> None:
         manager = SessionManager(StaticService())
         manager._refresh()
@@ -753,6 +909,7 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertNotIn("undo", rendered.casefold())
         self.assertIn("Q close manager", rendered)
         self.assertIn("Remove inactive session to trash.", rendered)
+        self.assertIn("Rename one tab from a modal picker.", rendered)
         self.assertEqual(screen.cells[top][left], "╭")
         self.assertEqual(screen.styles[top][left], manager.palette.muted)
         self.assertEqual(

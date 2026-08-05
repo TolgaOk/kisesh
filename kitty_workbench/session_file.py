@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -99,6 +100,38 @@ def _is_managed_variable(value: str) -> bool:
 def _tab_title(manifest: SessionManifest) -> str:
     """Flatten a display name for Kitty's literal new_tab grammar."""
     return " ".join(manifest.name.splitlines()).strip() or manifest.slug
+
+
+def clean_tab_title(value: str) -> str:
+    """Normalize one visible, single-line tab title or reject an empty result."""
+    visible = "".join(
+        " " if character.isspace() else character
+        for character in value
+        if character.isspace() or unicodedata.category(character) not in {"Cc", "Cf", "Cs"}
+    )
+    title = " ".join(visible.split())
+    if not title:
+        raise ValueError("tab title cannot be empty")
+    return title
+
+
+def rename_snapshot_tab(text: str, tab_index: int, new_title: str) -> str:
+    """Replace one tab title in safe Kitty session grammar by zero-based index."""
+    if tab_index < 0:
+        raise IndexError("tab index is outside the saved snapshot")
+    title = clean_tab_title(new_title)
+    lines = text.splitlines()
+    current_index = -1
+    for line_index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if stripped == "new_tab" or stripped.startswith("new_tab "):
+            current_index += 1
+            if current_index == tab_index:
+                indentation = raw_line[: len(raw_line) - len(raw_line.lstrip())]
+                lines[line_index] = f"{indentation}new_tab {title}"
+                suffix = "\n" if text.endswith("\n") else ""
+                return "\n".join(lines) + suffix
+    raise IndexError("tab index is outside the saved snapshot")
 
 
 def _sanitize_blob(token: str) -> str:

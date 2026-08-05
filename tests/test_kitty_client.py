@@ -75,6 +75,17 @@ class KittyClientTests(unittest.TestCase):
         self.assertNotIn("\n", str(sent))
         self.assertNotIn("\r", str(sent))
 
+    def test_tab_rename_targets_one_stable_id_without_changing_focus(self) -> None:
+        runner = RecordingCommandRunner()
+        client = KittyClient(executable="/kitty", socket="/tmp/test.sock", runner=runner)
+
+        client.rename_tab(42, "Editor and tests")
+
+        self.assertEqual(
+            runner.commands[0][-4:],
+            ["set-tab-title", "--match", "id:42", "Editor and tests"],
+        )
+
     def test_popup_targets_main_kitty_instead_of_its_own_panel_socket(self) -> None:
         runner = RecordingCommandRunner(stdout="[]")
 

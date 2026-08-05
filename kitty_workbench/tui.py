@@ -19,6 +19,7 @@ from .service import (
     UnownedTabsDecision,
     UnownedTabsInfo,
 )
+from .session_file import clean_tab_title
 from .store import StoredSession
 
 ESCAPE_DELAY_MS = 25
@@ -122,6 +123,9 @@ class SessionOperations(Protocol):
     def rename(self, slug_or_id: str, new_name: str) -> StoredSession:
         """Rename a session."""
 
+    def rename_tab(self, slug_or_id: str, tab_index: int, new_title: str) -> StoredSession:
+        """Rename one live or persisted session tab."""
+
     def archive(self, slug_or_id: str) -> StoredSession:
         """Archive an inactive session."""
 
@@ -154,6 +158,7 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
         "SESSION CONTENTS",
         (
             ("├─ / └─", "Tabs inside the selected session."),
+            ("Shift+R", "Rename one tab from a modal picker."),
             ("app icon", "Configured pane identity."),
             ("•", "Focused pane."),
             ("↻", "Saved command can be restored or prefilled."),
@@ -174,6 +179,7 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
             ("s", "Snapshot all owned live tabs."),
             ("x", "Save successfully, then close all live tabs."),
             ("r", "Rename session."),
+            ("Shift+R", "Rename a selected session tab."),
             ("e / u", "Archive / unarchive."),
             ("Shift+D", "Remove inactive session to trash."),
         ),
@@ -199,6 +205,21 @@ class Palette:
     good: int = 0
     muted: int = 0
     warning: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class ModalBounds:
+    """Coordinates and dimensions for one centered, footer-aware modal."""
+
+    top: int
+    left: int
+    height: int
+    width: int
+
+    @property
+    def bottom(self) -> int:
+        """Return the inclusive bottom row."""
+        return self.top + self.height - 1
 
 
 @dataclass(slots=True, frozen=True)
@@ -482,6 +503,7 @@ class SessionManager:
         if selected is not None and selected.stored.manifest.status == "archived":
             actions: Hints = (
                 ("r", "rename"),
+                ("R", "rename tab"),
                 ("Shift+D", "remove"),
                 ("?", "help"),
                 ("q", self._dismiss_label()),
@@ -491,6 +513,7 @@ class SessionManager:
                 ("a", "add tab"),
                 ("d", "detach tab"),
                 ("r", "rename"),
+                ("R", "rename tab"),
                 ("?", "help"),
                 ("q", self._dismiss_label()),
             )
@@ -498,6 +521,7 @@ class SessionManager:
             actions = (
                 ("c", "copy tab"),
                 ("r", "rename"),
+                ("R", "rename tab"),
                 ("e", "archive"),
                 ("Shift+D", "remove"),
                 ("?", "help"),
@@ -530,16 +554,11 @@ class SessionManager:
         max_scroll = max(0, len(lines) - body_capacity)
         self.help_scroll = min(max(0, self.help_scroll), max_scroll)
 
-        _safe_addstr(screen, top, left, "╭", self.palette.muted)
-        _safe_hline(screen, top, left + 1, box_width - 2, self.palette.muted)
-        _safe_addstr(screen, top, left + box_width - 1, "╮", self.palette.muted)
-        for y in range(top + 1, bottom):
-            _safe_addstr(screen, y, left + 1, " " * max(0, box_width - 2), self.palette.normal)
-        _safe_vline(screen, top + 1, left, box_height - 2, self.palette.normal)
-        _safe_vline(screen, top + 1, left + box_width - 1, box_height - 2, self.palette.normal)
-        _safe_addstr(screen, bottom, left, "╰", self.palette.muted)
-        _safe_hline(screen, bottom, left + 1, box_width - 2, self.palette.muted)
-        _safe_addstr(screen, bottom, left + box_width - 1, "╯", self.palette.muted)
+        _draw_modal_frame(
+            screen,
+            ModalBounds(top, left, box_height, box_width),
+            self.palette,
+        )
 
         end = min(len(lines), self.help_scroll + body_capacity)
         title = f"Help · {self.help_scroll + 1}-{end}/{len(lines)}"
@@ -833,12 +852,15 @@ class SessionManager:
             self.message = message.format(name=stored.manifest.name)
             self._refresh()
             return None
-        if key == "r":
-            name = self._prompt(screen, "rename", current.stored.manifest.name)
-            if name:
-                renamed = self.service.rename(identifier, name)
-                self.message = f"renamed to {renamed.manifest.name}"
-                self._refresh()
+        if key in ("r", "R"):
+            if key == "R":
+                self._rename_tab(screen, current)
+            else:
+                name = self._prompt(screen, "rename", current.stored.manifest.name)
+                if name:
+                    renamed = self.service.rename(identifier, name)
+                    self.message = f"renamed to {renamed.manifest.name}"
+                    self._refresh()
             return None
         if key == "D":
             name = current.stored.manifest.name
@@ -847,6 +869,93 @@ class SessionManager:
                 self._refresh()
                 self.message = f"removed {name} to recoverable trash"
         return None
+
+    def _rename_tab(self, screen: Screen, current: SessionView) -> None:
+        """Choose, edit, and persist one tab title through centered modals."""
+        tabs = build_session_preview(current, self.profiles).tabs
+        if not tabs:
+            self.message = "selected session has no captured tabs"
+            return
+        initial = next((index for index, tab in enumerate(tabs) if tab.focused), 0)
+        selected = self._choose_tab_to_rename(screen, tabs, initial)
+        if selected is None:
+            self.message = "tab rename cancelled"
+            return
+        title = self._edit_tab_title_modal(screen, selected, tabs)
+        if title is None:
+            self.message = "tab rename cancelled"
+            return
+        if title == tabs[selected].title:
+            self.message = "tab title unchanged"
+            return
+        renamed = self.service.rename_tab(current.stored.manifest.id, selected, title)
+        self._refresh()
+        self.message = f"renamed tab in {renamed.manifest.name} to {title}"
+
+    def _choose_tab_to_rename(
+        self,
+        screen: Screen,
+        tabs: tuple[TabPreview, ...],
+        selected: int,
+    ) -> int | None:
+        """Navigate a scrolling tab picker until edit or cancellation."""
+        bounds = _modal_bounds(screen, 68, len(tabs) + 4)
+        capacity = max(1, bounds.height - 4)
+        while True:
+            _draw_tab_picker(screen, bounds, self.palette, tabs, selected)
+            key = screen.get_wch()
+            if key in ("q", "h", "\x1b"):
+                return None
+            if key in ("l", " ", "\n", "\r", curses.KEY_ENTER):
+                return selected
+            if key in ("j", curses.KEY_DOWN):
+                selected = (selected + 1) % len(tabs)
+            elif key in ("k", curses.KEY_UP):
+                selected = (selected - 1) % len(tabs)
+            elif key == "g":
+                selected = 0
+            elif key == "G":
+                selected = len(tabs) - 1
+            elif key == "\x04":
+                selected = min(len(tabs) - 1, selected + capacity)
+            elif key == "\x15":
+                selected = max(0, selected - capacity)
+
+    def _edit_tab_title_modal(
+        self,
+        screen: Screen,
+        tab_index: int,
+        tabs: tuple[TabPreview, ...],
+    ) -> str | None:
+        """Edit a prefilled tab title inside a theme-aware modal field."""
+        bounds = _modal_bounds(screen, 68, 6)
+        value = list(tabs[tab_index].title)
+        warning = ""
+        _set_cursor(1)
+        try:
+            while True:
+                _draw_tab_title_editor(
+                    screen,
+                    bounds,
+                    self.palette,
+                    tab_index,
+                    len(tabs),
+                    value,
+                    warning,
+                )
+                key = screen.get_wch()
+                if key in ("\n", "\r", curses.KEY_ENTER):
+                    try:
+                        return clean_tab_title("".join(value))
+                    except ValueError as error:
+                        warning = str(error)
+                        continue
+                if key == "\x1b":
+                    return None
+                if _edit_prompt_value(value, key):
+                    warning = ""
+        finally:
+            _set_cursor(0)
 
     def _open_selected(self, screen: Screen, current: SessionView) -> int | None:
         """Resolve unowned tabs before focusing or restoring a selected row."""
@@ -881,7 +990,6 @@ class SessionManager:
         box_height = min(7, height)
         top = max(0, (height - box_height) // 2)
         left = max(0, (width - box_width) // 2)
-        bottom = top + box_height - 1
         inner_width = max(0, box_width - 4)
         if creating:
             heading = f"New session · {unowned.count} unowned tabs"
@@ -901,16 +1009,11 @@ class SessionManager:
             ("q / Esc", "cancel; change nothing", self.palette.muted),
         )
 
-        _safe_addstr(screen, top, left, "╭", self.palette.muted)
-        _safe_hline(screen, top, left + 1, box_width - 2, self.palette.muted)
-        _safe_addstr(screen, top, left + box_width - 1, "╮", self.palette.muted)
-        for y in range(top + 1, bottom):
-            _safe_addstr(screen, y, left + 1, " " * max(0, box_width - 2), self.palette.normal)
-        _safe_vline(screen, top + 1, left, box_height - 2, self.palette.normal)
-        _safe_vline(screen, top + 1, left + box_width - 1, box_height - 2, self.palette.normal)
-        _safe_addstr(screen, bottom, left, "╰", self.palette.muted)
-        _safe_hline(screen, bottom, left + 1, box_width - 2, self.palette.muted)
-        _safe_addstr(screen, bottom, left + box_width - 1, "╯", self.palette.muted)
+        _draw_modal_frame(
+            screen,
+            ModalBounds(top, left, box_height, box_width),
+            self.palette,
+        )
 
         for offset, (label, description, style) in enumerate(lines):
             y = top + 1 + offset
@@ -1243,6 +1346,129 @@ def _help_lines(width: int, *, panel: bool = False) -> list[str]:
             continuation = " " * key_width
             lines.extend(continuation + part for part in wrapped[1:])
     return lines
+
+
+def _modal_bounds(screen: Screen, maximum_width: int, preferred_height: int) -> ModalBounds:
+    """Center one modal above the persistent footer within terminal bounds."""
+    height, width = screen.getmaxyx()
+    available_height = max(4, height - 3)
+    box_height = max(4, min(preferred_height, available_height))
+    box_width = max(4, min(maximum_width, width - 4, max(40, int(width * 0.78))))
+    return ModalBounds(
+        top=max(0, (available_height - box_height) // 2),
+        left=max(0, (width - box_width) // 2),
+        height=box_height,
+        width=box_width,
+    )
+
+
+def _draw_modal_frame(screen: Screen, bounds: ModalBounds, palette: Palette) -> None:
+    """Draw and fully occlude one theme-aware rounded modal frame."""
+    right = bounds.left + bounds.width - 1
+    _safe_addstr(screen, bounds.top, bounds.left, "╭", palette.muted)
+    _safe_hline(screen, bounds.top, bounds.left + 1, bounds.width - 2, palette.muted)
+    _safe_addstr(screen, bounds.top, right, "╮", palette.muted)
+    for y in range(bounds.top + 1, bounds.bottom):
+        _safe_addstr(
+            screen,
+            y,
+            bounds.left + 1,
+            " " * max(0, bounds.width - 2),
+            palette.normal,
+        )
+    _safe_vline(screen, bounds.top + 1, bounds.left, bounds.height - 2, palette.normal)
+    _safe_vline(screen, bounds.top + 1, right, bounds.height - 2, palette.normal)
+    _safe_addstr(screen, bounds.bottom, bounds.left, "╰", palette.muted)
+    _safe_hline(screen, bounds.bottom, bounds.left + 1, bounds.width - 2, palette.muted)
+    _safe_addstr(screen, bounds.bottom, right, "╯", palette.muted)
+
+
+def _draw_tab_picker(
+    screen: Screen,
+    bounds: ModalBounds,
+    palette: Palette,
+    tabs: tuple[TabPreview, ...],
+    selected: int,
+) -> None:
+    """Render a scrolling modal list of captured tabs."""
+    _draw_modal_frame(screen, bounds, palette)
+    inner_width = max(0, bounds.width - 4)
+    capacity = max(1, bounds.height - 4)
+    maximum_start = max(0, len(tabs) - capacity)
+    start = min(maximum_start, max(0, selected - capacity // 2))
+    heading = f"Rename tab · {selected + 1}/{len(tabs)}"
+    _safe_addstr(
+        screen,
+        bounds.top + 1,
+        bounds.left + 2,
+        heading[:inner_width],
+        palette.accent | curses.A_BOLD,
+    )
+    for offset, tab_index in enumerate(range(start, min(len(tabs), start + capacity))):
+        tab = tabs[tab_index]
+        prefix = "›" if tab_index == selected else " "
+        focus = " · focused" if tab.focused else ""
+        label = f"{prefix} {tab_index + 1:>2}  󰓩 {tab.title}{focus}"
+        style = palette.selected if tab_index == selected else palette.normal
+        _safe_addstr(
+            screen,
+            bounds.top + 2 + offset,
+            bounds.left + 2,
+            label[:inner_width],
+            style,
+        )
+    footer = "j/k move · l/↵/Space edit · Esc cancel"
+    _safe_addstr(
+        screen,
+        bounds.bottom - 1,
+        bounds.left + 2,
+        footer[:inner_width],
+        palette.muted,
+    )
+    screen.refresh()
+
+
+def _draw_tab_title_editor(
+    screen: Screen,
+    bounds: ModalBounds,
+    palette: Palette,
+    tab_index: int,
+    tab_count: int,
+    value: list[str],
+    warning: str,
+) -> None:
+    """Render a prefilled title field and place the terminal cursor at its end."""
+    _draw_modal_frame(screen, bounds, palette)
+    inner_width = max(0, bounds.width - 4)
+    heading = f"Rename tab · {tab_index + 1}/{tab_count}"
+    _safe_addstr(
+        screen,
+        bounds.top + 1,
+        bounds.left + 2,
+        heading[:inner_width],
+        palette.accent | curses.A_BOLD,
+    )
+    field_width = max(1, inner_width - 2)
+    title = "".join(value)
+    visible = title[-field_width:]
+    if len(title) > field_width and field_width > 1:
+        visible = "…" + title[-(field_width - 1) :]
+    field = f"> {visible}"
+    field_y = min(bounds.bottom - 1, bounds.top + 2)
+    _safe_addstr(screen, field_y, bounds.left + 2, field[:inner_width], palette.normal)
+    footer = warning or "C-u clear · Backspace edit · Enter save · Esc cancel"
+    footer_style = palette.warning if warning else palette.muted
+    _safe_addstr(
+        screen,
+        bounds.bottom - 1,
+        bounds.left + 2,
+        footer[:inner_width],
+        footer_style,
+    )
+    cursor_x = min(bounds.left + bounds.width - 2, bounds.left + 4 + len(visible))
+    with suppress(curses.error):
+        screen.move(field_y, cursor_x)
+    screen.refresh()
 
 
 def _draw_hints(

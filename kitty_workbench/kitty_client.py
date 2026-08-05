@@ -185,6 +185,9 @@ class KittyController(Protocol):
     def focus_tab(self, tab_id: int) -> None:
         """Focus one tab by ID."""
 
+    def rename_tab(self, tab_id: int, title: str) -> None:
+        """Assign one explicit native tab title by stable ID."""
+
     def activate_session(self, session_id: str, tab: LiveTab) -> None:
         """Focus a session and restrict the tab bar to its live tabs."""
 
@@ -452,6 +455,10 @@ class KittyClient:
     def focus_tab(self, tab_id: int) -> None:
         """Focus a live tab by its Kitty ID."""
         self.command("focus-tab", "--match", f"id:{tab_id}")
+
+    def rename_tab(self, tab_id: int, title: str) -> None:
+        """Assign one explicit native title without changing tab focus."""
+        self.command("set-tab-title", "--match", f"id:{tab_id}", title)
 
     def activate_session(self, session_id: str, tab: LiveTab) -> None:
         """Focus one session while leaving unrelated OS windows unfiltered."""

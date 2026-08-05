@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from kitty_workbench.domain import ClosingPaneCapture, CommandEvent, KittyWindow, SessionContext
-from kitty_workbench.kitty_client import LiveTab
+from kitty_workbench.kitty_client import KittyError, LiveTab
 from kitty_workbench.model import (
     SESSION_ID_VAR,
     SESSION_SCOPE_VAR,
@@ -21,7 +21,13 @@ from kitty_workbench.service import (
     WorkbenchService,
 )
 from kitty_workbench.session_file import sanitize_session, snapshot_summary
-from kitty_workbench.store import SessionConflict, SessionNotFound, SessionStore
+from kitty_workbench.store import (
+    SessionConflict,
+    SessionNotFound,
+    SessionStore,
+    StoredSession,
+    StoreError,
+)
 from tests.fakes import FakeKitty
 
 UNSAFE_CAPTURE = (
@@ -48,6 +54,44 @@ class ServiceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def _create_two_tab_session(self, name: str = "Two Tab Work") -> StoredSession:
+        """Create and persist two realistic live tabs through the public service."""
+        self.kitty.tab.title = "Editor"
+        self.kitty.window["last_reported_cmdline"] = "nvim ."
+        tests = LiveTab(
+            1,
+            8,
+            1,
+            "Tests",
+            "stack",
+            [
+                {
+                    "id": 12,
+                    "title": "pytest",
+                    "cwd": "/tmp/project",
+                    "user_vars": {},
+                    "foreground_processes": [{"cmdline": ["pytest", "-q"]}],
+                    "last_reported_cmdline": "pytest -q",
+                }
+            ],
+        )
+        self.kitty.extra_tabs.append(tests)
+        self.kitty.capture_session_text = (
+            "new_tab Editor\n"
+            "launch --cwd=/tmp/project\n"
+            "new_tab Tests\n"
+            "layout stack\n"
+            "launch --cwd=/tmp/project\n"
+        )
+        self.kitty.terminal_histories = {
+            11: "nvim .\n",
+            12: "pytest -q\n2 passed\n",
+        }
+        return self.service.create_from_unowned(
+            name,
+            UnownedTabsDecision(UnownedTabsAction.ATTACH),
+        )
 
     def test_create_stamps_tab_and_writes_safe_multi_tab_snapshot(self) -> None:
         stored = self.service.create_from_active("My Project")
@@ -546,6 +590,150 @@ class ServiceTests(unittest.TestCase):
         self.assertIn(
             f"{SESSION_SLUG_VAR}=new-name", renamed.snapshot_path.read_text(encoding="utf-8")
         )
+
+    def test_live_tab_rename_updates_kitty_and_autosaves_complete_context(self) -> None:
+        stored = self._create_two_tab_session()
+        revision = stored.manifest.revision
+
+        renamed = self.service.rename_tab(stored.manifest.id, 1, "Build results")
+        context = self.store.read_context(stored.manifest.id)
+
+        self.assertEqual(self.kitty.renamed_tabs, [(8, "Build results")])
+        self.assertEqual(self.kitty.extra_tabs[0].title, "Build results")
+        self.assertGreater(renamed.manifest.revision, revision)
+        self.assertEqual(renamed.manifest.summary.tab_titles, ["Editor", "Build results"])
+        self.assertIn("new_tab Build results", renamed.snapshot_path.read_text(encoding="utf-8"))
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context["tabs"][1]["title"], "Build results")
+        self.assertEqual(
+            context["tabs"][1]["panes"][0]["terminal_history"],
+            "pytest -q\n2 passed\n",
+        )
+        self.assertEqual(context["snapshot_revision"], renamed.manifest.revision)
+
+    def test_saved_archived_tab_rename_survives_a_real_restore_materialization(self) -> None:
+        stored = self._create_two_tab_session("Dormant Work")
+        self.kitty.close_session_tabs(stored.manifest.id)
+        archived = self.service.archive(stored.manifest.id)
+
+        with mock.patch.object(
+            self.kitty,
+            "tabs_for_session",
+            side_effect=KittyError("Kitty socket unavailable"),
+        ):
+            renamed = self.service.rename_tab(archived.manifest.id, 0, "Review")
+
+        context = self.store.read_context(renamed.manifest.id)
+        self.assertEqual(renamed.manifest.status, "archived")
+        self.assertEqual(renamed.manifest.summary.tab_titles, ["Review", "Tests"])
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual([tab["title"] for tab in context["tabs"]], ["Review", "Tests"])
+        self.assertEqual(context["snapshot_revision"], renamed.manifest.revision)
+
+        reopened = self.service.open(renamed.manifest.id)
+
+        self.assertEqual(reopened.manifest.status, "active")
+        self.assertIn("new_tab Review", self.kitty.opened_contents[-1])
+        self.assertIn("new_tab Tests", self.kitty.opened_contents[-1])
+
+    def test_summary_only_saved_tab_can_be_renamed_without_context(self) -> None:
+        stored = self.store.create("Layout Only", "/tmp/layout")
+        snapshot = sanitize_session(
+            "new_tab Shell\nlaunch --cwd=/tmp/layout\n",
+            stored.manifest,
+        )
+        self.store.write_snapshot(stored.manifest.id, snapshot, snapshot_summary(snapshot))
+
+        renamed = self.service.rename_tab(stored.manifest.id, 0, "Logs")
+
+        self.assertIsNone(self.store.read_context(renamed.manifest.id))
+        self.assertEqual(renamed.manifest.summary.tab_titles, ["Logs"])
+        self.assertIn("new_tab Logs", renamed.snapshot_path.read_text(encoding="utf-8"))
+
+    def test_tab_rename_rejects_missing_or_incoherent_saved_material(self) -> None:
+        empty = self.store.create("Empty", "/tmp/empty")
+        with self.assertRaisesRegex(WorkbenchError, "no saved tab layout"):
+            self.service.rename_tab(empty.manifest.id, 0, "Missing")
+
+        stored = self._create_two_tab_session("Stale Context")
+        with self.assertRaisesRegex(WorkbenchError, "live session"):
+            self.service.rename_tab(stored.manifest.id, 4, "Unavailable")
+        self.kitty.close_session_tabs(stored.manifest.id)
+        context = self.store.read_context(stored.manifest.id)
+        self.assertIsNotNone(context)
+        assert context is not None
+        context["tabs"] = context["tabs"][:1]
+        self.store.write_context(stored.manifest.id, context)
+        original = stored.snapshot_path.read_text(encoding="utf-8")
+
+        with self.assertRaisesRegex(WorkbenchError, "saved context"):
+            self.service.rename_tab(stored.manifest.id, 1, "Unavailable")
+        self.assertEqual(stored.snapshot_path.read_text(encoding="utf-8"), original)
+
+        with self.assertRaisesRegex(WorkbenchError, "saved snapshot"):
+            self.service.rename_tab(stored.manifest.id, 4, "Unavailable")
+
+    def test_failed_live_tab_autosave_restores_the_native_title(self) -> None:
+        stored = self._create_two_tab_session()
+        original = stored.snapshot_path.read_text(encoding="utf-8")
+
+        with (
+            mock.patch.object(
+                self.service,
+                "save",
+                side_effect=WorkbenchError("capture failed"),
+            ),
+            self.assertRaisesRegex(WorkbenchError, "capture failed"),
+        ):
+            self.service.rename_tab(stored.manifest.id, 1, "Temporary title")
+
+        self.assertEqual(
+            self.kitty.renamed_tabs,
+            [(8, "Temporary title"), (8, "Tests")],
+        )
+        self.assertEqual(self.kitty.extra_tabs[0].title, "Tests")
+        self.assertEqual(stored.snapshot_path.read_text(encoding="utf-8"), original)
+
+    def test_failed_saved_context_write_rolls_the_snapshot_title_back(self) -> None:
+        stored = self._create_two_tab_session()
+        self.kitty.close_session_tabs(stored.manifest.id)
+        original_snapshot = stored.snapshot_path.read_text(encoding="utf-8")
+        original_context = self.store.read_context(stored.manifest.id)
+        self.assertIsNotNone(original_context)
+        assert original_context is not None
+        write_context = self.store.write_context
+        attempts = 0
+
+        def fail_once(
+            slug_or_id: str,
+            context: SessionContext,
+            *,
+            now: str | None = None,
+        ) -> StoredSession:
+            """Fail the requested rename write, then permit the rollback write."""
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise StoreError("context disk unavailable")
+            return write_context(slug_or_id, context, now=now)
+
+        with (
+            mock.patch.object(self.store, "write_context", side_effect=fail_once),
+            self.assertRaisesRegex(StoreError, "context disk unavailable"),
+        ):
+            self.service.rename_tab(stored.manifest.id, 1, "Should roll back")
+
+        rolled_back = self.store.get(stored.manifest.id)
+        context = self.store.read_context(stored.manifest.id)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(rolled_back.snapshot_path.read_text(encoding="utf-8"), original_snapshot)
+        self.assertEqual(rolled_back.manifest.summary.tab_titles, ["Editor", "Tests"])
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual([tab["title"] for tab in context["tabs"]], ["Editor", "Tests"])
+        self.assertEqual(context["snapshot_revision"], rolled_back.manifest.revision)
 
     def test_new_pane_is_adopted_before_whole_session_capture(self) -> None:
         created = self.service.create_from_active("Growing Session")

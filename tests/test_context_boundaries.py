@@ -29,6 +29,7 @@ from kitty_workbench.context import (
     pane_terminal_history,
     pending_restore_commands,
     remap_context_windows,
+    rename_context_tab,
     restore_session,
     update_context_for_closing_pane,
 )
@@ -293,6 +294,17 @@ class ContextBoundaryTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "absent from the saved session"):
             update_context_for_closing_pane(None, missing_capture)
+
+        original["snapshot_revision"] = 4
+        renamed = rename_context_tab(original, 0, "Renamed tab")
+        self.assertIsNotNone(renamed)
+        assert renamed is not None
+        self.assertEqual(renamed["tabs"][0]["title"], "Renamed tab")
+        self.assertEqual(renamed["snapshot_revision"], 4)
+        self.assertNotEqual(original["tabs"][0]["title"], "Renamed tab")
+        self.assertIsNone(rename_context_tab(None, 0, "Unused"))
+        with self.assertRaisesRegex(IndexError, "saved context"):
+            rename_context_tab(original, 3, "Missing")
 
     def test_public_context_readers_tolerate_missing_indexes_and_legacy_output(self) -> None:
         legacy: dict[str, object] = {

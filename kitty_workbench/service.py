@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 from .app_profiles import DEFAULT_APP_PROFILES, AppProfiles
 from .context import (
@@ -21,6 +22,7 @@ from .context import (
     merge_context,
     pending_restore_commands,
     remap_context_windows,
+    rename_context_tab,
     restore_session,
     update_context_for_closing_pane,
 )
@@ -28,7 +30,7 @@ from .domain import ClosingPaneCapture, KittyOsWindowState, SessionContext
 from .filesystem import temporary_path
 from .kitty_client import KittyClient, KittyController, KittyError, LiveTab
 from .model import SESSION_SCOPE_VAR, SessionManifest, slugify
-from .session_file import sanitize_session, snapshot_summary
+from .session_file import clean_tab_title, rename_snapshot_tab, sanitize_session, snapshot_summary
 from .store import SessionStore, StoredSession, StoreError
 
 
@@ -778,6 +780,64 @@ class WorkbenchService:
         except KittyError:
             return renamed
         return renamed
+
+    def rename_tab(self, slug_or_id: str, tab_index: int, new_title: str) -> StoredSession:
+        """Rename one live or saved tab and persist the resulting session state."""
+        title = clean_tab_title(new_title)
+        stored = self.store.get(slug_or_id)
+        client = self._kitty()
+        try:
+            live_tabs = client.tabs_for_session(stored.manifest.id)
+        except KittyError:
+            live_tabs = []
+        if live_tabs:
+            if not 0 <= tab_index < len(live_tabs):
+                raise WorkbenchError("tab index is outside the live session")
+            tab = live_tabs[tab_index]
+            previous_title = tab.title
+            client.rename_tab(tab.tab_id, title)
+            try:
+                return self.save(stored.manifest.id)
+            except Exception:
+                with suppress(KittyError):
+                    client.rename_tab(tab.tab_id, previous_title)
+                raise
+
+        if not stored.snapshot_path.is_file():
+            raise WorkbenchError("session has no saved tab layout")
+        original = stored.snapshot_path.read_text(encoding="utf-8")
+        original_context = self.store.read_context(stored.manifest.id)
+        try:
+            renamed_snapshot = rename_snapshot_tab(original, tab_index, title)
+            renamed_context = rename_context_tab(
+                original_context,
+                tab_index,
+                title,
+            )
+        except IndexError as error:
+            raise WorkbenchError(str(error)) from error
+        updated = self.store.write_snapshot(
+            stored.manifest.id,
+            renamed_snapshot,
+            snapshot_summary(renamed_snapshot),
+        )
+        if renamed_context is None:
+            return updated
+        renamed_context["snapshot_revision"] = updated.manifest.revision
+        try:
+            self.store.write_context(updated.manifest.id, renamed_context)
+        except (OSError, StoreError):
+            with suppress(OSError, StoreError):
+                restored = self.store.write_snapshot(
+                    stored.manifest.id,
+                    original,
+                    snapshot_summary(original),
+                )
+                context_to_restore = cast(SessionContext, original_context)
+                context_to_restore["snapshot_revision"] = restored.manifest.revision
+                self.store.write_context(restored.manifest.id, context_to_restore)
+            raise
+        return updated
 
     def _require_inactive(self, stored: StoredSession, operation: str) -> None:
         """Reject destructive lifecycle changes when Kitty confirms live tabs."""

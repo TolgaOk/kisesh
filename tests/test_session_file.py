@@ -19,7 +19,9 @@ from kitty_workbench.session_file import (
     _launch_working_directories,
     _parse_launch,
     _sanitize_blob,
+    clean_tab_title,
     read_session,
+    rename_snapshot_tab,
     sanitize_launch_line,
     sanitize_session,
     snapshot_summary,
@@ -162,6 +164,24 @@ class SessionFileTests(unittest.TestCase):
         self.assertEqual(summary.pane_count, 2)
         self.assertEqual(summary.tab_titles, ["Agent work", "Git"])
         self.assertEqual(summary.working_directories, ["/tmp/project", "/var/tmp"])
+
+    def test_tab_rename_changes_only_the_indexed_safe_directive(self) -> None:
+        """Preserve layout bytes around a normalized, single-line title change."""
+        snapshot = "new_table untouched\nnew_tab First\nlaunch\n  new_tab Second\nlaunch\n"
+
+        renamed = rename_snapshot_tab(snapshot, 1, "  New\n\tTitle  ")
+
+        self.assertEqual(
+            renamed,
+            "new_table untouched\nnew_tab First\nlaunch\n  new_tab New Title\nlaunch\n",
+        )
+        self.assertEqual(clean_tab_title("  One   title  "), "One title")
+        self.assertEqual(rename_snapshot_tab("new_tab Old", 0, "New"), "new_tab New")
+        for index in (-1, 2):
+            with self.subTest(index=index), self.assertRaisesRegex(IndexError, "outside"):
+                rename_snapshot_tab(snapshot, index, "New")
+        with self.assertRaisesRegex(ValueError, "cannot be empty"):
+            clean_tab_title("\n\t\x00")
 
     def test_kitty_cd_paths_with_spaces_are_not_truncated(self) -> None:
         session = "new_tab Notes\ncd /Users/me/Library/Mobile Documents/Vault\nlaunch\n"

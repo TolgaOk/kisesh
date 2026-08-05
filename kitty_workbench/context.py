@@ -676,6 +676,24 @@ def remap_context_windows(existing: ContextInput, tabs: Sequence[LiveTab]) -> Se
     return remapped
 
 
+def rename_context_tab(
+    existing: ContextInput,
+    tab_index: int,
+    new_title: str,
+) -> SessionContext | None:
+    """Return copied context with one persisted tab title replaced."""
+    if existing is None:
+        return None
+    tabs = _copied_context_tabs(existing)
+    if not 0 <= tab_index < len(tabs):
+        raise IndexError("tab index is outside the saved context")
+    tabs[tab_index]["title"] = new_title
+    captured_at = _clean_text(existing.get("captured_at"), 128)
+    renamed = _summarize(tabs, captured_at or utc_now())
+    _preserve_snapshot_revision(renamed, existing)
+    return renamed
+
+
 def _closing_pane_location(
     tabs: Sequence[TabContext],
     capture: ClosingPaneCapture,

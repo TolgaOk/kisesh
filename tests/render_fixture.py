@@ -203,6 +203,22 @@ class StaticService:
         stored.manifest.name = new_name
         return stored
 
+    def rename_tab(self, slug_or_id: str, tab_index: int, new_title: str) -> StoredSession:
+        """Rename one live or persisted fixture tab by preview index."""
+        stored = self._stored(slug_or_id)
+        row = next(view for view in self._rows if view.stored.manifest.id == stored.manifest.id)
+        if row.live_tabs:
+            row.live_tabs[tab_index].title = new_title
+            titles = [tab.title for tab in row.live_tabs]
+        elif row.context is not None:
+            row.context["tabs"][tab_index]["title"] = new_title
+            titles = [tab["title"] for tab in row.context["tabs"]]
+        else:
+            titles = list(stored.manifest.summary.tab_titles)
+            titles[tab_index] = new_title
+        stored.manifest.summary.tab_titles = titles
+        return stored
+
     def archive(self, slug_or_id: str) -> StoredSession:
         """Mark one fixture session archived."""
         stored = self._stored(slug_or_id)
