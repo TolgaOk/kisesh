@@ -161,7 +161,7 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
             ("x", "Save successfully, then close all live tabs."),
             ("r", "Rename session."),
             ("e / u", "Archive / unarchive."),
-            ("D", "Remove inactive session to trash."),
+            ("Shift+D", "Remove inactive session to trash."),
         ),
     ),
     (
@@ -466,7 +466,7 @@ class SessionManager:
         if selected is not None and selected.stored.manifest.status == "archived":
             actions: Hints = (
                 ("r", "rename"),
-                ("D", "remove"),
+                ("Shift+D", "remove"),
                 ("?", "help"),
                 ("q", self._dismiss_label()),
             )
@@ -483,7 +483,7 @@ class SessionManager:
                 ("c", "copy tab"),
                 ("r", "rename"),
                 ("e", "archive"),
-                ("D", "remove"),
+                ("Shift+D", "remove"),
                 ("?", "help"),
                 ("q", self._dismiss_label()),
             )
@@ -779,6 +779,12 @@ class SessionManager:
                 closed = self.service.save_and_close(identifier)
                 self._refresh()
                 self.message = f"saved and closed {closed.manifest.name}"
+            return None
+        if key == "d" and not current.live:
+            self.message = "remove uses Shift+D; detach is only for live sessions"
+            return None
+        if key == "D" and current.live:
+            self.message = "press x to save and close this live session before removing it"
             return None
         actions: dict[str, tuple[Callable[[str], StoredSession], str]] = {
             "a": (self.service.add_current_tab, "added source tab to {name}"),

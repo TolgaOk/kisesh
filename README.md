@@ -53,7 +53,7 @@ one to recoverable Workbench trash.
 
 `j/k` move · `g/G` ends · `Ctrl-d/u` half-page · `/` search ·
 `l/Enter/Space` open · `n` new · `a/d/c` add/detach/copy tab · `s` save ·
-`x` save+close · `r` rename · `e/u` archive/unarchive · `D` remove ·
+`x` save+close · `r` rename · `e/u` archive/unarchive · `Shift+D` remove ·
 `?` help · `q/Esc/h` close
 
 ## Verify

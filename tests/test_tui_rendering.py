@@ -466,6 +466,30 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertEqual(service.removed, [selected_id, archived_id])
         self.assertEqual(manager.archived_rows, [])
 
+    def test_remove_key_is_explicit_and_never_detaches_a_saved_session(self) -> None:
+        service = RecordingService()
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 1
+        screen = Canvas(16, 100)
+
+        manager._handle_key(screen, "d")
+
+        self.assertEqual(service.detached, [])
+        self.assertEqual(
+            manager.message,
+            "remove uses Shift+D; detach is only for live sessions",
+        )
+
+        manager.selected = 0
+        manager._handle_key(screen, "D")
+
+        self.assertEqual(service.removed, [])
+        self.assertEqual(
+            manager.message,
+            "press x to save and close this live session before removing it",
+        )
+
     def test_archived_selection_shows_an_explicit_unarchive_hint(self) -> None:
         manager = SessionManager(StaticService())
         manager._refresh()
@@ -481,17 +505,19 @@ class TuiRenderingTests(unittest.TestCase):
         service = RecordingService()
         manager = SessionManager(service)
         manager._refresh()
-        manager.selected = 1
-        selected_id = manager.filtered[manager.selected].stored.manifest.id
         screen = Canvas(16, 100)
 
+        live_id = manager.filtered[0].stored.manifest.id
         manager._handle_key(screen, "a")
         manager._handle_key(screen, "d")
+
+        manager.selected = 1
+        saved_id = manager.filtered[manager.selected].stored.manifest.id
         manager._handle_key(screen, "c")
 
-        self.assertEqual(service.added, [selected_id])
-        self.assertEqual(service.detached, [selected_id])
-        self.assertEqual(service.copied, [selected_id])
+        self.assertEqual(service.added, [live_id])
+        self.assertEqual(service.detached, [live_id])
+        self.assertEqual(service.copied, [saved_id])
 
     def test_help_is_a_comprehensive_theme_aware_modal(self) -> None:
         manager = SessionManager(StaticService())
