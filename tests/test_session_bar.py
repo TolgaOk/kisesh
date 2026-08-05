@@ -23,6 +23,11 @@ class Datum(NamedTuple):
     tab_id: int
 
 
+@dataclass(frozen=True, slots=True)
+class ExtraData:
+    prev_tab: Datum | None
+
+
 @dataclass(slots=True)
 class Child:
     cmdline: object = ()
@@ -64,14 +69,14 @@ class DrawData:
 
 class RecordingDrawer:
     def __init__(self) -> None:
-        self.calls: list[tuple[object, object, object, object, int, int, bool, object]] = []
+        self.calls: list[tuple[object, object, object, int, int, int, bool, object]] = []
 
     def __call__(
         self,
         draw_data: object,
         screen: object,
         tab: object,
-        before: object,
+        before: int,
         max_title_length: int,
         index: int,
         is_last: bool,
@@ -225,7 +230,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
         drawer = RecordingDrawer()
         screen = object()
-        extra = object()
+        extra = ExtraData(first)
 
         with (
             mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
@@ -234,7 +239,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             mock.patch("subprocess.Popen", side_effect=AssertionError("render spawned a process")),
         ):
             result = session_bar.draw_tab(
-                DrawData("bottom"), screen, second, first, 60, 2, True, extra
+                DrawData("bottom"), screen, second, 17, 60, 2, True, extra
             )
 
         self.assertEqual(result, 41)
@@ -242,7 +247,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         self.assertEqual(call[0], DrawData("bottom"))
         self.assertIs(call[1], screen)
         self.assertEqual(cast(Datum, call[2]).title, "󰓩 Tests ◇ Codex")
-        self.assertIs(call[3], first)
+        self.assertEqual(call[3], 17)
         self.assertEqual(call[4:], (60, 2, True, extra))
 
     def test_adapter_marks_groups_unattached_tabs_and_metadata_failures_safely(self) -> None:
@@ -261,9 +266,9 @@ class SessionBarAdapterTests(unittest.TestCase):
             mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
             mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
         ):
-            session_bar.draw_tab(object(), object(), tracked, None, 60, 1, False, object())
-            session_bar.draw_tab(object(), object(), unowned, tracked, 60, 2, False, object())
-            session_bar.draw_tab(object(), object(), missing, unowned, 60, 3, True, object())
+            session_bar.draw_tab(object(), object(), tracked, 0, 60, 1, False, ExtraData(None))
+            session_bar.draw_tab(object(), object(), unowned, 16, 60, 2, False, ExtraData(tracked))
+            session_bar.draw_tab(object(), object(), missing, 38, 60, 3, True, ExtraData(unowned))
 
         self.assertIn(" fallback-name", cast(Datum, drawer.calls[0][2]).title)
         self.assertIn("○ Unattached", cast(Datum, drawer.calls[1][2]).title)
@@ -292,8 +297,22 @@ class SessionBarAdapterTests(unittest.TestCase):
             mock.patch.object(session_bar, "_kitty_boss", side_effect=RuntimeError("gone")),
             mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
         ):
-            session_bar.draw_tab(object(), object(), datum, None, 20, 1, True, object())
+            session_bar.draw_tab(object(), object(), datum, 0, 20, 1, True, ExtraData(None))
         self.assertIs(drawer.calls[0][2], datum)
+
+    def test_current_tab_stays_decorated_when_previous_metadata_is_malformed(self) -> None:
+        previous = cast(Datum, SimpleNamespace(title="Gone"))
+        current = Datum("Editor", 1)
+        boss = Boss({1: NativeTab(Window({SESSION_ID_VAR: "id", SESSION_NAME_VAR: "Project"}))})
+        drawer = RecordingDrawer()
+
+        with (
+            mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
+            mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
+        ):
+            session_bar.draw_tab(object(), object(), current, 23, 60, 2, True, ExtraData(previous))
+
+        self.assertIn(" Project", cast(Datum, drawer.calls[0][2]).title)
 
     def test_lazy_kitty_imports_cache_only_the_drawer(self) -> None:
         boss = object()
@@ -356,6 +375,40 @@ class SessionBarAdapterTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "kitty_workbench.session_bar")
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
+    def test_real_kitty_callback_uses_integer_before_and_neighbor_data(self) -> None:
+        script = (
+            "import sys; "
+            f"sys.path.insert(0,{str(PROJECT)!r}); "
+            "from types import SimpleNamespace as N; "
+            "from kitty.tab_bar import ExtraData,TabBarData; "
+            "import kitty_workbench.session_bar as s; "
+            f"v={{'{SESSION_ID_VAR}':'id','{SESSION_NAME_VAR}':'Project'}}; "
+            "w=N(user_vars=v,child=N(cmdline=('-zsh',)),title='Shell'); "
+            "tabs={1:[w],2:[w]}; "
+            "boss=N(tab_for_id=tabs.get); s._kitty_boss=lambda boss=boss:boss; "
+            "seen=[]; "
+            "s._kitty_drawer=lambda seen=seen:"
+            "lambda d,sc,t,b,m,i,last,e:seen.append((t.title,b)) or 41; "
+            "previous=TabBarData('Shell',tab_id=1); "
+            "current=TabBarData('Tests',tab_id=2); "
+            "extra=ExtraData(); extra.prev_tab=previous; "
+            "extra.next_tab=None; extra.for_layout=False; "
+            "result=s.draw_tab(N(),N(),current,17,60,2,True,extra); "
+            "print(result,seen==[(s.TAB_ICON+' Tests',17)])"
+        )
+        result = subprocess.run(
+            ["kitty", "+runpy", script],
+            cwd=PROJECT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "41 True")
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_entrypoint_loads_with_pre_feature_model_cached_in_kitty(self) -> None:

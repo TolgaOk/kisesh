@@ -46,6 +46,14 @@ class _TabDatum(Protocol):
         """Return the native tab identifier."""
 
 
+class _ExtraData(Protocol):
+    """Neighboring tab data supplied by Kitty's custom renderer contract."""
+
+    @property
+    def prev_tab(self) -> _TabDatum | None:
+        """Return the previous native tab, if this is not the first tab."""
+
+
 class SessionBarCache(Protocol):
     """Kitty run-once loader whose cached custom renderer can be cleared."""
 
@@ -72,7 +80,7 @@ class SessionBarBoss(Protocol):
         """Refresh the focused operating-system window's native bar."""
 
 
-TabDrawer = Callable[[object, object, object, object, int, int, bool, object], int]
+TabDrawer = Callable[[object, object, object, int, int, int, bool, object], int]
 _drawer: TabDrawer | None = None
 
 
@@ -306,7 +314,7 @@ def draw_tab(
     draw_data: object,
     screen: object,
     tab: object,
-    before: object,
+    before: int,
     max_title_length: int,
     index: int,
     is_last: bool,
@@ -314,13 +322,21 @@ def draw_tab(
 ) -> int:
     """Decorate one native Kitty tab and delegate its themed drawing unchanged."""
     datum = cast(_TabDatum, tab)
-    previous_datum = cast(_TabDatum | None, before)
+    neighbors = cast(_ExtraData, extra_data)
     try:
         boss = _kitty_boss()
         current = _bar_tab(datum, boss)
-        previous = _bar_tab(previous_datum, boss) if previous_datum is not None else None
     except Exception:
         current = None
+        boss = None
+    previous_datum = getattr(neighbors, "prev_tab", None)
+    try:
+        previous = (
+            _bar_tab(previous_datum, boss)
+            if previous_datum is not None and boss is not None
+            else None
+        )
+    except Exception:
         previous = None
     replacement = cast(Callable[..., object], getattr(tab, "_replace", None))
     decorated = (
