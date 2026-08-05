@@ -7,6 +7,7 @@ import shlex
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import accumulate
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -77,15 +78,11 @@ def _ellipsize(value: str, max_cells: int) -> str:
         return value
     if max_cells == 1:
         return ELLIPSIS
-    output: list[str] = []
-    used = 0
-    for character in value:
-        width = _cell_width(character)
-        if used + width > max_cells - 1:
-            break
-        output.append(character)
-        used += width
-    return "".join(output) + ELLIPSIS
+    widths = accumulate(_cell_width(character) for character in value)
+    visible = (
+        character for character, used in zip(value, widths, strict=True) if used <= max_cells - 1
+    )
+    return "".join(visible) + ELLIPSIS
 
 
 def _agent_names(agents: Iterable[str]) -> tuple[str, ...]:
@@ -117,9 +114,6 @@ def _fit_group(
     title_width = _cell_width(title)
     session_budget = min(session_width, max(2, available // 2))
     title_budget = min(title_width, available - session_budget)
-    if title_budget < min(2, title_width):
-        title_budget = min(2, title_width)
-        session_budget = available - title_budget
     label = (
         f"{icon} {_ellipsize(session_name, session_budget)} · "
         f"{_ellipsize(title, title_budget)}{suffix}"

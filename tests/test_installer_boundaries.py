@@ -37,6 +37,7 @@ from kitty_workbench.installer import (
     _validate_source,
     main,
 )
+from kitty_workbench.tab_bar_install import install_tab_bar, tab_bar_paths
 
 PROJECT = Path(__file__).parents[1]
 
@@ -263,6 +264,73 @@ class InstallerBoundaryTests(unittest.TestCase):
                 _enable(paths)
         self.assertFalse(paths.kitty_config.exists())
         self.assertFalse(paths.target.exists())
+
+    def test_enable_restores_the_previous_tab_bar_when_config_write_fails(self) -> None:
+        paths = self.paths()
+        paths.kitty_config.parent.mkdir(parents=True)
+        paths.kitty_config.write_text(
+            f"allow_remote_control socket-only\nlisten_on {DEFAULT_LISTEN_ON}\n",
+            encoding="utf-8",
+        )
+        tab_bar = paths.kitty_config.parent / "tab_bar.py"
+        tab_bar.write_text("original = True\n", encoding="utf-8")
+        valid = ConfigProbe((), "socket-only", DEFAULT_LISTEN_ON)
+
+        with (
+            mock.patch("kitty_workbench.installer._find_executable", return_value="/binary"),
+            mock.patch("kitty_workbench.installer._probe_config", side_effect=(valid, valid)),
+            mock.patch("kitty_workbench.installer._atomic_write", side_effect=OSError("disk full")),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            _enable(paths)
+
+        self.assertFalse(tab_bar.is_symlink())
+        self.assertEqual(tab_bar.read_text(encoding="utf-8"), "original = True\n")
+        self.assertFalse(paths.target.exists())
+        self.assertFalse((paths.data / ".integration" / "tab-bar.json").exists())
+
+    def test_disable_reinstalls_the_native_bar_when_config_write_fails(self) -> None:
+        paths = self.paths()
+        paths.target.parent.mkdir(parents=True)
+        paths.target.symlink_to(PROJECT, target_is_directory=True)
+        paths.kitty_config.parent.mkdir(parents=True)
+        paths.kitty_config.write_text(
+            f"{MANAGED_BEGIN}\n{INTEGRATION_INCLUDE}\n{MANAGED_END}\n",
+            encoding="utf-8",
+        )
+        tab_bar = paths.kitty_config.parent / "tab_bar.py"
+        tab_bar.write_text("original = True\n", encoding="utf-8")
+        bar_paths = tab_bar_paths(paths.kitty_config, paths.target, paths.data)
+        install_tab_bar(bar_paths)
+
+        with (
+            mock.patch("kitty_workbench.installer._atomic_write", side_effect=OSError("disk full")),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            _disable(paths)
+
+        self.assertTrue(bar_paths.live.is_symlink())
+        self.assertEqual(
+            bar_paths.live.resolve(), (PROJECT / "integration" / "tab_bar.py").resolve()
+        )
+        self.assertTrue(bar_paths.state.exists())
+
+    def test_disable_config_failure_without_a_managed_bar_has_no_bar_rollback(self) -> None:
+        paths = self.paths()
+        paths.kitty_config.parent.mkdir(parents=True)
+        paths.kitty_config.write_text(
+            f"{MANAGED_BEGIN}\n{INTEGRATION_INCLUDE}\n{MANAGED_END}\n",
+            encoding="utf-8",
+        )
+
+        with (
+            mock.patch("kitty_workbench.installer._atomic_write", side_effect=OSError("disk full")),
+            mock.patch("kitty_workbench.installer.install_tab_bar") as reinstall,
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            _disable(paths)
+
+        reinstall.assert_not_called()
 
     def test_purge_guards_scope_unlinks_symlinks_and_reports_already_absent_data(self) -> None:
         paths = self.paths()

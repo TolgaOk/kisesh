@@ -7,6 +7,7 @@ import unittest
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import NamedTuple, cast
 from unittest import mock
 
@@ -140,6 +141,20 @@ class SessionBarRenderingTests(unittest.TestCase):
         self.assertIn("shell", render_tab_label(first, None, 14))
         self.assertEqual(render_tab_label(first, None, 1), "…")
         self.assertEqual(render_tab_label(first, None, 0), "")
+        self.assertEqual(session_bar._ellipsize("anything", 0), "")
+
+        medium_group = render_tab_label(
+            SessionBarTab("test", "id", "Team", ("claude",)),
+            None,
+            20,
+        )
+        self.assertEqual(medium_group, " Team │ test ✻")
+        tiny_tab = render_tab_label(
+            SessionBarTab("long title", "id", "Team", ("claude", "codex")),
+            SessionBarTab("before", "id", "Team"),
+            2,
+        )
+        self.assertEqual(tiny_tab, "l…")
 
     def test_controls_unicode_and_agent_noise_cannot_break_cell_budgets(self) -> None:
         tab = SessionBarTab(
@@ -250,6 +265,28 @@ class SessionBarAdapterTests(unittest.TestCase):
         ):
             session_bar.draw_tab(object(), object(), datum, None, 20, 1, True, object())
         self.assertIs(drawer.calls[0][2], datum)
+
+    def test_lazy_kitty_imports_cache_only_the_drawer(self) -> None:
+        boss = object()
+        drawer = RecordingDrawer()
+        modules = {
+            "kitty.fast_data_types": SimpleNamespace(get_boss=lambda: boss),
+            "kitty.tab_bar": SimpleNamespace(draw_tab_with_powerline=drawer),
+        }
+        session_bar._drawer = None
+        with mock.patch(
+            "kitty_workbench.session_bar.importlib.import_module",
+            side_effect=lambda name: modules[name],
+        ) as imported:
+            self.assertIs(session_bar._kitty_boss(), boss)
+            self.assertIs(session_bar._kitty_drawer(), drawer)
+            self.assertIs(session_bar._kitty_drawer(), drawer)
+
+        self.assertEqual(
+            [call.args[0] for call in imported.call_args_list],
+            ["kitty.fast_data_types", "kitty.tab_bar"],
+        )
+        session_bar._drawer = None
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_kitty_runtime_loads_the_exact_custom_bar_entrypoint(self) -> None:

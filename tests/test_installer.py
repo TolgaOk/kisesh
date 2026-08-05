@@ -52,6 +52,7 @@ class InstallerTests(unittest.TestCase):
         self.kitty.chmod(0o755)
         self.kitten.chmod(0o755)
         self.config = self.home / "config" / "kitty" / "kitty.conf"
+        self.tab_bar = self.config.parent / "tab_bar.py"
         self.target = self.home / ".local" / "lib" / "kitty-workbench"
         self.data = self.home / "data" / "kitty-workbench"
         self.environment = os.environ.copy()
@@ -133,6 +134,45 @@ class InstallerTests(unittest.TestCase):
         backup = self.config.with_name("kitty.conf.kitty-workbench.bak")
         self.assertEqual(backup.read_text(encoding="utf-8"), original)
 
+    def test_existing_custom_tab_bar_is_restored_exactly_on_disable(self) -> None:
+        self.write_config("font_size 14\n")
+        original = "def draw_tab(*args):\n    return 17\n"
+        self.tab_bar.write_text(original, encoding="utf-8")
+        self.tab_bar.chmod(0o640)
+
+        enabled = self.run_installer()
+
+        self.assertEqual(enabled.returncode, 0, enabled.stderr)
+        self.assertTrue(self.tab_bar.is_symlink())
+        self.assertEqual(
+            self.tab_bar.resolve(),
+            (PROJECT / "integration" / "tab_bar.py").resolve(),
+        )
+        self.assertFalse(self.tab_bar.with_suffix(".py.kitty-workbench.bak").exists())
+
+        disabled = self.run_installer("--disable")
+
+        self.assertEqual(disabled.returncode, 0, disabled.stderr)
+        self.assertFalse(self.tab_bar.is_symlink())
+        self.assertEqual(self.tab_bar.read_text(encoding="utf-8"), original)
+        self.assertEqual(self.tab_bar.stat().st_mode & 0o777, 0o640)
+        self.assertFalse((self.data / ".integration" / "tab-bar.json").exists())
+
+    def test_disable_refuses_a_user_modified_tab_bar_without_touching_config(self) -> None:
+        self.write_config("font_size 14\n")
+        self.tab_bar.write_text("original = True\n", encoding="utf-8")
+        self.assertEqual(self.run_installer().returncode, 0)
+        enabled_config = self.config.read_text(encoding="utf-8")
+        self.tab_bar.unlink()
+        self.tab_bar.write_text("new_user_bar = True\n", encoding="utf-8")
+
+        disabled = self.run_installer("--disable")
+
+        self.assertNotEqual(disabled.returncode, 0)
+        self.assertIn("modified custom tab bar", disabled.stderr)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), enabled_config)
+        self.assertEqual(self.tab_bar.read_text(encoding="utf-8"), "new_user_bar = True\n")
+
     def test_enable_warns_when_it_takes_over_native_tab_close(self) -> None:
         self.write_config("map cmd+w close_tab\n")
 
@@ -150,6 +190,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("allow_remote_control socket-only", configured)
         self.assertIn("listen_on unix:/tmp/kitty-workbench-main", configured)
         self.assertIn(INTEGRATION_INCLUDE, configured)
+        self.assertTrue(self.tab_bar.is_symlink())
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
         self.assertFalse(self.config.with_name("kitty.conf.kitty-workbench.bak").exists())
 
@@ -172,10 +213,28 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("allow_remote_control socket-only", config.read_text(encoding="utf-8"))
         self.assertTrue(self.target.is_symlink())
+        tab_bar = config.parent / "tab_bar.py"
+        self.assertTrue(tab_bar.is_symlink())
+        loader = (
+            "import runpy,sys; "
+            "loaded=runpy.run_path(sys.argv[1]); "
+            "print(loaded['draw_tab'].__module__)"
+        )
+        loaded = subprocess.run(
+            ["kitty", "+runpy", loader, str(tab_bar)],
+            cwd=PROJECT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(loaded.returncode, 0, loaded.stderr)
+        self.assertEqual(loaded.stdout.strip(), "kitty_workbench.session_bar")
 
     def test_disable_uninstall_and_purge_have_distinct_data_boundaries(self) -> None:
         self.assertEqual(self.run_installer().returncode, 0)
-        self.data.mkdir(parents=True)
+        self.data.mkdir(parents=True, exist_ok=True)
         (self.data / "session.json").write_text("saved", encoding="utf-8")
         data_sibling = self.data.parent / "keep-data"
         data_sibling.write_text("keep", encoding="utf-8")
@@ -191,6 +250,8 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("font_size 17", disabled_config)
         self.assertTrue(self.target.is_symlink())
         self.assertTrue((self.data / "session.json").is_file())
+        self.assertFalse(self.tab_bar.exists())
+        self.assertFalse(self.tab_bar.is_symlink())
 
         self.assertEqual(self.run_installer("--enable").returncode, 0)
         uninstalled = self.run_installer("--uninstall")

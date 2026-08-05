@@ -15,6 +15,12 @@ from typing import Literal
 import tyro
 
 from .filesystem import atomic_write_text, temporary_path
+from .tab_bar_install import (
+    TabBarInstallError,
+    install_tab_bar,
+    restore_tab_bar,
+    tab_bar_paths,
+)
 
 MANAGED_BEGIN = "# BEGIN kitty-workbench (managed by ./install)"
 MANAGED_END = "# END kitty-workbench (managed by ./install)"
@@ -137,7 +143,9 @@ def _validate_source(paths: InstallPaths) -> None:
         paths.source / "bin" / "kitty-workbench",
         paths.source / "integration" / "kitty-workbench.conf",
         paths.source / "integration" / "safe_close.py",
+        paths.source / "integration" / "tab_bar.py",
         paths.source / "kitty_workbench" / "close_guard.py",
+        paths.source / "kitty_workbench" / "session_bar.py",
         paths.source / "kitty_workbench" / "watcher.py",
     )
     missing = [str(path) for path in required if not path.is_file()]
@@ -384,6 +392,8 @@ def _enable(paths: InstallPaths) -> None:
     original = _read_config(config)
     base, _ = _strip_workbench_config(original, paths)
     link_created = _ensure_install_link(paths)
+    bar_paths = tab_bar_paths(config, paths.target, paths.data)
+    tab_bar_changed = False
     try:
         base_probe = _probe_config(kitty, config, base)
         if base_probe.bad_lines:
@@ -399,6 +409,7 @@ def _enable(paths: InstallPaths) -> None:
             raise InstallError("Kitty remote control is still disabled; no changes were made")
         if _socket_missing(final_probe.listen_on):
             raise InstallError("Kitty has no persistent listen_on socket; no changes were made")
+        tab_bar_changed = install_tab_bar(bar_paths)
         if desired != original:
             backup = _backup_once(config)
             _atomic_write(config, desired)
@@ -408,11 +419,14 @@ def _enable(paths: InstallPaths) -> None:
         else:
             print(f"already enabled: {config}")
     except Exception:
+        if tab_bar_changed:
+            restore_tab_bar(bar_paths)
         if link_created and paths.target.is_symlink():
             paths.target.unlink()
         raise
 
     print(f"code:    {paths.target} -> {paths.source}")
+    print(f"tab bar: {bar_paths.live} -> {bar_paths.source}")
     if conflicts := _mapping_conflicts(base):
         print(
             "warning: Workbench takes precedence over existing mappings for "
@@ -427,15 +441,24 @@ def _disable(paths: InstallPaths) -> bool:
     config = _editable_config(paths.kitty_config)
     original = _read_config(config)
     desired, changed = _strip_workbench_config(original, paths)
-    if changed:
-        backup = _backup_once(config)
-        _atomic_write(config, desired)
-        print(f"disabled: {config}")
-        if backup is not None:
-            print(f"backup:   {backup}")
-    else:
-        print(f"already disabled: {config}")
-    return changed
+    bar_paths = tab_bar_paths(config, paths.target, paths.data)
+    bar_restored = restore_tab_bar(bar_paths)
+    try:
+        if changed:
+            backup = _backup_once(config)
+            _atomic_write(config, desired)
+            print(f"disabled: {config}")
+            if backup is not None:
+                print(f"backup:   {backup}")
+        else:
+            print(f"already disabled: {config}")
+    except Exception:
+        if bar_restored:
+            install_tab_bar(bar_paths)
+        raise
+    if bar_restored:
+        print(f"restored custom tab bar: {bar_paths.live}")
+    return changed or bar_restored
 
 
 def _remove_product_data(path: Path, base: Path) -> bool:
@@ -497,7 +520,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("restart Kitty once to unload the Workbench watcher and mappings")
         else:
             _uninstall(paths, purge=action == "purge")
-    except InstallError as error:
+    except (InstallError, TabBarInstallError) as error:
         print(f"kitty-workbench installer: {error}", file=sys.stderr)
         return 1
     except OSError as error:
