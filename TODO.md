@@ -46,3 +46,19 @@
   after the target session opens successfully.
 - [x] Keep attach and cancel unchanged, and cover blank names, declined discard,
   failed restore, failed save, CLI routing, and modal rendering.
+
+## Persistent session bar
+
+- [ ] Prototype one native custom tab-bar row that combines session identity and
+  Kitty tabs without a resident process, terminal layer, or separate panel.
+  - Prefer `● Research │ shell │ tests │ ✻ Claude`, with a clear unattached state.
+  - Let `tab_bar_edge` place the same design at the top or bottom.
+  - Read cached Kitty session/user-variable metadata only; never run subprocesses
+    or read session files in the draw path.
+  - Preserve the active theme, compact gracefully, and compare reviewed top and
+    bottom renders before choosing a default.
+- [ ] Decide whether the first version shows only session name and tab count or
+  also cached autosave and agent indicators. Treat a true second tab-bar row as
+  out of scope unless Kitty gains a native multi-row rendering hook.
+- [ ] Replace the existing custom tab bar's legacy `ksm` lookup only in a dedicated
+  integration change; do not rewrite unrelated Kitty font or theme settings.
