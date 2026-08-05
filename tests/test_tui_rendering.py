@@ -151,14 +151,14 @@ class TuiRenderingTests(unittest.TestCase):
         lines = rendered.splitlines()
 
         self.assertIn("├─ agents · 2 panes · splits · focused", rendered)
-        self.assertIn("│  • ✻ Claude, ◇ Codex", rendered)
+        self.assertIn("│  • ✻ Claude, 󰏄 Codex", rendered)
         self.assertIn("├─ editor + tests · 3 panes · tall", rendered)
         self.assertIn("nvim, pytest, zsh · last: git status", rendered)
         self.assertIn("└─ monitor · 1 pane · stack", rendered)
         self.assertIn("top !", rendered)
         self.assertNotIn("↻", rendered)
-        agent_row = next(index for index, line in enumerate(lines) if "◇ Codex" in line)
-        codex_x = lines[agent_row].index("◇")
+        agent_row = next(index for index, line in enumerate(lines) if "󰏄 Codex" in line)
+        codex_x = lines[agent_row].index("󰏄")
         self.assertEqual(
             screen.styles[agent_row][codex_x],
             palette.good | curses.A_BOLD,

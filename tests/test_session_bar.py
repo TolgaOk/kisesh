@@ -21,11 +21,20 @@ PROJECT = Path(__file__).parents[1]
 class Datum(NamedTuple):
     title: str
     tab_id: int
+    is_active: bool = False
+    needs_attention: bool = False
+
+
+class LegacyDatum(NamedTuple):
+    title: str
+    tab_id: int
 
 
 @dataclass(frozen=True, slots=True)
 class ExtraData:
     prev_tab: Datum | None
+    next_tab: Datum | None = None
+    for_layout: bool = False
 
 
 @dataclass(slots=True)
@@ -65,11 +74,34 @@ class Boss:
 @dataclass(frozen=True, slots=True)
 class DrawData:
     tab_bar_edge: str
+    active_bg: int = 101
+    active_fg: int = 102
+    inactive_bg: int = 201
+    inactive_fg: int = 202
+
+    def tab_bg(self, tab: object) -> int:
+        return self.active_bg if bool(getattr(tab, "is_active", False)) else self.inactive_bg
+
+    def tab_fg(self, tab: object) -> int:
+        return self.active_fg if bool(getattr(tab, "is_active", False)) else self.inactive_fg
+
+
+@dataclass(slots=True)
+class Cursor:
+    x: int
+    bg: int = 0
+    fg: int = 0
+
+
+@dataclass(slots=True)
+class Screen:
+    cursor: Cursor
 
 
 class RecordingDrawer:
     def __init__(self) -> None:
         self.calls: list[tuple[object, object, object, int, int, int, bool, object]] = []
+        self.colors: list[tuple[int, int]] = []
 
     def __call__(
         self,
@@ -94,6 +126,11 @@ class RecordingDrawer:
                 extra_data,
             )
         )
+        cursor = getattr(screen, "cursor", None)
+        if isinstance(cursor, Cursor):
+            self.colors.append((cursor.bg, cursor.fg))
+            cursor.x = before + max_title_length
+            return cursor.x
         return 41
 
 
@@ -208,6 +245,164 @@ class SessionBarRenderingTests(unittest.TestCase):
 
 
 class SessionBarAdapterTests(unittest.TestCase):
+    def test_session_prefix_never_inherits_first_tab_highlight(self) -> None:
+        first_active = Datum("Shell", 1, is_active=True)
+        first_inactive = first_active._replace(is_active=False)
+        second_active = Datum("Tests", 2, is_active=True)
+        variables = {SESSION_ID_VAR: "id", SESSION_NAME_VAR: "Silver Seal"}
+        boss = Boss(
+            {
+                1: NativeTab(Window(variables)),
+                2: NativeTab(Window(variables)),
+            }
+        )
+        draw_data = DrawData("top")
+        first_drawer = RecordingDrawer()
+        drawer_holder = [first_drawer]
+
+        with (
+            mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
+            mock.patch.object(
+                session_bar,
+                "_kitty_drawer",
+                side_effect=lambda: drawer_holder[0],
+            ),
+            mock.patch(
+                "kitty_workbench.session_bar.importlib.import_module",
+                return_value=SimpleNamespace(as_rgb=lambda color: color),
+            ),
+        ):
+            active_screen = Screen(Cursor(x=7, bg=draw_data.active_bg, fg=draw_data.active_fg))
+            result = session_bar.draw_tab(
+                draw_data,
+                active_screen,
+                first_active,
+                7,
+                40,
+                1,
+                False,
+                ExtraData(None, second_active),
+            )
+
+            switched_drawer = RecordingDrawer()
+            drawer_holder[0] = switched_drawer
+            switched_screen = Screen(Cursor(x=7))
+            session_bar.draw_tab(
+                draw_data,
+                switched_screen,
+                first_inactive,
+                7,
+                40,
+                1,
+                False,
+                ExtraData(None, second_active),
+            )
+            switched_screen.cursor.bg = draw_data.active_bg
+            switched_screen.cursor.fg = draw_data.active_fg
+            session_bar.draw_tab(
+                draw_data,
+                switched_screen,
+                second_active,
+                switched_screen.cursor.x,
+                40,
+                2,
+                True,
+                ExtraData(first_inactive),
+            )
+
+        self.assertEqual(result, 47)
+        self.assertEqual(
+            [
+                (cast(Datum, call[2]).title, cast(Datum, call[2]).is_active)
+                for call in first_drawer.calls
+            ],
+            [(" Silver Seal", False), ("󰓩 Shell", True)],
+        )
+        self.assertEqual(
+            first_drawer.colors,
+            [
+                (draw_data.inactive_bg, draw_data.inactive_fg),
+                (draw_data.active_bg, draw_data.active_fg),
+            ],
+        )
+        self.assertEqual(
+            [
+                (cast(Datum, call[2]).title, cast(Datum, call[2]).is_active)
+                for call in switched_drawer.calls
+            ],
+            [(" Silver Seal", False), ("󰓩 Shell", False), ("󰓩 Tests", True)],
+        )
+        self.assertEqual(
+            switched_drawer.colors,
+            [
+                (draw_data.inactive_bg, draw_data.inactive_fg),
+                (draw_data.inactive_bg, draw_data.inactive_fg),
+                (draw_data.active_bg, draw_data.active_fg),
+            ],
+        )
+
+    def test_incomplete_native_renderers_fall_back_to_one_decorated_tab(self) -> None:
+        variables = {SESSION_ID_VAR: "id", SESSION_NAME_VAR: "Project"}
+        boss = Boss({1: NativeTab(Window(variables))})
+        drawer = RecordingDrawer()
+        screen = Screen(Cursor(x=3))
+
+        with (
+            mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
+            mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
+        ):
+            result = session_bar.draw_tab(
+                DrawData("top"),
+                screen,
+                LegacyDatum("Shell", 1),
+                3,
+                30,
+                1,
+                True,
+                ExtraData(None),
+            )
+
+        self.assertEqual(result, 33)
+        self.assertEqual(len(drawer.calls), 1)
+        self.assertIn(" Project", cast(LegacyDatum, drawer.calls[0][2]).title)
+
+        incomplete_drawer = RecordingDrawer()
+        with (
+            mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
+            mock.patch.object(
+                session_bar,
+                "_kitty_drawer",
+                return_value=incomplete_drawer,
+            ),
+        ):
+            session_bar.draw_tab(
+                object(),
+                Screen(Cursor(x=3)),
+                Datum("Shell", 1, is_active=True),
+                3,
+                30,
+                1,
+                True,
+                ExtraData(None),
+            )
+
+        self.assertEqual(len(incomplete_drawer.calls), 1)
+        self.assertIn(" Project", cast(Datum, incomplete_drawer.calls[0][2]).title)
+
+    def test_native_color_resolution_rejects_incomplete_or_failed_theme_apis(self) -> None:
+        incomplete = SimpleNamespace(tab_bg=lambda _tab: 1)
+        complete = SimpleNamespace(tab_bg=lambda _tab: 1, tab_fg=lambda _tab: 2)
+
+        self.assertIsNone(session_bar._native_tab_colors(object(), object()))
+        self.assertIsNone(session_bar._native_tab_colors(incomplete, object()))
+        with mock.patch(
+            "kitty_workbench.session_bar.importlib.import_module",
+            return_value=SimpleNamespace(
+                as_rgb=mock.Mock(side_effect=RuntimeError("theme changed"))
+            ),
+        ):
+            self.assertIsNone(session_bar._native_tab_colors(complete, object()))
+
     def test_native_adapter_uses_cached_metadata_and_preserves_kitty_draw_state(self) -> None:
         first = Datum("Shell", 1)
         second = Datum("Tests", 2)
@@ -246,7 +441,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         call = drawer.calls[0]
         self.assertEqual(call[0], DrawData("bottom"))
         self.assertIs(call[1], screen)
-        self.assertEqual(cast(Datum, call[2]).title, "󰓩 Tests ◇ Codex")
+        self.assertEqual(cast(Datum, call[2]).title, "󰓩 Tests 󰏄 Codex")
         self.assertEqual(call[3], 17)
         self.assertEqual(call[4:], (60, 2, True, extra))
 
@@ -409,6 +604,45 @@ class SessionBarAdapterTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "41 True")
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
+    def test_real_kitty_first_tab_keeps_session_segment_inactive(self) -> None:
+        script = (
+            "import sys; "
+            f"sys.path.insert(0,{str(PROJECT)!r}); "
+            "from types import SimpleNamespace as N; "
+            "from kitty.tab_bar import ExtraData,TabBarData; "
+            "import kitty_workbench.session_bar as s; "
+            f"v={{'{SESSION_ID_VAR}':'id','{SESSION_NAME_VAR}':'Silver Seal'}}; "
+            "w=N(user_vars=v,child=N(cmdline=('-zsh',)),title='Shell'); "
+            "boss=N(tab_for_id={1:[w],2:[w]}.get); "
+            "s._kitty_boss=lambda boss=boss:boss; "
+            "current=TabBarData('Shell',is_active=True,tab_id=1); "
+            "following=TabBarData('Tests',tab_id=2); "
+            "extra=ExtraData(); extra.prev_tab=None; extra.next_tab=following; "
+            "extra.for_layout=False; "
+            "draw=N(tab_bg=lambda t:0x101010 if t.is_active else 0x202020,"
+            "tab_fg=lambda t:0xf0f0f0 if t.is_active else 0x808080); "
+            "screen=N(cursor=N(x=7,bg=0,fg=0)); seen=[]; "
+            "drawer=lambda d,sc,t,b,m,i,last,e,seen=seen:"
+            "(seen.append((t.title,t.is_active,sc.cursor.bg,sc.cursor.fg)),"
+            "setattr(sc.cursor,'x',b+m),b+m)[-1]; "
+            "s._kitty_drawer=lambda drawer=drawer:drawer; "
+            "result=s.draw_tab(draw,screen,current,7,60,1,False,extra); "
+            "print(result==67,len(seen)==2,seen[0][1] is False,"
+            "seen[1][1] is True,seen[0][2]!=seen[1][2])"
+        )
+        result = subprocess.run(
+            ["kitty", "+runpy", script],
+            cwd=PROJECT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "True True True True True")
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_entrypoint_loads_with_pre_feature_model_cached_in_kitty(self) -> None:

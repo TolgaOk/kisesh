@@ -39,10 +39,11 @@ session's tabs in the current Kitty window while every other session keeps
 running. Other Kitty OS windows retain their normal tab bars.
 
 Moving with `j/k` expands only the selected session: each tab is followed by a
-comma-separated pane row. `✻ Claude` and `◇ Codex` identify agent panes, `•`
+comma-separated pane row. `✻ Claude` and `󰏄 Codex` identify agent panes, `•`
 marks the focused pane, and `↻` marks saved state that can be restored or
-prefilled. Kitty's native bar shows ` Session`, `󰓩` tabs, and cached `✻`/`◇`
-agent markers without a multiplexer or resident helper.
+prefilled. Kitty's native bar shows ` Session` as a separate inactive segment,
+then highlights only the selected `󰓩` tab; cached `✻`/`󰏄` agent markers need no
+multiplexer or resident helper.
 
 If the current window contains unowned tabs, opening a session asks whether to
 attach them, edit a random unused name and save them separately, discard them

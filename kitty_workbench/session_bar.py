@@ -19,9 +19,10 @@ SESSION_ID_VAR = "kitty_workbench_session"
 SESSION_SLUG_VAR = "kitty_workbench_slug"
 SESSION_NAME_VAR = "kitty_workbench_name"
 AGENT_VAR = "kitty_workbench_agent"
+MIN_SPLIT_SEGMENT_CELLS = 6
 
-_AGENT_LABELS = {"claude": "✻ Claude", "codex": "◇ Codex"}
-_AGENT_SYMBOLS = {"claude": "✻", "codex": "◇"}
+_AGENT_LABELS = {"claude": "✻ Claude", "codex": "󰏄 Codex"}
+_AGENT_SYMBOLS = {"claude": "✻", "codex": "󰏄"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +53,51 @@ class _ExtraData(Protocol):
     @property
     def prev_tab(self) -> _TabDatum | None:
         """Return the previous native tab, if this is not the first tab."""
+
+
+class _ScreenCursor(Protocol):
+    """Mutable Kitty cursor state needed to draw adjacent native segments."""
+
+    x: int
+    bg: int
+    fg: int
+
+
+@dataclass(frozen=True, slots=True)
+class _SegmentExtraData:
+    """Neighbor state for the synthetic session segment inside one tab."""
+
+    prev_tab: object | None
+    next_tab: object | None
+    for_layout: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedTabs:
+    """Workbench metadata resolved for the current and previous native tabs."""
+
+    current: SessionBarTab | None
+    previous: SessionBarTab | None
+
+
+@dataclass(frozen=True, slots=True)
+class _TabColors:
+    """Theme colors encoded for direct assignment to Kitty's screen cursor."""
+
+    background: int
+    foreground: int
+
+
+@dataclass(frozen=True, slots=True)
+class _SegmentPlan:
+    """Complete rendering plan for a session prefix and its first native tab."""
+
+    session_tab: object
+    content_tab: object
+    session_width: int
+    content_width: int
+    session_colors: _TabColors
+    content_colors: _TabColors
 
 
 class SessionBarCache(Protocol):
@@ -133,6 +179,18 @@ def _suffix(agents: tuple[str, ...], *, verbose: bool) -> str:
     return f" {' '.join(labels[agent] for agent in agents)}" if agents else ""
 
 
+def _starts_group(tab: SessionBarTab, previous: SessionBarTab | None) -> bool:
+    """Return whether a tab begins a new contiguous session group."""
+    return previous is None or previous.session_id != tab.session_id
+
+
+def _session_descriptor(tab: SessionBarTab) -> tuple[str, str]:
+    """Return the icon and sanitized name for a tab's session boundary."""
+    if tab.session_id is None:
+        return UNATTACHED_ICON, "Unattached"
+    return SESSION_ICON, _clean(tab.session_name, "Session")
+
+
 def _fit_group(
     icon: str,
     session_name: str,
@@ -175,11 +233,8 @@ def render_tab_label(
         return ""
     title = _clean(tab.title, "Shell")
     agents = _agent_names(tab.agents)
-    starts_group = previous is None or previous.session_id != tab.session_id
-    if starts_group:
-        tracked = tab.session_id is not None
-        icon = SESSION_ICON if tracked else UNATTACHED_ICON
-        session_name = _clean(tab.session_name, "Session") if tracked else "Unattached"
+    if _starts_group(tab, previous):
+        icon, session_name = _session_descriptor(tab)
         full = f"{icon} {session_name} │ {TAB_ICON} {title}{_suffix(agents, verbose=True)}"
         if _cell_width(full) <= max_cells:
             return full
@@ -293,6 +348,86 @@ def _kitty_drawer() -> TabDrawer:
     return _drawer
 
 
+def _native_tab_colors(draw_data: object, tab: object) -> _TabColors | None:
+    """Resolve one tab's theme colors in Kitty's encoded screen format."""
+    background = cast(Callable[[object], int] | None, getattr(draw_data, "tab_bg", None))
+    foreground = cast(Callable[[object], int] | None, getattr(draw_data, "tab_fg", None))
+    if not callable(background) or not callable(foreground):
+        return None
+    try:
+        module = importlib.import_module("kitty.tab_bar")
+        as_rgb = cast(Callable[[int], int], module.as_rgb)
+        return _TabColors(as_rgb(background(tab)), as_rgb(foreground(tab)))
+    except Exception:
+        return None
+
+
+def _resolved_tabs(datum: _TabDatum, neighbors: _ExtraData) -> _ResolvedTabs:
+    """Resolve cached Workbench metadata while tolerating disappearing native tabs."""
+    try:
+        boss = _kitty_boss()
+        current = _bar_tab(datum, boss)
+    except Exception:
+        current = None
+        boss = None
+    previous_datum = getattr(neighbors, "prev_tab", None)
+    try:
+        previous = (
+            _bar_tab(previous_datum, boss)
+            if previous_datum is not None and boss is not None
+            else None
+        )
+    except Exception:
+        previous = None
+    return _ResolvedTabs(current, previous)
+
+
+def _segment_plan(
+    draw_data: object,
+    tab: object,
+    resolved: _ResolvedTabs,
+    max_title_length: int,
+) -> _SegmentPlan | None:
+    """Build a two-segment plan when native data and width support it safely."""
+    current = resolved.current
+    replacement = cast(Callable[..., object] | None, getattr(tab, "_replace", None))
+    if (
+        current is None
+        or not _starts_group(current, resolved.previous)
+        or max_title_length < MIN_SPLIT_SEGMENT_CELLS * 2
+        or not callable(replacement)
+    ):
+        return None
+    icon, session_name = _session_descriptor(current)
+    session_label = f"{icon} {session_name}"
+    session_width = max(
+        MIN_SPLIT_SEGMENT_CELLS,
+        min(_cell_width(session_label) + 2, max_title_length // 2),
+    )
+    content_width = max_title_length - session_width
+    try:
+        session_tab = replacement(
+            title=_ellipsize(session_label, session_width - 2),
+            is_active=False,
+            needs_attention=False,
+        )
+        content_tab = replacement(title=render_tab_label(current, current, content_width - 2))
+    except (TypeError, ValueError):
+        return None
+    session_colors = _native_tab_colors(draw_data, session_tab)
+    content_colors = _native_tab_colors(draw_data, content_tab)
+    if session_colors is None or content_colors is None:
+        return None
+    return _SegmentPlan(
+        session_tab,
+        content_tab,
+        session_width,
+        content_width,
+        session_colors,
+        content_colors,
+    )
+
+
 def reload_session_bar(boss: SessionBarBoss) -> None:
     """Clear Kitty's run-once custom-bar cache and redraw every native bar."""
     global _drawer
@@ -320,31 +455,54 @@ def draw_tab(
     is_last: bool,
     extra_data: object,
 ) -> int:
-    """Decorate one native Kitty tab and delegate its themed drawing unchanged."""
+    """Draw session identity separately while retaining one native tab extent."""
     datum = cast(_TabDatum, tab)
     neighbors = cast(_ExtraData, extra_data)
-    try:
-        boss = _kitty_boss()
-        current = _bar_tab(datum, boss)
-    except Exception:
-        current = None
-        boss = None
-    previous_datum = getattr(neighbors, "prev_tab", None)
-    try:
-        previous = (
-            _bar_tab(previous_datum, boss)
-            if previous_datum is not None and boss is not None
-            else None
+    resolved = _resolved_tabs(datum, neighbors)
+    drawer = _kitty_drawer()
+    cursor = cast(_ScreenCursor | None, getattr(screen, "cursor", None))
+    plan = (
+        _segment_plan(draw_data, tab, resolved, max_title_length)
+        if cursor is not None and isinstance(getattr(cursor, "x", None), int)
+        else None
+    )
+    if plan is not None and cursor is not None:
+        cursor.bg = plan.session_colors.background
+        cursor.fg = plan.session_colors.foreground
+        segment_neighbors = _SegmentExtraData(
+            prev_tab=getattr(neighbors, "prev_tab", None),
+            next_tab=plan.content_tab,
+            for_layout=bool(getattr(neighbors, "for_layout", False)),
         )
-    except Exception:
-        previous = None
-    replacement = cast(Callable[..., object], getattr(tab, "_replace", None))
+        drawer(
+            draw_data,
+            screen,
+            plan.session_tab,
+            before,
+            plan.session_width,
+            index,
+            False,
+            segment_neighbors,
+        )
+        cursor.bg = plan.content_colors.background
+        cursor.fg = plan.content_colors.foreground
+        return drawer(
+            draw_data,
+            screen,
+            plan.content_tab,
+            cursor.x,
+            plan.content_width,
+            index,
+            is_last,
+            extra_data,
+        )
+    replacement = cast(Callable[..., object] | None, getattr(tab, "_replace", None))
     decorated = (
-        replacement(title=render_tab_label(current, previous, max_title_length))
-        if current is not None and callable(replacement)
+        replacement(title=render_tab_label(resolved.current, resolved.previous, max_title_length))
+        if resolved.current is not None and callable(replacement)
         else tab
     )
-    return _kitty_drawer()(
+    return drawer(
         draw_data,
         screen,
         decorated,

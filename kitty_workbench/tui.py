@@ -153,7 +153,7 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
         "SESSION CONTENTS",
         (
             ("├─ / └─", "Tabs inside the selected session."),
-            ("✻ / ◇", "Claude / Codex pane."),
+            ("✻ / 󰏄", "Claude / Codex pane."),
             ("•", "Focused pane."),
             ("↻", "Saved command can be restored or prefilled."),
         ),
@@ -1063,7 +1063,7 @@ def _edit_prompt_value(value: list[str], key: object) -> bool:
 
 def _pane_preview_label(pane: PanePreview) -> str:
     """Format one pane with agent, focus, command, and restore indicators."""
-    agent_labels = {"claude": "✻ Claude", "codex": "◇ Codex"}
+    agent_labels = {"claude": "✻ Claude", "codex": "󰏄 Codex"}
     label = agent_labels.get(pane.agent or "", pane.agent.title() if pane.agent else pane.program)
     if pane.active:
         label = f"• {label}"
