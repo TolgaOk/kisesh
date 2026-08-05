@@ -17,6 +17,9 @@ lint:
 typecheck:
     uv run mypy
 
+live-close:
+    KITTY_WORKBENCH_LIVE_TESTS=1 uv run python -m unittest tests.test_live_kitty_close -v
+
 test:
     uv run python -m unittest discover -s tests -v
 

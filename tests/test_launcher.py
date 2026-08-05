@@ -87,12 +87,13 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn(" park", integration)
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
-    def test_no_ui_close_kitten_loads_inside_the_installed_kitty_runtime(self) -> None:
+    def test_no_ui_close_kitten_loads_without_file_inside_kitty_runtime(self) -> None:
         project = Path(__file__).parents[1]
         script = project / "integration/safe_close.py"
         expression = (
-            "import runpy; loaded = runpy.run_path("
-            f"{str(script)!r}); print(callable(loaded['handle_result']))"
+            "from kittens.runner import import_kitten_main_module; "
+            f"loaded = import_kitten_main_module('', {str(script)!r}); "
+            "print(callable(loaded['end']))"
         )
 
         result = subprocess.run(

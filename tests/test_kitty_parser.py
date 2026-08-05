@@ -182,6 +182,62 @@ print(json.dumps(resolved))
         self.assertEqual(resolved["workbench"], ["close_window"])
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
+    def test_command_w_resolves_to_safe_close_or_overlay_close_in_real_kitty(self) -> None:
+        """Resolve the real Command-W chord through Kitty's conditional key engine."""
+
+        integration = Path(__file__).parents[1] / "integration" / "kitty-workbench.conf"
+        program = """
+import json
+import sys
+from kitty.config import load_config
+from kitty.keys import Mappings
+
+options = load_config(sys.argv[1])
+key, candidates = next(
+    (key, definitions)
+    for key, definitions in options.keyboard_modes[""].keymap.items()
+    if any("safe_close.py" in definition.definition for definition in definitions)
+)
+
+class FocusScenario(Mappings):
+    def __init__(self, workbench_has_focus):
+        self.window = object()
+        self.workbench_has_focus = workbench_has_focus
+
+    def get_active_window(self):
+        return self.window
+
+    def match_windows(self, expression):
+        assert expression == "var:kitty_workbench_ui"
+        return iter((self.window,)) if self.workbench_has_focus else iter(())
+
+resolved = {}
+for label, focused in (("source", False), ("workbench", True)):
+    resolved[label] = [
+        definition.definition
+        for definition in FocusScenario(focused).matching_key_actions(candidates)
+    ]
+print(json.dumps({"mods": key.mods, "key": key.key, "resolved": resolved}))
+"""
+        result = subprocess.run(
+            [shutil.which("kitty") or "kitty", "+runpy", program, str(integration)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = json.loads(result.stdout)
+        self.assertEqual(parsed["mods"], 8)
+        self.assertEqual(parsed["key"], ord("w"))
+        self.assertEqual(
+            parsed["resolved"]["source"],
+            ["kitten ~/.local/lib/kitty-workbench/integration/safe_close.py"],
+        )
+        self.assertEqual(parsed["resolved"]["workbench"], ["close_window"])
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_generated_agent_resume_snapshot_is_accepted_by_installed_kitty(self) -> None:
         manifest = SessionManifest(
             name="Agent Scenario",
