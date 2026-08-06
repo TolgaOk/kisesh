@@ -78,9 +78,8 @@
   integration change; do not rewrite unrelated Kitty font or theme settings.
 - [x] Switch the live tab filter in-process without reloading Kitty configuration
   or resetting runtime font size.
-- [ ] Show one empty `▷` marker for every unfocused pane in a native tab label,
-  while retaining the focused pane's icon and name, so multi-pane tabs remain
-  visually apparent without repeating inactive pane labels.
+- [x] Show the focused pane's current/total position after its icon and name,
+  preserving the fraction under width pressure and omitting `1/1`.
 
 ## Application profiles
 

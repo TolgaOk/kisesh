@@ -236,8 +236,21 @@ class ReloadBoss:
 
 def _fixture_tabs() -> list[SessionBarTab]:
     return [
-        SessionBarTab("shell", "research", "Research Work"),
-        SessionBarTab("tests", "research", "Research Work", "claude"),
+        SessionBarTab(
+            "shell",
+            "research",
+            "Research Work",
+            focused_pane_index=0,
+            pane_count=3,
+        ),
+        SessionBarTab(
+            "tests",
+            "research",
+            "Research Work",
+            "claude",
+            focused_pane_index=1,
+            pane_count=2,
+        ),
         SessionBarTab("agent review", "research", "Research Work", "codex"),
         SessionBarTab("notes", None, None),
         SessionBarTab("scratch", None, None),
@@ -293,7 +306,7 @@ class SessionBarRenderingTests(unittest.TestCase):
         self.assertIn(" Operations", render_tab_label(other, second, 60))
         self.assertEqual(render_tab_label(unattached, other, 60), " notes")
         self.assertNotIn("Unattached", render_tab_label(next_unattached, unattached, 60))
-        self.assertIn("shell", render_tab_label(first, None, 14))
+        self.assertIn("1/3", render_tab_label(first, None, 14))
         self.assertEqual(render_tab_label(first, None, 1), "…")
         self.assertEqual(render_tab_label(first, None, 0), "")
         self.assertEqual(session_bar._ellipsize("anything", 0), "")
@@ -332,6 +345,74 @@ class SessionBarRenderingTests(unittest.TestCase):
         )
         self.assertEqual(configured, "󰋙 Codex")
 
+    def test_pane_position_survives_name_truncation_and_invalid_metadata(self) -> None:
+        previous = SessionBarTab("before", "id", "Team")
+        tab = SessionBarTab(
+            "ignored",
+            "id",
+            "Team",
+            "codex",
+            focused_pane_index=1,
+            pane_count=3,
+        )
+
+        self.assertEqual(session_bar._pane_label(tab, 0), "")
+        self.assertEqual(render_tab_label(tab, previous, 40), "󰋙 Codex  2/3")
+        self.assertEqual(render_tab_label(tab, previous, 10), "󰋙 Co…  2/3")
+        self.assertEqual(render_tab_label(tab, previous, 8), "󰋙 …  2/3")
+        self.assertEqual(render_tab_label(tab, previous, 7), "󰋙 2/3")
+        self.assertEqual(render_tab_label(tab, previous, 4), "2/3")
+        self.assertEqual(
+            render_tab_label(
+                SessionBarTab("Codex", "id", "Team", "codex", pane_count=1),
+                previous,
+                40,
+            ),
+            "󰋙 Codex",
+        )
+        self.assertEqual(
+            render_tab_label(
+                SessionBarTab(
+                    "Codex",
+                    "id",
+                    "Team",
+                    "codex",
+                    focused_pane_index=-8,
+                    pane_count=3,
+                ),
+                previous,
+                40,
+            ),
+            "󰋙 Codex  1/3",
+        )
+        self.assertEqual(
+            render_tab_label(
+                SessionBarTab(
+                    "Codex",
+                    "id",
+                    "Team",
+                    "codex",
+                    focused_pane_index=8,
+                    pane_count=3,
+                ),
+                previous,
+                40,
+            ),
+            "󰋙 Codex  3/3",
+        )
+        self.assertEqual(
+            render_tab_label(
+                SessionBarTab("Codex", "id", "Team", "codex", pane_count=-1),
+                previous,
+                40,
+            ),
+            "󰋙 Codex",
+        )
+        for width in range(1, 24):
+            with self.subTest(width=width):
+                rendered = render_tab_label(tab, previous, width)
+                self.assertLessEqual(session_bar._cell_width(rendered), width)
+
 
 class SessionBarAdapterTests(unittest.TestCase):
     def test_previous_live_markers_render_the_session_segment(self) -> None:
@@ -369,6 +450,103 @@ class SessionBarAdapterTests(unittest.TestCase):
             [" Silver Seal", " Shell"],
         )
         self.assertEqual("".join(text for text, _, _ in screen.drawn), "")
+
+    def test_pane_position_tracks_focus_close_and_manager_overlay(self) -> None:
+        datum = Datum("Codex", 1, is_active=True)
+        following = Datum("Editor", 2)
+        variables = {
+            SESSION_ID_VAR: "session-id",
+            SESSION_NAME_VAR: "Project",
+            APP_VAR: "codex",
+        }
+        native = NativeTab(
+            Window(variables, title="focused"),
+            Window(variables, title="hidden shell"),
+            Window(variables, title="hidden logs"),
+            Window({session_bar.KISESH_UI_VAR: "yes"}, title="KiSesh"),
+        )
+        boss = Boss({1: native})
+        drawer = RecordingDrawer()
+        screen = Screen(Cursor(x=5))
+        extra = ExtraData(None, following, for_layout=True)
+
+        with (
+            mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
+            mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
+            mock.patch(
+                "kisesh.session_bar.importlib.import_module",
+                return_value=SimpleNamespace(as_rgb=lambda color: color),
+            ),
+        ):
+            result = session_bar.draw_tab(
+                DrawData("top"),
+                screen,
+                datum,
+                5,
+                40,
+                1,
+                True,
+                extra,
+            )
+            native.active_index = 2
+            session_bar.draw_tab(
+                DrawData("top"),
+                screen,
+                datum,
+                5,
+                40,
+                1,
+                True,
+                extra,
+            )
+            native.windows = native.windows[1:]
+            native.active_index = 1
+            session_bar.draw_tab(
+                DrawData("top"),
+                screen,
+                datum,
+                5,
+                40,
+                1,
+                True,
+                extra,
+            )
+            native.active_index = 2
+            session_bar.draw_tab(
+                DrawData("top"),
+                screen,
+                datum,
+                5,
+                40,
+                1,
+                True,
+                extra,
+            )
+
+        self.assertEqual(result, 45)
+        self.assertEqual(
+            [cast(Datum, call[2]).title for call in drawer.calls],
+            [
+                " Project",
+                "󰋙 Codex  1/3",
+                " Project",
+                "󰋙 Codex  3/3",
+                " Project",
+                "󰋙 Codex  2/2",
+                " Project",
+                "󰋙 Codex  1/2",
+            ],
+        )
+        self.assertEqual([call[4] for call in drawer.calls], [11, 28] * 4)
+        self.assertEqual(
+            [cast(Datum, call[2]).is_active for call in drawer.calls],
+            [False, True] * 4,
+        )
+        self.assertEqual([call[6] for call in drawer.calls], [False, True] * 4)
+        rendered_titles = " ".join(cast(Datum, call[2]).title for call in drawer.calls)
+        self.assertNotIn("hidden shell", rendered_titles)
+        self.assertNotIn("hidden logs", rendered_titles)
+        self.assertNotIn("KiSesh", rendered_titles)
 
     def test_session_prefix_never_inherits_first_tab_highlight(self) -> None:
         first_active = Datum("Shell", 1, is_active=True)
@@ -586,6 +764,11 @@ class SessionBarAdapterTests(unittest.TestCase):
                 title="⠇ dotfiles",
                 child=Child(["-zsh"], ["/opt/bin/codex-nightly"]),
             ),
+            Window(
+                {session_bar.KISESH_UI_VAR: "yes"},
+                title="KiSesh",
+                child=Child(["kisesh", "manager"]),
+            ),
             active_index=1,
         )
         boss = Boss(
@@ -612,12 +795,18 @@ class SessionBarAdapterTests(unittest.TestCase):
 
         self.assertEqual(result, 41)
         first_call, second_call = drawer.calls
+        resolved = session_bar._bar_tab(second, boss)
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual((resolved.focused_pane_index, resolved.pane_count), (0, 2))
         self.assertEqual(first_call[0], DrawData("bottom"))
         self.assertIs(first_call[1], screen)
-        self.assertEqual(cast(Datum, first_call[2]).title, "󰋙 Codex")
+        self.assertEqual(cast(Datum, first_call[2]).title, "󰋙 Codex  2/2")
         self.assertNotIn("Vim", cast(Datum, first_call[2]).title)
-        self.assertEqual(cast(Datum, second_call[2]).title, " Vim")
+        self.assertNotIn("KiSesh", cast(Datum, first_call[2]).title)
+        self.assertEqual(cast(Datum, second_call[2]).title, " Vim  1/2")
         self.assertNotIn("Codex", cast(Datum, second_call[2]).title)
+        self.assertNotIn("KiSesh", cast(Datum, second_call[2]).title)
         self.assertEqual(first_call[3], 17)
         self.assertEqual(first_call[4:], (60, 2, True, extra))
 
@@ -858,17 +1047,22 @@ class SessionBarAdapterTests(unittest.TestCase):
             "import kisesh.session_bar as s; "
             f"v={{'{SESSION_ID_VAR}':'id','{SESSION_NAME_VAR}':'Project'}}; "
             "w=N(user_vars=v,child=N(cmdline=('-zsh',)),title='Shell'); "
-            "tabs={1:[w],2:[w]}; "
+            "tabs={1:[w],2:[w,w,w]}; "
             "boss=N(tab_for_id=tabs.get); s._kitty_boss=lambda boss=boss:boss; "
-            "seen=[]; "
-            "s._kitty_drawer=lambda seen=seen:"
-            "lambda d,sc,t,b,m,i,last,e:seen.append((t.title,b)) or 41; "
+            "screen=N(cursor=N(x=17)); seen=[]; "
+            "drawer=lambda d,sc,t,b,m,i,last,e,seen=seen:"
+            "(seen.append((t.title,t.tab_id,b,m,last,"
+            "getattr(e.next_tab,'title',None))),"
+            "setattr(sc.cursor,'x',b+m),b+m)[-1]; "
+            "s._kitty_drawer=lambda drawer=drawer:drawer; "
             "previous=TabBarData('Shell',tab_id=1); "
             "current=TabBarData('Tests',tab_id=2); "
             "extra=ExtraData(); extra.prev_tab=previous; "
             "extra.next_tab=None; extra.for_layout=False; "
-            "result=s.draw_tab(N(),N(),current,17,60,2,True,extra); "
-            "print(result,seen==[(s.current_app_profiles().defaults.icon+' Shell',17)])"
+            "result=s.draw_tab(N(),screen,current,17,60,2,True,extra); "
+            "print(result==77,"
+            "seen==[(s.current_app_profiles().defaults.icon+' Shell  1/3',"
+            "2,17,60,True,None)])"
         )
         result = subprocess.run(
             ["kitty", "+runpy", script],
@@ -880,7 +1074,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "41 True")
+        self.assertEqual(result.stdout.strip(), "True True")
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_kitty_first_tab_keeps_session_segment_inactive(self) -> None:

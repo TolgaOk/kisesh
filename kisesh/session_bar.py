@@ -22,6 +22,7 @@ SESSION_SLUG_VAR = "kisesh_slug"
 SESSION_NAME_VAR = "kisesh_name"
 AGENT_VAR = "kisesh_agent"
 APP_VAR = "kisesh_app"
+KISESH_UI_VAR = "kisesh_ui"
 MIN_SPLIT_SEGMENT_CELLS = 6
 
 
@@ -33,6 +34,8 @@ class SessionBarTab:
     session_id: str | None
     session_name: str | None
     focused_application: str | None = None
+    focused_pane_index: int = 0
+    pane_count: int = 1
 
 
 class _TabDatum(Protocol):
@@ -207,26 +210,44 @@ def _session_descriptor(tab: SessionBarTab) -> tuple[str, str]:
     return SESSION_ICON, _clean(tab.session_name, "Session")
 
 
+def _pane_label(tab: SessionBarTab, max_cells: int) -> str:
+    """Fit focused-pane identity while preserving its current/total position."""
+    if max_cells <= 0:
+        return ""
+    pane_icon, pane_name = _pane_descriptor(tab)
+    pane_count = max(0, tab.pane_count)
+    if pane_count <= 1:
+        return _ellipsize(f"{pane_icon} {pane_name}", max_cells)
+    focused_index = min(max(0, tab.focused_pane_index), pane_count - 1)
+    position = f"{focused_index + 1}/{pane_count}"
+    suffix = f"  {position}"
+    full = f"{pane_icon} {pane_name}{suffix}"
+    if _cell_width(full) <= max_cells:
+        return full
+    prefix = f"{pane_icon} "
+    name_budget = max_cells - _cell_width(prefix) - _cell_width(suffix)
+    if name_budget > 0:
+        return f"{prefix}{_ellipsize(pane_name, name_budget)}{suffix}"
+    compact = f"{pane_icon} {position}"
+    return compact if _cell_width(compact) <= max_cells else _ellipsize(position, max_cells)
+
+
 def _fit_group(
     session_icon: str,
     session_name: str,
-    pane_icon: str,
-    pane_name: str,
+    tab: SessionBarTab,
     max_cells: int,
 ) -> str:
     """Compact a session boundary while retaining focused-pane identity."""
-    fixed = f"{session_icon}  · {pane_icon} "
+    fixed = f"{session_icon}  · "
     available = max_cells - _cell_width(fixed)
     if available < 4:
-        return _ellipsize(f"{pane_icon} {pane_name}", max_cells)
+        return _pane_label(tab, max_cells)
     session_width = _cell_width(session_name)
-    pane_width = _cell_width(pane_name)
     session_budget = min(session_width, max(1, available // 3))
-    pane_budget = min(pane_width, available - session_budget)
-    label = (
-        f"{session_icon} {_ellipsize(session_name, session_budget)} · "
-        f"{pane_icon} {_ellipsize(pane_name, pane_budget)}"
-    )
+    pane_label = _pane_label(tab, max(1, available - session_budget))
+    session_budget = min(session_width, max(1, available - _cell_width(pane_label)))
+    label = f"{session_icon} {_ellipsize(session_name, session_budget)} · {pane_label}"
     return _ellipsize(label, max_cells)
 
 
@@ -238,15 +259,14 @@ def render_tab_label(
     """Render only focused-pane identity plus a leading session boundary."""
     if max_cells <= 0:
         return ""
-    pane_icon, pane_name = _pane_descriptor(tab)
-    pane_label = f"{pane_icon} {pane_name}"
+    pane_label = _pane_label(tab, max_cells)
     if _starts_group(tab, previous):
         session_icon, session_name = _session_descriptor(tab)
         full = f"{session_icon} {session_name} │ {pane_label}"
         if _cell_width(full) <= max_cells:
             return full
-        return _fit_group(session_icon, session_name, pane_icon, pane_name, max_cells)
-    return _ellipsize(pane_label, max_cells)
+        return _fit_group(session_icon, session_name, tab, max_cells)
+    return pane_label
 
 
 def _mapping(value: object) -> Mapping[object, object]:
@@ -274,6 +294,12 @@ def _first_variable(windows: Sequence[object], name: str) -> str | None:
         if value := _variable(_mapping(getattr(window, "user_vars", {})), name):
             return value
     return None
+
+
+def _is_kisesh_ui_window(window: object) -> bool:
+    """Exclude transient manager overlays from native pane indicators."""
+    value = _variable(_mapping(getattr(window, "user_vars", {})), KISESH_UI_VAR) or ""
+    return value.casefold() not in {"", "0", "false", "no"}
 
 
 def _command_application(value: object) -> str | None:
@@ -331,7 +357,9 @@ def _focused_window(native: object, windows: tuple[object, ...]) -> object | Non
         focused = getattr(native, "active_window", None)
     except Exception:
         focused = None
-    return focused if focused is not None else next(iter(windows), None)
+    if focused is not None and any(focused is window for window in windows):
+        return cast(object, focused)
+    return next(iter(windows), None)
 
 
 def _native_tab(boss: object, tab_id: int) -> object | None:
@@ -360,14 +388,21 @@ def _bar_tab(datum: _TabDatum, boss: object) -> SessionBarTab | None:
         session_name = _first_variable(windows, SESSION_NAME_VAR) or _first_variable(
             windows, SESSION_SLUG_VAR
         )
-    focused = _focused_window(native, windows)
+    content_windows = tuple(window for window in windows if not _is_kisesh_ui_window(window))
+    focused = _focused_window(native, content_windows)
     focused_title = getattr(focused, "title", datum.title) if focused is not None else datum.title
     focused_application = _cached_application(focused) if focused is not None else None
+    focused_pane_index = next(
+        (index for index, window in enumerate(content_windows) if window is focused),
+        0,
+    )
     return SessionBarTab(
-        str(focused_title),
-        session_id,
-        session_name,
-        focused_application,
+        focused_title=str(focused_title),
+        session_id=session_id,
+        session_name=session_name,
+        focused_application=focused_application,
+        focused_pane_index=focused_pane_index,
+        pane_count=len(content_windows),
     )
 
 
