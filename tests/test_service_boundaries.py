@@ -73,14 +73,9 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.assertFalse(disconnected[0].live)
         self.assertIsNone(service.kitty)
 
-    def test_create_rejects_blank_names_and_tabs_that_already_have_membership(self) -> None:
+    def test_create_rejects_blank_names(self) -> None:
         with self.assertRaisesRegex(WorkbenchError, "name cannot be empty"):
             self.service.create_from_active("   ")
-
-        existing = self.store.create("Existing", "/tmp")
-        self.kitty.stamp_tab(self.kitty.tab, existing.manifest)
-        with self.assertRaisesRegex(WorkbenchError, "already belongs"):
-            self.service.create_from_active("Second")
 
     def test_unowned_creation_validates_names_decisions_and_current_window_state(self) -> None:
         with self.assertRaisesRegex(WorkbenchError, "name cannot be empty"):

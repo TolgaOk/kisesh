@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import curses
+import tempfile
 import unittest
 from collections.abc import Iterable
 from pathlib import Path
 
 from kitty_workbench.domain import KittyWindow
-from kitty_workbench.service import UnownedTabsAction, UnownedTabsDecision
-from kitty_workbench.store import StoredSession
+from kitty_workbench.kitty_client import LiveTab
+from kitty_workbench.service import (
+    UnownedTabsAction,
+    UnownedTabsDecision,
+    WorkbenchService,
+)
+from kitty_workbench.store import SessionStore, StoredSession
 from kitty_workbench.tui import SessionManager
+from tests.fakes import FakeKitty
 from tests.render_fixture import Canvas, StaticService, rendered_manager
 
 
@@ -443,6 +450,36 @@ class TuiRenderingTests(unittest.TestCase):
             "".join(screen.cells[top + 6][left : left + width]),
             "╰" + "─" * (width - 2) + "╯",
         )
+
+    def test_new_session_from_attached_window_skips_unowned_tab_modal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            kitty = FakeKitty()
+            store = SessionStore(Path(temporary) / "data")
+            service = WorkbenchService(store, kitty)
+            current = service.create_from_active("Current Work")
+            fresh_shell = LiveTab(
+                1,
+                9,
+                1,
+                "Fresh Shell",
+                "splits",
+                [{"id": 13, "cwd": "/tmp/project", "user_vars": {}}],
+            )
+            kitty.next_open_tab = fresh_shell
+            manager = SessionManager(service)
+            manager._refresh()
+            manager.palette = rendered_manager()[2]
+            screen = ScriptedCanvas(16, 100, [*list("New Direction"), "\n"])
+
+            manager._handle_key(screen, "n")
+
+            created = next(
+                stored for stored in store.list() if stored.manifest.name == "New Direction"
+            )
+            self.assertEqual(kitty.tab.session_id(), current.manifest.id)
+            self.assertEqual(fresh_shell.session_id(), created.manifest.id)
+            self.assertEqual(manager.message, "created New Direction")
+            self.assertNotIn("New session ·", screen.render())
 
     def test_new_session_can_preserve_tabs_under_the_default_name_and_start_fresh(self) -> None:
         service = RecordingService()

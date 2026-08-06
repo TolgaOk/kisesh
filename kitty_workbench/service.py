@@ -238,7 +238,7 @@ class WorkbenchService:
         return views
 
     def create_from_active(self, name: str, project_root: str | None = None) -> StoredSession:
-        """Create a named session from the focused source tab and save it."""
+        """Create a session, using an unowned source or opening fresh from an owned one."""
         clean_name = name.strip()
         if not clean_name:
             raise WorkbenchError("session name cannot be empty")
@@ -247,11 +247,12 @@ class WorkbenchService:
             client.list_state(),
             exclude_window_id=_environment_window_id(),
         )
+        root = project_root or tab.suggested_root()
         if tab.session_id():
-            raise WorkbenchError("the current tab already belongs to a session")
+            return self._create_and_open_blank_session(client, clean_name, root)
         stored = self._create_tabs_session(
             clean_name,
-            project_root or tab.suggested_root(),
+            root,
             [tab],
         )
         client.activate_session(stored.manifest.id, tab)
@@ -284,7 +285,17 @@ class WorkbenchService:
             client.activate_session(stored.manifest.id, active_tab)
             return stored
 
-        blank = self._create_blank_session(clean_name, root)
+        return self._create_and_open_blank_session(client, clean_name, root, decision)
+
+    def _create_and_open_blank_session(
+        self,
+        client: KittyController,
+        name: str,
+        project_root: str,
+        decision: UnownedTabsDecision | None = None,
+    ) -> StoredSession:
+        """Open one fresh shell and remove its snapshot if opening fails before it is live."""
+        blank = self._create_blank_session(name, project_root)
         try:
             return self.open(blank.manifest.id, decision)
         except Exception:

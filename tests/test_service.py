@@ -145,6 +145,41 @@ class ServiceTests(unittest.TestCase):
             (created.manifest.id, scratch.tab_id),
         )
 
+    def test_new_session_from_tracked_session_opens_fresh_without_reassigning_tabs(self) -> None:
+        current = self.service.create_from_active("Current Work")
+        self.kitty.window["cwd"] = "/tmp/current-work"
+        self.kitty.window["foreground_processes"] = [
+            {"cmdline": ["-zsh"], "cwd": "/tmp/current-work"}
+        ]
+        fresh_shell = LiveTab(
+            1,
+            9,
+            1,
+            "Fresh Shell",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/current-work", "user_vars": {}}],
+            is_focused=True,
+            is_active=True,
+        )
+        self.kitty.next_open_tab = fresh_shell
+
+        created = self.service.create_from_active("New Direction")
+
+        self.assertEqual(self.kitty.tab.session_id(), current.manifest.id)
+        self.assertEqual(fresh_shell.session_id(), created.manifest.id)
+        self.assertNotEqual(created.manifest.id, current.manifest.id)
+        self.assertEqual(created.manifest.project_root, "/tmp/current-work")
+        self.assertEqual(created.manifest.summary.tab_count, 1)
+        self.assertEqual(created.manifest.summary.pane_count, 1)
+        self.assertEqual(self.kitty.closed_tabs, [])
+        self.assertEqual(self.kitty.closed_sessions, [])
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (created.manifest.id, fresh_shell.tab_id),
+        )
+        live_ids = {view.stored.manifest.id for view in self.service.views() if view.live}
+        self.assertEqual(live_ids, {current.manifest.id, created.manifest.id})
+
     def test_new_session_can_preserve_current_tabs_then_open_one_fresh_shell(self) -> None:
         self.kitty.window["cwd"] = "/tmp/Current Project"
         self.kitty.window["foreground_processes"] = [

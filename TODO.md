@@ -19,6 +19,8 @@
   - preserve those tabs under an editable random unused name and start with one
     fresh shell; or
   - discard those tabs after confirmation and start with one fresh shell.
+- [x] When `n` is pressed inside an attached session, open one fresh tab for the
+  new session without reassigning or closing any tab in the current session.
 - [x] Cover multi-tab sessions, multiple simultaneously live sessions, failed saves,
   canceled prompts, and accidental-close recovery with practical rendering and
   end-to-end tests.

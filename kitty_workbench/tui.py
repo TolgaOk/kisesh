@@ -82,7 +82,7 @@ class SessionOperations(Protocol):
         """Return current session views."""
 
     def create_from_active(self, name: str, project_root: str | None = None) -> StoredSession:
-        """Create a session from the source tab."""
+        """Create from an unowned source or open fresh from an owned source."""
 
     def create_from_unowned(
         self,
@@ -175,7 +175,7 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
     (
         "SESSION ACTIONS",
         (
-            ("n", "Create; resolve unowned tabs first."),
+            ("n", "New session; resolve unattached tabs first."),
             ("s", "Snapshot all owned live tabs."),
             ("x", "Save successfully, then close all live tabs."),
             ("r", "Rename session."),
