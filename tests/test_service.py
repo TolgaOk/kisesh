@@ -7,7 +7,13 @@ from pathlib import Path
 from unittest import mock
 
 from kisesh import legacy
-from kisesh.domain import ClosingPaneCapture, CommandEvent, KittyWindow, SessionContext
+from kisesh.domain import (
+    ClosingPaneCapture,
+    CommandEvent,
+    KittyOsWindowState,
+    KittyWindow,
+    SessionContext,
+)
 from kisesh.kitty_client import KittyError, LiveTab
 from kisesh.model import (
     SESSION_ID_VAR,
@@ -42,6 +48,41 @@ UNSAFE_CAPTURE = (
     "new_tab Tests\n"
     "launch --cwd=/tmp/project lazygit\n"
 )
+
+
+class NativeSessionKitty(FakeKitty):
+    """Model Kitty's filename-based native-session reuse during snapshot opens."""
+
+    def __init__(self) -> None:
+        """Initialize queued tabs and native-session identities."""
+        super().__init__()
+        self.queued_native_tabs: list[LiveTab] = []
+        self.native_tabs: dict[str, LiveTab] = {}
+
+    def open_snapshot(self, path: Path) -> None:
+        """Create a queued tab or focus the tab already using the filename stem."""
+        native_name = path.stem
+        existing = self.native_tabs.get(native_name)
+        if existing is not None:
+            self.opened.append(path)
+            self.opened_contents.append(path.read_text(encoding="utf-8"))
+            self.focus_tab(existing.tab_id)
+            return
+        if not self.queued_native_tabs:
+            raise AssertionError("a native session open requires one queued tab")
+        opened = self.queued_native_tabs.pop(0)
+        self.next_open_tab = opened
+        super().open_snapshot(path)
+        for window in opened.windows:
+            window["session_name"] = native_name
+        self.native_tabs[native_name] = opened
+
+    def focus_tab(self, tab_id: int) -> None:
+        """Focus a tab and make it the source for the next session operation."""
+        super().focus_tab(tab_id)
+        focused = next((tab for tab in self.tabs() if tab.tab_id == tab_id), None)
+        if focused is not None:
+            self.current_tab = focused
 
 
 class ServiceTests(unittest.TestCase):
@@ -181,6 +222,94 @@ class ServiceTests(unittest.TestCase):
         )
         live_ids = {view.stored.manifest.id for view in self.service.views() if view.live}
         self.assertEqual(live_ids, {current.manifest.id, created.manifest.id})
+
+    def test_consecutive_fresh_sessions_never_reuse_the_native_current_session(self) -> None:
+        kitty = NativeSessionKitty()
+        service = KiSeshService(self.store, kitty)
+        current = service.create_from_active("Current")
+        work_tab = LiveTab(
+            1,
+            9,
+            1,
+            "Work",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/work", "user_vars": {}}],
+        )
+        vault_tab = LiveTab(
+            1,
+            10,
+            2,
+            "Vault",
+            "splits",
+            [{"id": 14, "cwd": "/tmp/vault", "user_vars": {}}],
+        )
+        kitty.queued_native_tabs.extend((work_tab, vault_tab))
+
+        work = service.create_from_active("Work")
+        vault = service.create_from_active("Vault")
+
+        self.assertEqual(kitty.tab.session_id(), current.manifest.id)
+        self.assertEqual(work_tab.session_id(), work.manifest.id)
+        self.assertEqual(vault_tab.session_id(), vault.manifest.id)
+        native_names = [path.stem for path in kitty.opened]
+        self.assertEqual(len(set(native_names)), 2)
+        self.assertTrue(native_names[0].startswith(f".kisesh-{work.manifest.id}."))
+        self.assertTrue(native_names[1].startswith(f".kisesh-{vault.manifest.id}."))
+        self.assertNotIn("current", native_names)
+        self.assertEqual(kitty.activated_sessions[-1], (vault.manifest.id, vault_tab.tab_id))
+        self.assertEqual(kitty.current_tab.tab_id, vault_tab.tab_id)
+        self.assertTrue(all(not path.exists() for path in kitty.opened))
+
+    def test_snapshot_open_waits_for_kitty_to_publish_the_matching_tab(self) -> None:
+        service = KiSeshService(self.store, self.kitty)
+        service.create_from_active("Current")
+        target = self.store.create("Delayed", "/tmp/delayed")
+        snapshot = sanitize_session("new_tab Delayed\nlaunch\n", target.manifest)
+        self.store.write_snapshot(
+            target.manifest.id,
+            snapshot,
+            snapshot_summary(snapshot),
+        )
+        delayed_tab = LiveTab(
+            1,
+            9,
+            1,
+            "Delayed",
+            "splits",
+            [{"id": 13, "cwd": "/tmp/delayed", "user_vars": {}}],
+        )
+        checks = 0
+        original_tabs_for_session = self.kitty.tabs_for_session
+
+        def delayed_tabs(
+            session_id: str,
+            state: list[KittyOsWindowState] | None = None,
+        ) -> list[LiveTab]:
+            """Expose the restored tab only after two post-open state checks."""
+            nonlocal checks
+            if state is not None or session_id != target.manifest.id:
+                return original_tabs_for_session(session_id, state)
+            checks += 1
+            if checks < 3:
+                return []
+            if delayed_tab not in self.kitty.extra_tabs:
+                self.kitty.stamp_tab(delayed_tab, target.manifest)
+                self.kitty.extra_tabs.append(delayed_tab)
+            return [delayed_tab]
+
+        with (
+            mock.patch.object(self.kitty, "tabs_for_session", side_effect=delayed_tabs),
+            mock.patch("kisesh.service.time.sleep") as pause,
+        ):
+            opened = service.open(target.manifest.id)
+
+        self.assertEqual(opened.manifest.id, target.manifest.id)
+        self.assertEqual(checks, 3)
+        self.assertEqual(pause.call_count, 2)
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (target.manifest.id, delayed_tab.tab_id),
+        )
 
     def test_new_session_can_preserve_current_tabs_then_open_one_fresh_shell(self) -> None:
         self.kitty.window["cwd"] = "/tmp/Current Project"
@@ -421,6 +550,14 @@ class ServiceTests(unittest.TestCase):
             stored.manifest.id,
             previous_snapshot,
             snapshot_summary(previous_snapshot),
+        )
+        self.kitty.next_open_tab = LiveTab(
+            1,
+            8,
+            1,
+            "Editor",
+            "splits",
+            [{"id": 12, "cwd": "/tmp/project", "user_vars": {}}],
         )
         self.kitty.include_tab = False
 

@@ -6,6 +6,7 @@ import hashlib
 import os
 import secrets
 import shlex
+import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
@@ -79,6 +80,9 @@ class SessionView:
 
 PaneTextReader = Callable[[int], str | None]
 KittyFactory = Callable[[], KittyController]
+
+_SESSION_OPEN_ATTEMPTS = 20
+_SESSION_OPEN_RETRY_SECONDS = 0.05
 
 _RANDOM_NAME_ADJECTIVES = (
     "Amber",
@@ -669,17 +673,15 @@ class KiSeshService:
             if stored.manifest.status == "archived":
                 stored = self.store.restore_archive(stored.manifest.id)
             context = self.store.read_context(stored.manifest.id)
-            self._open_inactive_snapshot(client, stored, context)
-            live_tabs = self._opened_tabs_and_prefill(client, stored.manifest.id, context)
-            if context is not None and live_tabs:
+            live_tabs = self._open_inactive_snapshot(client, stored, context)
+            self._prefill_opened_tabs(client, live_tabs, context)
+            if context is not None:
                 self.store.write_context(
                     stored.manifest.id,
                     remap_context_windows(context, live_tabs),
                 )
 
         if unowned_tabs and action is UnownedTabsAction.ATTACH:
-            if not live_tabs:
-                raise KiSeshError("opened session did not create any live tabs")
             for tab in unowned_tabs:
                 client.stamp_tab(tab, stored.manifest)
             try:
@@ -688,9 +690,14 @@ class KiSeshService:
                 for tab in unowned_tabs:
                     self._rollback_membership(partial(client.clear_tab_session, tab))
                 raise
-            live_tabs = client.tabs_for_session(stored.manifest.id)
+            live_tabs = [*live_tabs, *unowned_tabs]
 
-        if live_tabs:
+        if unowned_tabs and action is UnownedTabsAction.ATTACH:
+            active_tab = max(
+                unowned_tabs,
+                key=lambda tab: (tab.is_focused, tab.is_active, -tab.index),
+            )
+        else:
             source_os_window_id = unowned_tabs[0].os_window_id if unowned_tabs else None
             active_tab = next(
                 (
@@ -700,9 +707,9 @@ class KiSeshService:
                 ),
                 live_tabs[0],
             )
-            client.activate_session(stored.manifest.id, active_tab)
-            if unowned_tabs and action is UnownedTabsAction.DISCARD:
-                client.close_tabs(tab.tab_id for tab in unowned_tabs)
+        client.activate_session(stored.manifest.id, active_tab)
+        if unowned_tabs and action is UnownedTabsAction.DISCARD:
+            client.close_tabs(tab.tab_id for tab in unowned_tabs)
         return self.store.mark_used(stored.manifest.id)
 
     def _open_inactive_snapshot(
@@ -710,8 +717,8 @@ class KiSeshService:
         client: KittyController,
         stored: StoredSession,
         context: SessionContext | None,
-    ) -> None:
-        """Open the stored snapshot directly or through a generated restore file."""
+    ) -> list[LiveTab]:
+        """Open a uniquely named native session and wait for its owned tabs."""
         stored_snapshot = stored.snapshot_path.read_text(encoding="utf-8")
         snapshot = sanitize_session(stored_snapshot, stored.manifest)
         shell_restorer = (
@@ -722,34 +729,42 @@ class KiSeshService:
             stored.manifest.id,
         )
         resumable = restore_session(snapshot, context, shell_restore_argv=shell_restorer)
-        if resumable == stored_snapshot:
-            client.open_snapshot(stored.snapshot_path)
-            return
         with temporary_path(
             self.store.root,
-            prefix=f".{stored.manifest.slug}.restore.",
+            prefix=f".kisesh-{stored.manifest.id}.",
             suffix=".kitty-session",
         ) as restore_path:
             restore_path.write_text(resumable, encoding="utf-8")
             client.open_snapshot(restore_path)
+            return self._wait_for_opened_tabs(client, stored)
 
-    def _opened_tabs_and_prefill(
-        self,
+    @staticmethod
+    def _wait_for_opened_tabs(
         client: KittyController,
-        session_id: str,
-        context: SessionContext | None,
+        stored: StoredSession,
     ) -> list[LiveTab]:
-        """Prefill restored reminders and return current live tab identities."""
-        opened_tabs = client.tabs_for_session(session_id)
-        if not opened_tabs:
-            return []
+        """Wait briefly for Kitty to expose the requested native session tabs."""
+        for attempt in range(_SESSION_OPEN_ATTEMPTS):
+            opened_tabs = client.tabs_for_session(stored.manifest.id)
+            if opened_tabs:
+                return opened_tabs
+            if attempt + 1 < _SESSION_OPEN_ATTEMPTS:
+                time.sleep(_SESSION_OPEN_RETRY_SECONDS)
+        raise KiSeshError(f"Kitty did not open session: {stored.manifest.name}")
+
+    @staticmethod
+    def _prefill_opened_tabs(
+        client: KittyController,
+        opened_tabs: list[LiveTab],
+        context: SessionContext | None,
+    ) -> None:
+        """Prefill inert command reminders after restored panes become visible."""
         for (tab_index, pane_index), command in pending_restore_commands(context).items():
             if not 0 <= tab_index < len(opened_tabs):
                 continue
             windows = opened_tabs[tab_index].windows
             if 0 <= pane_index < len(windows):
                 client.send_text(windows[pane_index]["id"], command)
-        return opened_tabs
 
     def save_closing_pane(
         self,

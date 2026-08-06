@@ -428,13 +428,16 @@ class ServiceBoundaryTests(unittest.TestCase):
         opened = self.service.open(archived.manifest.id)
         self.assertEqual(opened.manifest.status, "active")
 
-    def test_open_without_context_or_visible_result_handles_bad_reminder_indexes(self) -> None:
+    def test_open_uses_unique_identity_and_rejects_a_missing_live_result(self) -> None:
         stored = self.store.create("Saved", "/tmp")
         self.snapshot(stored.manifest.id)
         self.kitty.stamp_tab(self.kitty.tab, stored.manifest)
         self.kitty.include_tab = False
         self.service.open(stored.manifest.id)
-        self.assertEqual(self.kitty.opened[-1], stored.snapshot_path)
+        opened_path = self.kitty.opened[-1]
+        self.assertNotEqual(opened_path, stored.snapshot_path)
+        self.assertTrue(opened_path.name.startswith(f".kisesh-{stored.manifest.id}."))
+        self.assertFalse(opened_path.exists())
 
         context: SessionContext = {
             "schema_version": 1,
@@ -474,8 +477,13 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.assertEqual(self.kitty.sent_text, [])
 
         self.kitty.include_tab = False
-        with mock.patch.object(self.kitty, "tabs_for_session", return_value=[]):
+        with (
+            mock.patch.object(self.kitty, "tabs_for_session", return_value=[]),
+            mock.patch("kisesh.service.time.sleep") as pause,
+            self.assertRaisesRegex(KiSeshError, "Kitty did not open session: Saved"),
+        ):
             self.service.open(stored.manifest.id)
+        self.assertEqual(pause.call_count, 19)
 
     def test_failed_save_close_keeps_every_live_tab_running(self) -> None:
         stored = self.service.create_from_active("Still Live")
@@ -623,7 +631,7 @@ class ServiceBoundaryTests(unittest.TestCase):
         target = self.store.create("Empty Restore", "/tmp/target")
         self.snapshot(target.manifest.id, "Empty Restore")
 
-        with self.assertRaisesRegex(KiSeshError, "did not create any live tabs"):
+        with self.assertRaisesRegex(KiSeshError, "Kitty did not open session: Empty Restore"):
             self.service.open(
                 target.manifest.id,
                 UnownedTabsDecision(UnownedTabsAction.ATTACH),
