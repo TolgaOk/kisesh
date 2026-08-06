@@ -67,8 +67,8 @@
   - Render ` Research    Shell  ✻ Claude`; unattached tabs have no session
     segment.
   - Let `tab_bar_edge` place the same design at the top or bottom.
-  - Read cached Kitty session/user-variable metadata only; never run subprocesses
-    or read session files in the draw path.
+  - Prefer cached Kitty session/app metadata, with the focused foreground process
+    group as a native fallback; never run subprocesses or read files in the draw path.
   - Preserve the active theme, compact gracefully, and compare reviewed top and
     bottom renders before choosing a default.
 - [x] Show exact session names and only each tab's focused pane icon and name,

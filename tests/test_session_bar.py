@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NamedTuple, cast
+from typing import NamedTuple, Protocol, cast
 from unittest import mock
 
 from kitty_workbench import session_bar
@@ -43,16 +43,56 @@ class ExtraData:
     for_layout: bool = False
 
 
+class ChildLike(Protocol):
+    """Process metadata exposed by Kitty's native child object."""
+
+    @property
+    def cmdline(self) -> object:
+        """Return the initial child command."""
+
+    @property
+    def foreground_cmdline(self) -> object:
+        """Return the current foreground command."""
+
+    @property
+    def foreground_processes(self) -> object:
+        """Return every process in the current foreground group."""
+
+
 @dataclass(slots=True)
 class Child:
     cmdline: object = ()
+    foreground_cmdline: object = ()
+    foreground_processes: object = ()
+
+
+class UnstableForegroundChild:
+    """Expose a stable initial command while foreground inspection fails."""
+
+    def __init__(self, cmdline: object) -> None:
+        """Store the initial command used after a failed foreground lookup."""
+        self.cmdline = cmdline
+        self.foreground_command_reads = 0
+        self.foreground_process_reads = 0
+
+    @property
+    def foreground_processes(self) -> object:
+        """Reproduce a foreground process group disappearing during rendering."""
+        self.foreground_process_reads += 1
+        raise RuntimeError("foreground process group disappeared")
+
+    @property
+    def foreground_cmdline(self) -> object:
+        """Reproduce a foreground process disappearing during native rendering."""
+        self.foreground_command_reads += 1
+        raise RuntimeError("foreground process disappeared")
 
 
 @dataclass(slots=True)
 class Window:
     user_vars: object
     title: str = "Shell"
-    child: Child | None = None
+    child: ChildLike | None = None
 
 
 class NativeTab:
@@ -506,8 +546,8 @@ class SessionBarAdapterTests(unittest.TestCase):
             ),
             Window(
                 session_variables,
-                title="Agent pane",
-                child=Child(["/opt/bin/codex-nightly"]),
+                title="⠇ dotfiles",
+                child=Child(["-zsh"], ["/opt/bin/codex-nightly"]),
             ),
             active_index=1,
         )
@@ -543,6 +583,78 @@ class SessionBarAdapterTests(unittest.TestCase):
         self.assertNotIn("Codex", cast(Datum, second_call[2]).title)
         self.assertEqual(first_call[3], 17)
         self.assertEqual(first_call[4:], (60, 2, True, extra))
+
+    def test_stale_watcher_recognizes_codex_and_claude_in_focused_process_groups(self) -> None:
+        """Recognize both live agent states observed without cached app markers."""
+        scenarios = (
+            (
+                "codex",
+                "⠇ dotfiles",
+                ["codex"],
+                [{"cmdline": ["codex"]}],
+                "󰋙 Codex",
+                "✻ Claude",
+            ),
+            (
+                "claude",
+                "✳ go-port-kitty-spaces",
+                ["caffeinate", "-i", "-t", "300"],
+                [
+                    {"cmdline": ["caffeinate", "-i", "-t", "300"]},
+                    {"cmdline": ["claude"]},
+                ],
+                "✻ Claude",
+                "󰋙 Codex",
+            ),
+        )
+        for command, title, foreground, processes, expected, other_agent in scenarios:
+            with self.subTest(command=command):
+                variables = {
+                    SESSION_ID_VAR: "session-id",
+                    SESSION_NAME_VAR: "dotfiles",
+                }
+                native = NativeTab(
+                    Window(
+                        variables,
+                        title=title,
+                        child=Child(["-zsh"], foreground, processes),
+                    )
+                )
+                drawer = RecordingDrawer()
+
+                with (
+                    mock.patch.object(
+                        session_bar,
+                        "_kitty_boss",
+                        return_value=Boss({38: native}),
+                    ),
+                    mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
+                    mock.patch.object(
+                        builtins,
+                        "open",
+                        side_effect=AssertionError("render read a file"),
+                    ),
+                    mock.patch(
+                        "subprocess.Popen",
+                        side_effect=AssertionError("render spawned a process"),
+                    ),
+                ):
+                    session_bar.draw_tab(
+                        object(),
+                        object(),
+                        Datum(title, 38, is_active=True),
+                        0,
+                        40,
+                        1,
+                        True,
+                        ExtraData(None),
+                    )
+
+                rendered = cast(Datum, drawer.calls[0][2]).title
+                self.assertIn(" dotfiles", rendered)
+                self.assertIn(expected, rendered)
+                self.assertNotIn(other_agent, rendered)
+                self.assertNotIn("", rendered)
 
     def test_adapter_marks_groups_hides_unattached_identity_and_fails_safely(self) -> None:
         tracked = Datum("Editor", 1)
@@ -584,6 +696,25 @@ class SessionBarAdapterTests(unittest.TestCase):
             session_bar._cached_application(Window({}, child=Child("codex"))),
             "codex",
         )
+        unstable_child = UnstableForegroundChild(["nvim"])
+        self.assertEqual(
+            session_bar._cached_application(Window({}, child=unstable_child)),
+            "nvim",
+        )
+        self.assertEqual(unstable_child.foreground_process_reads, 1)
+        self.assertEqual(unstable_child.foreground_command_reads, 1)
+        marked_child = UnstableForegroundChild(["nvim"])
+        self.assertEqual(
+            session_bar._cached_application(
+                Window(
+                    {APP_VAR: "codex"},
+                    child=marked_child,
+                )
+            ),
+            "codex",
+        )
+        self.assertEqual(marked_child.foreground_process_reads, 0)
+        self.assertEqual(marked_child.foreground_command_reads, 0)
         self.assertEqual(session_bar._cached_application(Window({}, title="Claude")), "claude")
         fallback = session_bar._bar_tab(
             datum,

@@ -285,14 +285,33 @@ def _command_application(value: object) -> str | None:
     return profile.name if profile is not None else None
 
 
+def _foreground_application(child: object) -> str | None:
+    """Return a configured app from Kitty's complete foreground process group."""
+    try:
+        processes = cast(Iterable[object], getattr(child, "foreground_processes", ()))
+        for process in processes:
+            application = _command_application(_mapping(process).get("cmdline"))
+            if application is not None:
+                return application
+    except Exception:
+        pass
+    try:
+        return _command_application(getattr(child, "foreground_cmdline", ()))
+    except Exception:
+        return None
+
+
 def _cached_application(window: object) -> str | None:
-    """Read only precomputed variables, initial commands, and titles for an app."""
+    """Resolve an app from markers, Kitty's foreground command, or stable fallbacks."""
     variables = _mapping(getattr(window, "user_vars", {}))
     marker = variables.get(APP_VAR) or variables.get(AGENT_VAR)
     profile = current_app_profiles().named(str(marker).casefold() if marker is not None else None)
     if profile is not None:
         return profile.name
     child = getattr(window, "child", None)
+    foreground_application = _foreground_application(child)
+    if foreground_application is not None:
+        return foreground_application
     command_application = _command_application(getattr(child, "cmdline", ()))
     return command_application or _command_application(getattr(window, "title", ""))
 
