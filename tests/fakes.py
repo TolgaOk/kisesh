@@ -90,6 +90,7 @@ class FakeKitty:
         self.user_var_updates: list[tuple[tuple[int, ...], dict[str, str | None]]] = []
         self.activated_sessions: list[tuple[str, int]] = []
         self.closed_sessions: list[str] = []
+        self.close_successors: list[int | None] = []
         self.closed_tabs: list[int] = []
         self.include_tab = True
         self.extra_tabs: list[LiveTab] = []
@@ -280,9 +281,15 @@ class FakeKitty:
         self.activated_sessions.append((session_id, tab.tab_id))
         self.focus_tab(tab.tab_id)
 
-    def close_session_tabs(self, session_id: str) -> None:
-        """Remove all matching fake tabs while recording the close boundary."""
+    def close_session_tabs(self, session_id: str, successor: LiveTab | None = None) -> None:
+        """Isolate a successor before removing every matching fake tab."""
         self.closed_sessions.append(session_id)
+        self.close_successors.append(successor.tab_id if successor is not None else None)
+        if successor is not None:
+            successor_session_id = successor.session_id()
+            if successor_session_id is None:
+                raise AssertionError("fake close successor must be owned")
+            self.activate_session(successor_session_id, successor)
         for tab in self.tabs():
             for window in tab.windows:
                 variables = window.setdefault("user_vars", {})
@@ -299,3 +306,36 @@ class FakeKitty:
         if self.tab.tab_id in identifiers:
             self.include_tab = False
         self.extra_tabs = [tab for tab in self.extra_tabs if tab.tab_id not in identifiers]
+
+
+class DelayedCloseKitty(FakeKitty):
+    """Model Kitty returning stale live tabs briefly after accepting a close."""
+
+    def __init__(self, stale_reads_after_close: int | None) -> None:
+        """Configure how many post-close state reads still contain removed tabs."""
+        super().__init__()
+        self.stale_reads_after_close = stale_reads_after_close
+        self.close_state_reads = 0
+        self._closing_tabs: list[LiveTab] = []
+
+    def tabs(self, state: list[KittyOsWindowState] | None = None) -> list[LiveTab]:
+        """Publish the pre-close state until the configured read boundary passes."""
+        current = super().tabs(state)
+        if not self._closing_tabs:
+            return current
+        self.close_state_reads += 1
+        if (
+            self.stale_reads_after_close is not None
+            and self.close_state_reads > self.stale_reads_after_close
+        ):
+            self._closing_tabs.clear()
+            return current
+        current_ids = {tab.tab_id for tab in current}
+        return [*current, *(tab for tab in self._closing_tabs if tab.tab_id not in current_ids)]
+
+    def close_session_tabs(self, session_id: str, successor: LiveTab | None = None) -> None:
+        """Accept the close immediately while delaying its observable state change."""
+        closing_tabs = super().tabs_for_session(session_id)
+        super().close_session_tabs(session_id, successor)
+        self.close_state_reads = 0
+        self._closing_tabs = closing_tabs

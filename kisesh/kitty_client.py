@@ -26,6 +26,7 @@ from .model import (
 )
 from .paths import runtime_root
 
+SESSION_CLOSE_KITTEN = runtime_root() / "integration" / "session_close.py"
 SESSION_FILTER_KITTEN = runtime_root() / "integration" / "session_filter.py"
 
 
@@ -233,8 +234,8 @@ class KittyController(Protocol):
     def activate_session(self, session_id: str, tab: LiveTab) -> None:
         """Focus a session and restrict the tab bar to its live tabs."""
 
-    def close_session_tabs(self, session_id: str) -> None:
-        """Reveal remaining tabs, then close every tab in one session."""
+    def close_session_tabs(self, session_id: str, successor: LiveTab | None = None) -> None:
+        """Atomically isolate a successor and close every tab in one session."""
 
     def close_tabs(self, tab_ids: Iterable[int]) -> None:
         """Close an exact set of tabs without affecting other ownership groups."""
@@ -550,23 +551,17 @@ class KittyClient:
             f"{_user_var_match(SESSION_ID_VAR, session_id)} or not var:{SESSION_SCOPE_VAR}={scope}",
         )
 
-    def close_session_tabs(self, session_id: str) -> None:
-        """Reset tab visibility before closing every tab owned by a session."""
-        self.command("kitten", str(SESSION_FILTER_KITTEN), "all")
-        scoped_windows = [
-            window["id"]
-            for tab in self.tabs()
-            for window in tab.windows
-            if _user_var(window.get("user_vars", {}), SESSION_SCOPE_VAR) is not None
-        ]
-        self.set_user_vars(
-            scoped_windows,
-            _replacement_variables({SESSION_SCOPE_VAR: None}),
-        )
+    def close_session_tabs(self, session_id: str, successor: LiveTab | None = None) -> None:
+        """Close a session inside Kitty after atomically isolating its successor."""
+        successor_session_id = successor.session_id() if successor is not None else None
+        if successor is not None and successor_session_id is None:
+            raise KittyError("cannot preserve an unowned tab while closing a session")
         self.command(
-            "close-tab",
-            "--match",
-            _user_var_match(SESSION_ID_VAR, session_id),
+            "kitten",
+            str(SESSION_CLOSE_KITTEN),
+            session_id,
+            successor_session_id or "-",
+            str(successor.tab_id) if successor is not None else "-",
         )
 
     def close_tabs(self, tab_ids: Iterable[int]) -> None:

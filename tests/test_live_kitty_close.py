@@ -14,9 +14,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
+from kisesh import legacy
 from kisesh.domain import KittyOsWindowState, KittyTabState, KittyWindow
 from kisesh.kitty_client import KittyClient
-from kisesh.model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SLUG_VAR
+from kisesh.model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SCOPE_VAR, SESSION_SLUG_VAR
 from kisesh.store import SessionStore
 
 PROJECT = Path(__file__).parents[1]
@@ -103,6 +104,23 @@ class IsolatedKitty:
         """Return the temporary server's decoded live state."""
         result = self.remote("ls")
         return cast(list[KittyOsWindowState], json.loads(result.stdout))
+
+    def tab_filter(self) -> str:
+        """Read the isolated process's effective native tab filter."""
+        probe = self.root / "tab_filter_probe.py"
+        probe.write_text(
+            '"""Report Kitty\'s effective native tab filter."""\n'
+            "from kittens.tui.handler import result_handler\n"
+            "from kitty.fast_data_types import get_options\n"
+            "def main(args):\n"
+            "    del args\n"
+            "@result_handler(no_ui=True)\n"
+            "def handle_result(args, answer, target_window_id, boss):\n"
+            "    del args, answer, target_window_id, boss\n"
+            "    return get_options().tab_bar_filter\n",
+            encoding="utf-8",
+        )
+        return self.remote("kitten", str(probe)).stdout.strip()
 
     def wait_for(
         self,
@@ -222,6 +240,104 @@ def _focus_session(server: IsolatedKitty, session_id: str) -> int:
 @unittest.skipUnless(shutil.which("kitty") and shutil.which("kitten"), "Kitty is required")
 class LiveKittyCloseTests(unittest.TestCase):
     """Exercise the resolved close action through a disposable real Kitty boss."""
+
+    def test_x_close_from_its_own_overlay_preserves_one_surviving_session_filter(self) -> None:
+        """Close the overlay's host session without revealing another live group."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            server = IsolatedKitty(Path(temporary))
+            try:
+                server.start()
+                created = subprocess.run(
+                    [
+                        str(PROJECT / "bin" / "kisesh"),
+                        "--socket",
+                        server.socket,
+                        "create",
+                        "Closing",
+                    ],
+                    env=server.environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(created.returncode, 0, created.stderr)
+                store = SessionStore(server.data)
+                closing = store.get("closing")
+                successor = store.create("Successor", "/tmp/successor")
+                hidden = store.create("Hidden", "/tmp/hidden")
+                child = ["/bin/sh", "-c", "while :; do sleep 1; done"]
+                for session in (successor, hidden):
+                    server.remote(
+                        "launch",
+                        "--type=tab",
+                        f"--tab-title={session.manifest.name}",
+                        f"--var={SESSION_ID_VAR}={session.manifest.id}",
+                        f"--var={SESSION_SLUG_VAR}={session.manifest.slug}",
+                        *child,
+                    )
+                initial = server.wait_for(lambda state: len(_tabs(state)) == 3)
+                client = KittyClient(executable=server.kitty, socket=server.socket)
+                closing_tab = _session_tabs(initial, closing.manifest.id)[0]
+                live_closing = next(
+                    tab for tab in client.tabs(initial) if tab.tab_id == closing_tab["id"]
+                )
+                client.activate_session(closing.manifest.id, live_closing)
+                expected_initial_filter = (
+                    f"var:{SESSION_ID_VAR}={closing.manifest.id} or "
+                    f"var:{legacy.SESSION_ID_VARIABLE}={closing.manifest.id} or "
+                    f"not var:{SESSION_SCOPE_VAR}={live_closing.os_window_id}"
+                )
+                self.assertEqual(server.tab_filter(), expected_initial_filter)
+                _focus_session(server, closing.manifest.id)
+
+                server.remote(
+                    "launch",
+                    "--type=overlay",
+                    "--copy-env",
+                    "--env=KISESH_CALLER=overlay",
+                    f"--var={KISESH_UI_VAR}=yes",
+                    "--title=KiSesh close regression",
+                    str(PROJECT / "bin" / "kisesh"),
+                    "--socket",
+                    server.socket,
+                    "close",
+                    closing.manifest.id,
+                )
+                isolated = server.wait_for(
+                    lambda state: (
+                        not _session_tabs(state, closing.manifest.id)
+                        and len(_session_tabs(state, successor.manifest.id)) == 1
+                        and len(_session_tabs(state, hidden.manifest.id)) == 1
+                        and any(
+                            tab.get("is_active")
+                            for tab in _session_tabs(state, successor.manifest.id)
+                        )
+                        and not _ui_windows(state)
+                    ),
+                    timeout=30,
+                )
+                scope = str(live_closing.os_window_id)
+                remaining_windows = [
+                    *_session_windows(isolated, successor.manifest.id),
+                    *_session_windows(isolated, hidden.manifest.id),
+                ]
+                self.assertTrue(remaining_windows)
+                self.assertTrue(
+                    all(
+                        window.get("user_vars", {}).get(SESSION_SCOPE_VAR) == scope
+                        for window in remaining_windows
+                    )
+                )
+                self.assertEqual(
+                    server.tab_filter(),
+                    f"var:{SESSION_ID_VAR}={successor.manifest.id} or "
+                    f"var:{legacy.SESSION_ID_VARIABLE}={successor.manifest.id} or "
+                    f"not var:{SESSION_SCOPE_VAR}={scope}",
+                )
+                self.assertIsNotNone(store.read_context(closing.manifest.id))
+            finally:
+                server.stop()
 
     def test_manager_close_restores_split_layout_before_removing_overlay(self) -> None:
         """Reproduce Alt-S dismissal against a real, isolated two-pane Kitty tab."""

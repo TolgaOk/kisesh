@@ -84,6 +84,7 @@ class PackagingTests(unittest.TestCase):
                 "install",
                 "integration/kisesh.conf",
                 "integration/safe_close.py",
+                "integration/session_close.py",
                 "integration/tab_bar.py",
                 "justfile",
                 "kisesh/default_apps.toml",
@@ -101,6 +102,7 @@ class PackagingTests(unittest.TestCase):
                 "kisesh/integration/kisesh-panel",
                 "kisesh/integration/quick-access-terminal.conf",
                 "kisesh/integration/safe_close.py",
+                "kisesh/integration/session_close.py",
                 "kisesh/integration/tab_bar.py",
             ):
                 self.assertIn(resource, wheel_names)

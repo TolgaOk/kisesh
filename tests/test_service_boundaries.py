@@ -17,7 +17,7 @@ from kisesh.service import (
 )
 from kisesh.session_file import sanitize_session, snapshot_summary
 from kisesh.store import SessionStore, StoredSession, StoreError
-from tests.fakes import FakeKitty
+from tests.fakes import DelayedCloseKitty, FakeKitty
 
 
 class ServiceBoundaryTests(unittest.TestCase):
@@ -516,7 +516,41 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.assertTrue(self.kitty.include_tab)
         self.assertTrue(stored.snapshot_path.is_file())
 
-    def test_close_promotion_skips_unowned_stale_archived_and_other_window_tabs(self) -> None:
+    def test_unconfirmed_remote_close_never_reports_success_or_promotes(self) -> None:
+        kitty = DelayedCloseKitty(stale_reads_after_close=None)
+        service = KiSeshService(self.store, kitty)
+        stored = service.create_from_active("Stuck closing")
+
+        with (
+            mock.patch("kisesh.service.time.sleep") as pause,
+            mock.patch.object(kitty, "activate_session", wraps=kitty.activate_session) as activate,
+            self.assertRaisesRegex(KiSeshError, "Kitty did not close session: Stuck closing"),
+        ):
+            service.save_and_close(stored.manifest.id)
+
+        self.assertEqual(pause.call_count, 19)
+        self.assertEqual(kitty.close_state_reads, 20)
+        self.assertEqual(activate.call_count, 0)
+        self.assertEqual(kitty.closed_sessions, [stored.manifest.id])
+        self.assertTrue(stored.snapshot_path.is_file())
+
+    def test_panel_close_requires_source_context_before_saving_or_resetting_filter(self) -> None:
+        with (
+            mock.patch.object(
+                self.kitty,
+                "focused_tab",
+                side_effect=KittyError("source tab disappeared"),
+            ),
+            mock.patch.object(self.service, "save") as save,
+            mock.patch.object(self.kitty, "close_session_tabs") as close,
+            self.assertRaisesRegex(KittyError, "source tab disappeared"),
+        ):
+            self.service.save_and_close("selected")
+
+        save.assert_not_called()
+        close.assert_not_called()
+
+    def test_close_successor_skips_unowned_stale_archived_and_other_window_tabs(self) -> None:
         archived = self.store.create("Archived", "/tmp/archived")
         archived = self.store.archive(archived.manifest.id)
         valid = self.store.create("Valid", "/tmp/valid")
@@ -550,32 +584,26 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.kitty.include_tab = False
         self.kitty.extra_tabs = tabs
 
-        self.service._promote_live_session(self.kitty, 1)
+        successor = self.service._close_successor(self.kitty, "closing", 1)
 
-        self.assertEqual(
-            self.kitty.activated_sessions,
-            [(valid.manifest.id, tabs[4].tab_id)],
-        )
+        self.assertIs(successor, tabs[4])
+        self.assertEqual(self.kitty.activated_sessions, [])
 
-    def test_close_promotion_is_best_effort_after_the_destructive_boundary(self) -> None:
+    def test_close_successor_state_failure_is_reported_before_the_destructive_boundary(
+        self,
+    ) -> None:
         stored = self.store.create("Remaining", "/tmp/remaining")
         self.kitty.stamp_tab(self.kitty.tab, stored.manifest)
 
-        with mock.patch.object(self.kitty, "tabs", side_effect=KittyError("socket gone")):
-            self.service._promote_live_session(self.kitty, 1)
-        self.assertEqual(self.kitty.activated_sessions, [])
-
-        with mock.patch.object(
-            self.kitty,
-            "activate_session",
-            side_effect=KittyError("focus race"),
+        with (
+            mock.patch.object(self.kitty, "tabs", side_effect=KittyError("socket gone")),
+            self.assertRaisesRegex(KittyError, "socket gone"),
         ):
-            self.service._promote_live_session(self.kitty, 1)
-        self.assertEqual(self.kitty.activated_sessions, [])
+            self.service._close_successor(self.kitty, "closing", 1)
 
         self.kitty.clear_tab_session(self.kitty.tab)
-        self.service._promote_live_session(self.kitty, 1)
-        self.service._promote_live_session(self.kitty, 99)
+        self.assertIsNone(self.service._close_successor(self.kitty, "closing", 1))
+        self.assertIsNone(self.service._close_successor(self.kitty, "closing", 99))
         self.assertEqual(self.kitty.activated_sessions, [])
 
     def test_failed_auto_session_save_rolls_back_tabs_and_moves_partial_state_to_trash(

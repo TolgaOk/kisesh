@@ -81,8 +81,8 @@ class SessionView:
 PaneTextReader = Callable[[int], str | None]
 KittyFactory = Callable[[], KittyController]
 
-_SESSION_OPEN_ATTEMPTS = 20
-_SESSION_OPEN_RETRY_SECONDS = 0.05
+_SESSION_STATE_ATTEMPTS = 20
+_SESSION_STATE_RETRY_SECONDS = 0.05
 
 _RANDOM_NAME_ADJECTIVES = (
     "Amber",
@@ -570,27 +570,63 @@ class KiSeshService:
         slug_or_id: str,
         promote_os_window_id: int | None = None,
     ) -> StoredSession:
-        """Persist a live session, close it, then optionally focus its successor."""
-        stored = self.save(slug_or_id)
+        """Persist a session, choose its successor, and close it atomically."""
         client = self._kitty()
-        client.close_session_tabs(stored.manifest.id)
-        if promote_os_window_id is not None:
-            self._promote_live_session(client, promote_os_window_id)
+        preferred_tab: LiveTab | None = None
+        if promote_os_window_id is None:
+            preferred_tab = client.focused_tab(
+                client.list_state(),
+                exclude_window_id=_environment_window_id(),
+            )
+            promote_os_window_id = preferred_tab.os_window_id
+        stored = self.save(slug_or_id)
+        successor = self._close_successor(
+            client,
+            stored.manifest.id,
+            promote_os_window_id,
+            preferred_tab,
+        )
+        client.close_session_tabs(stored.manifest.id, successor)
+        self._wait_for_closed_tabs(client, stored)
         return stored
 
-    def _promote_live_session(
+    @staticmethod
+    def _wait_for_closed_tabs(
+        client: KittyController,
+        stored: StoredSession,
+    ) -> None:
+        """Wait briefly for Kitty to stop publishing every closed session tab."""
+        for attempt in range(_SESSION_STATE_ATTEMPTS):
+            if not client.tabs_for_session(stored.manifest.id):
+                return
+            if attempt + 1 < _SESSION_STATE_ATTEMPTS:
+                time.sleep(_SESSION_STATE_RETRY_SECONDS)
+        raise KiSeshError(f"Kitty did not close session: {stored.manifest.name}")
+
+    def _close_successor(
         self,
         client: KittyController,
+        closing_session_id: str,
         os_window_id: int,
-    ) -> None:
-        """Best-effort focus the active stored session remaining in one OS window."""
-        try:
-            tabs = client.tabs()
-        except KittyError:
-            return
+        preferred_tab: LiveTab | None = None,
+    ) -> LiveTab | None:
+        """Choose an active owned tab to isolate before the caller can be destroyed."""
+        tabs = client.tabs()
+        preferred_session_id = preferred_tab.session_id() if preferred_tab is not None else None
+        preferred_tab_id = preferred_tab.tab_id if preferred_tab is not None else None
         candidates = sorted(
-            (tab for tab in tabs if tab.os_window_id == os_window_id),
-            key=lambda tab: (not tab.is_focused, not tab.is_active, tab.index),
+            (
+                tab
+                for tab in tabs
+                if tab.os_window_id == os_window_id and tab.session_id() != closing_session_id
+            ),
+            key=lambda tab: (
+                tab.session_id() != preferred_session_id,
+                tab.tab_id != preferred_tab_id,
+                not tab.is_focused,
+                not tab.is_active,
+                tab.index,
+            ),
         )
         for tab in candidates:
             session_id = tab.session_id()
@@ -602,11 +638,8 @@ class KiSeshService:
                 continue
             if stored.manifest.status != "active":
                 continue
-            try:
-                client.activate_session(session_id, tab)
-            except KittyError:
-                return
-            return
+            return tab
+        return None
 
     def _capture_live_session(self, client: KittyController, session_id: str) -> str:
         """Capture a complete live session through an isolated temporary file."""
@@ -744,12 +777,12 @@ class KiSeshService:
         stored: StoredSession,
     ) -> list[LiveTab]:
         """Wait briefly for Kitty to expose the requested native session tabs."""
-        for attempt in range(_SESSION_OPEN_ATTEMPTS):
+        for attempt in range(_SESSION_STATE_ATTEMPTS):
             opened_tabs = client.tabs_for_session(stored.manifest.id)
             if opened_tabs:
                 return opened_tabs
-            if attempt + 1 < _SESSION_OPEN_ATTEMPTS:
-                time.sleep(_SESSION_OPEN_RETRY_SECONDS)
+            if attempt + 1 < _SESSION_STATE_ATTEMPTS:
+                time.sleep(_SESSION_STATE_RETRY_SECONDS)
         raise KiSeshError(f"Kitty did not open session: {stored.manifest.name}")
 
     @staticmethod

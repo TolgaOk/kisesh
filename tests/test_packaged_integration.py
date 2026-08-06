@@ -31,6 +31,53 @@ def call(module: ModuleType, name: str, *arguments: object) -> object:
     return function(*arguments)
 
 
+def assert_session_close_handler(module: ModuleType, options: object) -> None:
+    """Exercise validation and forwarding through the packaged close kitten."""
+    with unittest.TestCase().assertRaisesRegex(
+        ValueError,
+        "target and one optional successor",
+    ):
+        call(module, "handle_result", ["kitten"], None, 10, "boss")
+    with unittest.TestCase().assertRaisesRegex(ValueError, "successor identity is incomplete"):
+        call(
+            module,
+            "handle_result",
+            ["kitten", "closing", "remaining", "-"],
+            None,
+            10,
+            "boss",
+        )
+    with unittest.TestCase().assertRaises(ValueError):
+        call(
+            module,
+            "handle_result",
+            ["kitten", "closing", "remaining", "not-an-id"],
+            None,
+            10,
+            "boss",
+        )
+    with mock.patch.object(module, "close_live_session") as close_session:
+        call(
+            module,
+            "handle_result",
+            ["kitten", "closing", "remaining", "12"],
+            None,
+            10,
+            "boss",
+        )
+        close_session.assert_called_once_with("closing", "remaining", 12, "boss", options)
+    with mock.patch.object(module, "close_live_session") as close_session:
+        call(
+            module,
+            "handle_result",
+            ["kitten", "closing", "-", "-"],
+            None,
+            10,
+            "boss",
+        )
+        close_session.assert_called_once_with("closing", None, None, "boss", options)
+
+
 class PackagedIntegrationTests(unittest.TestCase):
     """Exercise the exact Python resources shipped inside the wheel."""
 
@@ -51,6 +98,7 @@ class PackagedIntegrationTests(unittest.TestCase):
             "kisesh.integration.layout_toggle",
             "kisesh.integration.reload_tab_bar",
             "kisesh.integration.safe_close",
+            "kisesh.integration.session_close",
             "kisesh.integration.session_filter",
             "kisesh.integration.tab_bar",
         )
@@ -97,6 +145,10 @@ class PackagedIntegrationTests(unittest.TestCase):
             self.assertIsNone(call(safe_close, "main", []))
             self.assertIsNone(call(safe_close, "handle_result", [], None, 9, "boss"))
             close.assert_called_once_with(9, "boss")
+
+        session_close = loaded["kisesh.integration.session_close"]
+        self.assertIsNone(call(session_close, "main", []))
+        assert_session_close_handler(session_close, options)
 
         session_filter = loaded["kisesh.integration.session_filter"]
         self.assertIsNone(call(session_filter, "main", []))

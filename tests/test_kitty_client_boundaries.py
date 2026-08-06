@@ -14,6 +14,7 @@ from unittest import mock
 from kisesh import legacy
 from kisesh.domain import KittyOsWindowState
 from kisesh.kitty_client import (
+    SESSION_CLOSE_KITTEN,
     SESSION_FILTER_KITTEN,
     KittyClient,
     KittyError,
@@ -245,7 +246,7 @@ class KittyClientBoundaryTests(unittest.TestCase):
         self.assertIn("focus-tab", runner.commands[-2])
         self.assertIn("goto_session", runner.commands[-1])
 
-    def test_session_activation_filters_without_reloading_runtime_options_and_close_reveals_first(
+    def test_session_activation_and_close_use_native_runtime_preserving_transitions(
         self,
     ) -> None:
         session_id = "session-id"
@@ -307,21 +308,41 @@ class KittyClientBoundaryTests(unittest.TestCase):
         )
         self.assertFalse(any("load-config" in command for command in runner.commands))
 
-        client.close_session_tabs(session_id)
+        successor_id = "successor-id"
+        successor = LiveTab(
+            1,
+            5,
+            1,
+            "Next",
+            "splits",
+            [{"id": 6, "user_vars": {SESSION_ID_VAR: successor_id}}],
+        )
+        client.close_session_tabs(session_id, successor)
 
         self.assertEqual(
-            runner.commands[-4][-3:],
-            ["kitten", str(SESSION_FILTER_KITTEN), "all"],
+            runner.commands[-1][-5:],
+            [
+                "kitten",
+                str(SESSION_CLOSE_KITTEN),
+                session_id,
+                successor_id,
+                "5",
+            ],
         )
-        self.assertEqual(runner.commands[-3][-1], "ls")
+
+        client.close_session_tabs(session_id)
         self.assertEqual(
-            runner.commands[-2][-4:],
-            ["--match", "id:9", SESSION_SCOPE_VAR, legacy.SESSION_SCOPE_VARIABLE],
+            runner.commands[-1][-5:],
+            ["kitten", str(SESSION_CLOSE_KITTEN), session_id, "-", "-"],
         )
-        self.assertEqual(
-            runner.commands[-1][-1],
-            f"var:{SESSION_ID_VAR}={session_id} or var:{legacy.SESSION_ID_VARIABLE}={session_id}",
-        )
+
+        command_count = len(runner.commands)
+        with self.assertRaisesRegex(KittyError, "cannot preserve an unowned tab"):
+            client.close_session_tabs(
+                session_id,
+                LiveTab(1, 6, 2, "Unowned", "splits", [{"id": 7, "user_vars": {}}]),
+            )
+        self.assertEqual(len(runner.commands), command_count)
 
         client.close_tabs([5, 5, 8])
         self.assertEqual(runner.commands[-1][-2:], ["--match", "id:5 or id:8"])
@@ -329,7 +350,7 @@ class KittyClientBoundaryTests(unittest.TestCase):
         client.close_tabs([])
         self.assertEqual(len(runner.commands), command_count)
 
-    def test_session_close_never_kills_tabs_when_revealing_them_fails(self) -> None:
+    def test_session_close_never_uses_a_second_destructive_remote_command(self) -> None:
         runner = FailAtRunner(fail_at=0)
         client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
 
@@ -338,6 +359,7 @@ class KittyClientBoundaryTests(unittest.TestCase):
 
         self.assertEqual(len(runner.commands), 1)
         self.assertIn("kitten", runner.commands[0])
+        self.assertIn(str(SESSION_CLOSE_KITTEN), runner.commands[0])
         self.assertNotIn("load-config", runner.commands[0])
         self.assertNotIn("close-tab", runner.commands[0])
 

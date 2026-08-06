@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from collections.abc import Iterable
 from pathlib import Path
+from unittest import mock
 
 from kisesh.domain import KittyWindow
 from kisesh.kitty_client import LiveTab
@@ -15,7 +16,7 @@ from kisesh.service import (
 )
 from kisesh.store import SessionStore, StoredSession
 from kisesh.tui import SessionManager
-from tests.fakes import FakeKitty
+from tests.fakes import DelayedCloseKitty, FakeKitty
 from tests.render_fixture import Canvas, StaticService, rendered_manager
 
 
@@ -658,6 +659,64 @@ class TuiRenderingTests(unittest.TestCase):
         closed_row = next(row for row in manager.filtered if row.stored.manifest.id == live_id)
         self.assertFalse(closed_row.live)
         self.assertEqual(manager.message, "saved and closed JAX Agents")
+
+    def test_real_save_close_waits_for_saved_row_and_preserves_source_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = SessionStore(Path(temporary) / "data")
+            kitty = DelayedCloseKitty(stale_reads_after_close=2)
+            service = KiSeshService(store, kitty)
+            source = service.create_from_active("Dotfiles")
+            kitty.tab.is_focused = False
+            kitty.tab.is_active = False
+            closing = store.create("Scratch", "/tmp/scratch")
+            closing_tab = LiveTab(
+                1,
+                8,
+                1,
+                "Shell",
+                "splits",
+                [{"id": 12, "cwd": "/tmp/scratch", "user_vars": {}}],
+            )
+            kitty.stamp_tab(closing_tab, closing.manifest)
+            unrelated = store.create("Work", "/tmp/work")
+            unrelated_tab = LiveTab(
+                1,
+                9,
+                2,
+                "Vim",
+                "splits",
+                [{"id": 13, "cwd": "/tmp/work", "user_vars": {}}],
+                is_focused=True,
+                is_active=True,
+            )
+            kitty.stamp_tab(unrelated_tab, unrelated.manifest)
+            kitty.extra_tabs.extend((closing_tab, unrelated_tab))
+            manager = SessionManager(service)
+            manager._refresh()
+            manager.selected = next(
+                index
+                for index, row in enumerate(manager.filtered)
+                if row.stored.manifest.id == closing.manifest.id
+            )
+
+            with mock.patch("kisesh.service.time.sleep") as pause:
+                manager._handle_key(ScriptedCanvas(16, 100, ["y"]), "x")
+
+            closed_row = next(
+                row for row in manager.filtered if row.stored.manifest.id == closing.manifest.id
+            )
+            manager.palette = rendered_manager()[2]
+            screen = Canvas(16, 100)
+            manager._draw(screen)
+            rendered_row = next(line for line in screen.render().splitlines() if "Scratch" in line)
+
+        self.assertEqual(pause.call_count, 2)
+        self.assertFalse(closed_row.live)
+        self.assertIn("○ Scratch", rendered_row)
+        self.assertEqual(
+            kitty.activated_sessions[-1],
+            (source.manifest.id, kitty.tab.tab_id),
+        )
 
     def test_search_filters_after_each_keystroke_without_waiting_for_enter(self) -> None:
         manager = TrackingSearchManager(StaticService())
