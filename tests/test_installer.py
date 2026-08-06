@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -124,6 +125,60 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("--disable", result.stdout)
         self.assertIn("--uninstall", result.stdout)
         self.assertIn("--purge", result.stdout)
+
+    def test_clean_bootstrap_installs_the_project_editably_before_running_installer(self) -> None:
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+        shutil.copy2(INSTALLER, checkout / "install")
+        home = self.root / "bootstrap-home"
+        fake_python = home / "homebrew" / "bin" / "python3"
+        fake_python.parent.mkdir(parents=True)
+        command_log = self.root / "bootstrap-commands.jsonl"
+        fake_python.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, pathlib, sys\n"
+            "arguments = sys.argv[1:]\n"
+            "with pathlib.Path(os.environ['KISESH_BOOTSTRAP_LOG']).open('a') as stream:\n"
+            "    stream.write(json.dumps(arguments) + '\\n')\n"
+            "if arguments[:2] == ['-m', 'venv']:\n"
+            "    runtime = pathlib.Path(arguments[2]) / 'bin' / 'python'\n"
+            "    runtime.parent.mkdir(parents=True)\n"
+            "    runtime.symlink_to(pathlib.Path(__file__).resolve())\n"
+            "elif arguments[:2] == ['-m', 'pip']:\n"
+            "    cli = pathlib.Path(sys.argv[0]).with_name('kisesh')\n"
+            "    cli.write_text('#!/bin/sh\\nexit 0\\n')\n"
+            "    cli.chmod(0o755)\n"
+            "elif arguments[:2] == ['-m', 'kisesh.installer']:\n"
+            "    print('installer reached')\n",
+            encoding="utf-8",
+        )
+        fake_python.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "HOME": str(home),
+                "PATH": "/usr/bin:/bin",
+                "KISESH_BOOTSTRAP_LOG": str(command_log),
+            }
+        )
+
+        result = subprocess.run(
+            [str(checkout / "install"), "--help"],
+            cwd=checkout,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        commands = [json.loads(line) for line in command_log.read_text().splitlines()]
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("installer reached", result.stdout)
+        self.assertIn(["-m", "venv", str(checkout / ".venv")], commands)
+        pip_command = next(command for command in commands if command[:2] == ["-m", "pip"])
+        self.assertEqual(pip_command[-2:], ["--editable", str(checkout)])
+        self.assertTrue((checkout / ".venv" / "bin" / "kisesh").is_file())
 
     def test_enable_adopts_manual_include_and_is_idempotent(self) -> None:
         original = (

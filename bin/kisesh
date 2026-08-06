@@ -3,7 +3,12 @@
 # executable search path from the user's interactive shell on macOS.
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+runtime_cli="$project_dir/.venv/bin/kisesh"
 runtime_python="$project_dir/.venv/bin/python"
+
+if [ -x "$runtime_cli" ]; then
+    exec "$runtime_cli" "$@"
+fi
 
 if [ -x "$runtime_python" ]; then
     PYTHONPATH="$project_dir${PYTHONPATH:+:$PYTHONPATH}" \

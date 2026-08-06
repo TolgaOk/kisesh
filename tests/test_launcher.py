@@ -16,8 +16,8 @@ def kitty_runtime_environment(project: Path) -> dict[str, str]:
 
 
 class LauncherTests(unittest.TestCase):
-    def test_gui_style_reduced_path_still_finds_modern_homebrew_python(self) -> None:
-        """Reproduce Kitty's GUI PATH instead of relying on the test shell's PATH."""
+    def test_gui_style_reduced_path_runs_installed_console_command(self) -> None:
+        """Run the installed entry point without relying on an interactive PATH."""
 
         project = Path(__file__).parents[1]
         launcher = project / "bin/kisesh"
@@ -45,6 +45,36 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("detach-tab", result.stdout)
         self.assertIn("copy-tab", result.stdout)
         self.assertIn("context", result.stdout)
+
+    def test_wrapper_prefers_the_installed_console_command_without_python_discovery(self) -> None:
+        project = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary) / "checkout"
+            launcher = checkout / "bin" / "kisesh"
+            runtime_cli = checkout / ".venv" / "bin" / "kisesh"
+            launcher.parent.mkdir(parents=True)
+            runtime_cli.parent.mkdir(parents=True)
+            shutil.copy2(project / "bin" / "kisesh", launcher)
+            runtime_cli.write_text(
+                "#!/bin/sh\nprintf '<%s>\\n' \"$@\"\n",
+                encoding="utf-8",
+            )
+            runtime_cli.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update({"HOME": str(Path(temporary) / "home"), "PATH": "/usr/bin:/bin"})
+
+            result = subprocess.run(
+                [str(launcher), "manager", "--sample"],
+                cwd=temporary,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "<manager>\n<--sample>\n")
 
     def test_kitty_mappings_use_launcher_instead_of_ambient_python(self) -> None:
         project = Path(__file__).parents[1]

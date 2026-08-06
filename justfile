@@ -10,6 +10,9 @@ format:
     uv run ruff format .
     uv run ruff check . --fix
 
+package:
+    uv build --no-sources
+
 lint:
     uv run ruff format . --check
     uv run ruff check .
