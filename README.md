@@ -10,31 +10,22 @@ instructions while Kitty continues to own every PTY directly.
 
 ## Install
 
-From this checkout:
+With uv:
 
 ```sh
-./install
+uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/archive/refs/heads/main.tar.gz
+kisesh install
 ```
 
-Restart Kitty once, press `Alt+S`, then `n` to name a session. In an unattached
-Kitty window, choose whether it contains all current tabs or starts with one
-fresh shell after the existing tabs are preserved or discarded. `Alt+S` toggles
-the overlay; it never creates a split or a manager pane. The installer validates
-the complete Kitty config before changing it and keeps one backup beside
-`kitty.conf`. It also restores any previous custom tab bar on disable.
-
-The installer creates `~/.config/kisesh/apps.toml` once and never
-overwrites it. It maps executable globs to restore behavior, exact arguments,
-labels, icons, and agent identity. Icons require a Nerd Font—or another font
-containing the configured glyphs; replace them with plain text if needed.
-Running `./install` over the earlier project identity carries forward saved
-sessions and profile choices while replacing its managed Kitty integration.
+Or with curl:
 
 ```sh
-./install --disable    # keep code and sessions
-./install --uninstall  # keep sessions
-./install --purge      # permanently delete session data
+curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/main/bootstrap.sh | sh
 ```
+
+The installer leaves Kitty running. Reload its configuration when convenient,
+then press `Alt+S`. Configured icons require a Nerd Font or another font that
+contains their glyphs.
 
 ## Example
 
