@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import cast
 from unittest import mock
 
+from kisesh import legacy
 from kisesh.close_guard import (
     CloseGuardBoss,
     CloseGuardTab,
@@ -275,6 +276,34 @@ class CloseGuardTests(unittest.TestCase):
             _tab_ownership(cast(CloseGuardTab, ambiguous_label)),
             TabOwnership("session-a", "session-a", True),
         )
+
+    def test_previous_live_markers_still_guard_final_tabs_and_transient_ui(self) -> None:
+        tracked = FakeWindow(
+            11,
+            {
+                legacy.SESSION_ID_VARIABLE: "session-a",
+                legacy.SESSION_SLUG_VARIABLE: "silver-seal",
+            },
+        )
+        tab = FakeTab(7, 1, [tracked])
+        boss = FakeBoss(tab)
+
+        route_close(tracked.id, boss)
+
+        self.assertEqual(boss.closed_tabs, [])
+        self.assertEqual(len(boss.confirmations), 1)
+        self.assertEqual(
+            boss.confirmations[0].message,
+            'Save and close the final tab of "silver-seal"?',
+        )
+        boss.answer(False)
+
+        overlay = FakeWindow(12, {legacy.UI_VARIABLE: "yes"})
+        overlay_boss = FakeBoss(FakeTab(8, 1, [overlay]))
+        route_close(overlay.id, overlay_boss)
+
+        self.assertEqual(overlay_boss.closed_windows, 1)
+        self.assertEqual(overlay_boss.closed_tabs, [])
 
     def test_unowned_and_multitab_requests_close_the_exact_active_tab_immediately(self) -> None:
         unowned_tab = FakeTab(7, 1, [FakeWindow(11)])

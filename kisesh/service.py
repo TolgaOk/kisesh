@@ -29,7 +29,7 @@ from .context import (
 from .domain import ClosingPaneCapture, KittyOsWindowState, SessionContext
 from .filesystem import temporary_path
 from .kitty_client import KittyClient, KittyController, KittyError, LiveTab
-from .model import SESSION_SCOPE_VAR, SessionManifest, slugify
+from .model import SessionManifest, slugify
 from .session_file import clean_tab_title, rename_snapshot_tab, sanitize_session, snapshot_summary
 from .store import SessionStore, StoredSession, StoreError
 
@@ -173,13 +173,7 @@ def _inherited_session_id(source: LiveTab, tabs: list[LiveTab]) -> str | None:
         }
         return next(iter(native_ids)) if len(native_ids) == 1 else None
     scope = str(source.os_window_id)
-    scoped = [
-        tab
-        for tab in owned
-        if any(
-            window.get("user_vars", {}).get(SESSION_SCOPE_VAR) == scope for window in tab.windows
-        )
-    ]
+    scoped = [tab for tab in owned if tab.session_scope() == scope]
     return max(scoped, key=_last_focused_at).session_id() if scoped else None
 
 
@@ -660,6 +654,8 @@ class KiSeshService:
         client = self._kitty()
         state = client.list_state()
         live_tabs = client.tabs_for_session(stored.manifest.id, state)
+        for live_tab in live_tabs:
+            client.stamp_tab(live_tab, stored.manifest)
         if not live_tabs and not stored.snapshot_path.is_file():
             raise KiSeshError(f"session has no snapshot: {stored.manifest.name}")
         unowned_tabs = self._source_unowned_tabs(client, state)

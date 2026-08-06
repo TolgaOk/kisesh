@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from .domain import KittyOsWindowState, KittyWindow
+from .legacy import VARIABLE_ALIASES as LEGACY_VARIABLE_ALIASES
 from .model import (
     CAPTURE_VAR,
     KISESH_UI_VAR,
@@ -92,6 +93,10 @@ class LiveTab:
         """Return the stable KiSesh session UUID stamped on this tab."""
         return _first_user_var(self.windows, SESSION_ID_VAR)
 
+    def session_scope(self) -> str | None:
+        """Return the current or previous OS-window visibility scope."""
+        return _first_user_var(self.windows, SESSION_SCOPE_VAR)
+
     def native_session_name(self) -> str | None:
         """Return Kitty's native session identity shared by inherited tabs."""
         return next(
@@ -115,18 +120,42 @@ class LiveTab:
         return str(Path.cwd())
 
 
+def _user_var(variables: Mapping[str, str], name: str) -> str | None:
+    """Resolve a current user variable with its previous-name fallback."""
+    value = variables.get(name)
+    if value:
+        return value
+    return variables.get(LEGACY_VARIABLE_ALIASES[name])
+
+
 def _first_user_var(windows: Iterable[KittyWindow], name: str) -> str | None:
-    """Return the first nonempty named user variable across a tab's panes."""
+    """Return the first compatible nonempty user variable across a tab's panes."""
     for window in windows:
-        value = window.get("user_vars", {}).get(name)
+        value = _user_var(window.get("user_vars", {}), name)
         if value:
             return value
     return None
 
 
+def _replacement_variables(
+    current: Mapping[str, str | None],
+) -> dict[str, str | None]:
+    """Set current variables while clearing their previous-name equivalents."""
+    replacements = dict(current)
+    replacements.update({LEGACY_VARIABLE_ALIASES[name]: None for name in current})
+    return replacements
+
+
+def _user_var_match(name: str, value: str) -> str:
+    """Match either the current or previous spelling of one user variable."""
+    return " or ".join(
+        f"var:{candidate}={value}" for candidate in (name, LEGACY_VARIABLE_ALIASES[name])
+    )
+
+
 def _is_kisesh_ui_window(window: KittyWindow) -> bool:
     """Identify transient manager overlays that must never become session panes."""
-    value = window.get("user_vars", {}).get(KISESH_UI_VAR, "")
+    value = _user_var(window.get("user_vars", {}), KISESH_UI_VAR) or ""
     return value.casefold() not in {"", "0", "false", "no"}
 
 
@@ -395,11 +424,13 @@ class KittyClient:
         exclude_window_id: int | None = None,
     ) -> None:
         """Stamp missing or stale ownership variables on eligible panes."""
-        desired: dict[str, str | None] = {
-            SESSION_ID_VAR: manifest.id,
-            SESSION_SLUG_VAR: manifest.slug,
-            SESSION_NAME_VAR: session_marker_name(manifest.name, manifest.slug),
-        }
+        desired = _replacement_variables(
+            {
+                SESSION_ID_VAR: manifest.id,
+                SESSION_SLUG_VAR: manifest.slug,
+                SESSION_NAME_VAR: session_marker_name(manifest.name, manifest.slug),
+            }
+        )
         window_ids = [
             window["id"]
             for window in tab.windows
@@ -412,7 +443,9 @@ class KittyClient:
         """Clear every current ownership variable without closing panes."""
         self.set_user_vars(
             (window["id"] for window in tab.windows),
-            {SESSION_ID_VAR: None, SESSION_SLUG_VAR: None, SESSION_NAME_VAR: None},
+            _replacement_variables(
+                {SESSION_ID_VAR: None, SESSION_SLUG_VAR: None, SESSION_NAME_VAR: None}
+            ),
         )
 
     def restamp_session(self, session_id: str, slug: str, name: str) -> None:
@@ -423,7 +456,12 @@ class KittyClient:
             for tab in self.tabs_for_session(session_id, state)
             for window in tab.windows
         ]
-        self.set_user_vars(window_ids, {SESSION_SLUG_VAR: slug, SESSION_NAME_VAR: name})
+        self.set_user_vars(
+            window_ids,
+            _replacement_variables(
+                {SESSION_ID_VAR: session_id, SESSION_SLUG_VAR: slug, SESSION_NAME_VAR: name}
+            ),
+        )
 
     def capture_session(self, session_id: str, destination: Path) -> None:
         """Save all live tabs for a session and verify Kitty wrote content."""
@@ -464,27 +502,37 @@ class KittyClient:
         """Focus one session while leaving unrelated OS windows unfiltered."""
         scope = str(tab.os_window_id)
         tabs = self.tabs()
+        scope_variables = _replacement_variables({SESSION_SCOPE_VAR: scope})
         scoped_windows = [
             window["id"]
             for candidate in tabs
             if candidate.os_window_id == tab.os_window_id
             for window in candidate.windows
-            if window.get("user_vars", {}).get(SESSION_SCOPE_VAR) != scope
+            if any(
+                window.get("user_vars", {}).get(name) != value
+                for name, value in scope_variables.items()
+            )
         ]
         outside_windows = [
             window["id"]
             for candidate in tabs
             if candidate.os_window_id != tab.os_window_id
             for window in candidate.windows
-            if SESSION_SCOPE_VAR in window.get("user_vars", {})
+            if _user_var(window.get("user_vars", {}), SESSION_SCOPE_VAR) is not None
         ]
-        self.set_user_vars(scoped_windows, {SESSION_SCOPE_VAR: scope})
-        self.set_user_vars(outside_windows, {SESSION_SCOPE_VAR: None})
+        self.set_user_vars(
+            scoped_windows,
+            scope_variables,
+        )
+        self.set_user_vars(
+            outside_windows,
+            _replacement_variables({SESSION_SCOPE_VAR: None}),
+        )
         self.focus_tab(tab.tab_id)
         self.command(
             "kitten",
             str(SESSION_FILTER_KITTEN),
-            f"var:{SESSION_ID_VAR}={session_id} or not var:{SESSION_SCOPE_VAR}={scope}",
+            f"{_user_var_match(SESSION_ID_VAR, session_id)} or not var:{SESSION_SCOPE_VAR}={scope}",
         )
 
     def close_session_tabs(self, session_id: str) -> None:
@@ -494,13 +542,16 @@ class KittyClient:
             window["id"]
             for tab in self.tabs()
             for window in tab.windows
-            if SESSION_SCOPE_VAR in window.get("user_vars", {})
+            if _user_var(window.get("user_vars", {}), SESSION_SCOPE_VAR) is not None
         ]
-        self.set_user_vars(scoped_windows, {SESSION_SCOPE_VAR: None})
+        self.set_user_vars(
+            scoped_windows,
+            _replacement_variables({SESSION_SCOPE_VAR: None}),
+        )
         self.command(
             "close-tab",
             "--match",
-            f"var:{SESSION_ID_VAR}={session_id}",
+            _user_var_match(SESSION_ID_VAR, session_id),
         )
 
     def close_tabs(self, tab_ids: Iterable[int]) -> None:

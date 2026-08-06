@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import NamedTuple, Protocol, cast
 from unittest import mock
 
-from kisesh import session_bar
+from kisesh import legacy, session_bar
 from kisesh.model import (
     AGENT_VAR,
     APP_VAR,
@@ -334,6 +334,42 @@ class SessionBarRenderingTests(unittest.TestCase):
 
 
 class SessionBarAdapterTests(unittest.TestCase):
+    def test_previous_live_markers_render_the_session_segment(self) -> None:
+        datum = Datum("Shell", 1, is_active=True)
+        variables = {
+            legacy.SESSION_ID_VARIABLE: "session-id",
+            legacy.SESSION_SLUG_VARIABLE: "silver-seal",
+            legacy.SESSION_NAME_VARIABLE: "Silver Seal",
+        }
+        boss = Boss({1: NativeTab(Window(variables, title="Shell"))})
+        drawer = RecordingDrawer()
+        screen = Screen(Cursor(x=4))
+
+        with (
+            mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
+            mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
+            mock.patch(
+                "kisesh.session_bar.importlib.import_module",
+                return_value=SimpleNamespace(as_rgb=lambda color: color),
+            ),
+        ):
+            session_bar.draw_tab(
+                DrawData("top"),
+                screen,
+                datum,
+                4,
+                40,
+                1,
+                True,
+                ExtraData(None),
+            )
+
+        self.assertEqual(
+            [cast(Datum, call[2]).title for call in drawer.calls],
+            [" Silver Seal", " Shell"],
+        )
+        self.assertEqual("".join(text for text, _, _ in screen.drawn), "")
+
     def test_session_prefix_never_inherits_first_tab_highlight(self) -> None:
         first_active = Datum("Shell", 1, is_active=True)
         first_inactive = first_active._replace(is_active=False)

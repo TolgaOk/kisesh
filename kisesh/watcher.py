@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -151,6 +152,29 @@ def _string_mapping(value: object) -> dict[str, str]:
     return {str(key): str(item) for key, item in value.items() if item is not None}
 
 
+@cache
+def _legacy_variable_aliases() -> Mapping[str, str]:
+    """Load previous user-variable names without requiring a package import at startup."""
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    module = importlib.import_module("kisesh.legacy")
+    return cast(Mapping[str, str], module.VARIABLE_ALIASES)
+
+
+def _variable(variables: Mapping[str, str], name: str) -> str | None:
+    """Resolve a current watcher variable with its previous-name fallback."""
+    value = variables.get(name)
+    if value:
+        return value
+    return variables.get(_legacy_variable_aliases()[name])
+
+
+def _variable_name_matches(value: object, name: str) -> bool:
+    """Report whether an event key uses a current or previous variable name."""
+    return value == name or value == _legacy_variable_aliases()[name]
+
+
 def _window_environment(window: WatcherWindow) -> dict[str, str]:
     """Merge process and foreground environments over the Kitty process values."""
     environment = os.environ.copy()
@@ -171,10 +195,10 @@ def _window_identity(window: WatcherWindow) -> WindowIdentity:
     focused_at = state.get("last_focused_at")
     return WindowIdentity(
         window=window,
-        session_id=variables.get(SESSION_ID_VAR),
-        session_slug=variables.get(SESSION_SLUG_VAR),
-        session_name=variables.get(SESSION_NAME_VAR),
-        session_scope=variables.get(SESSION_SCOPE_VAR),
+        session_id=_variable(variables, SESSION_ID_VAR),
+        session_slug=_variable(variables, SESSION_SLUG_VAR),
+        session_name=_variable(variables, SESSION_NAME_VAR),
+        session_scope=_variable(variables, SESSION_SCOPE_VAR),
         native_session_name=(
             native_name.strip() if isinstance(native_name, str) and native_name.strip() else None
         ),
@@ -183,7 +207,7 @@ def _window_identity(window: WatcherWindow) -> WindowIdentity:
             if isinstance(focused_at, (int, float)) and not isinstance(focused_at, bool)
             else 0.0
         ),
-        kisesh_ui=bool(variables.get(KISESH_UI_VAR)),
+        kisesh_ui=bool(_variable(variables, KISESH_UI_VAR)),
     )
 
 
@@ -268,7 +292,12 @@ def _sibling_session_id(window_id: int, boss: WatcherBoss | None) -> str | None:
                 session_id
                 for tab in tabs
                 for sibling in tab
-                if (session_id := _string_mapping(sibling.user_vars).get(SESSION_ID_VAR))
+                if (
+                    session_id := _variable(
+                        _string_mapping(sibling.user_vars),
+                        SESSION_ID_VAR,
+                    )
+                )
             ),
             None,
         )
@@ -282,12 +311,12 @@ def _session_id(
     boss: WatcherBoss | None = None,
 ) -> str | None:
     """Resolve direct, newly assigned, or sibling-inherited session ownership."""
-    if data and data.get("key") == SESSION_ID_VAR and data.get("value"):
+    if data and _variable_name_matches(data.get("key"), SESSION_ID_VAR) and data.get("value"):
         return str(data["value"])
     variables = _string_mapping(window.user_vars)
-    if variables.get(KISESH_UI_VAR):
+    if _variable(variables, KISESH_UI_VAR):
         return None
-    return variables.get(SESSION_ID_VAR) or _sibling_session_id(window.id, boss)
+    return _variable(variables, SESSION_ID_VAR) or _sibling_session_id(window.id, boss)
 
 
 def _launch_autosave(
@@ -399,7 +428,7 @@ def _session_location(
             tab
             for tab in all_tabs
             if any(
-                _string_mapping(sibling.user_vars).get(SESSION_ID_VAR) == session_id
+                _variable(_string_mapping(sibling.user_vars), SESSION_ID_VAR) == session_id
                 for sibling in tab
             )
         ]
@@ -437,7 +466,8 @@ def _has_other_session_tab(
     return any(
         tab is not closing_tab
         and any(
-            _string_mapping(sibling.user_vars).get(SESSION_ID_VAR) == session_id for sibling in tab
+            _variable(_string_mapping(sibling.user_vars), SESSION_ID_VAR) == session_id
+            for sibling in tab
         )
         for tab in tabs
     )
@@ -569,7 +599,10 @@ def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> Non
 
 def on_set_user_var(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
     """Schedule only ownership-variable changes and ignore unrelated metadata."""
-    if data.get("key") in {SESSION_ID_VAR, SESSION_SLUG_VAR, SESSION_NAME_VAR}:
+    if any(
+        _variable_name_matches(data.get("key"), name)
+        for name in (SESSION_ID_VAR, SESSION_SLUG_VAR, SESSION_NAME_VAR)
+    ):
         _schedule(window, data, boss)
 
 
@@ -641,7 +674,11 @@ def _update_app_markers(
     current = _string_mapping(window.user_vars)
     application = profile.name if profile is not None else None
     agent = profile.name if profile is not None and profile.agent else None
-    desired = ((APP_VAR, application), (AGENT_VAR, agent))
+    current_desired = ((APP_VAR, application), (AGENT_VAR, agent))
+    desired = (
+        *current_desired,
+        *((_legacy_variable_aliases()[name], None) for name, _value in current_desired),
+    )
     assignments = tuple(
         f"{name}={value}" if value is not None else name
         for name, value in desired

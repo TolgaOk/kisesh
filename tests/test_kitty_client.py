@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
+from kisesh import legacy
 from kisesh.domain import KittyOsWindowState, KittyWindow
 from kisesh.kitty_client import KittyClient, LiveTab
 from kisesh.model import (
     KISESH_UI_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
+    SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
     SessionManifest,
 )
@@ -131,6 +134,68 @@ class KittyClientTests(unittest.TestCase):
         self.assertEqual(tab.session_id(), "session-id")
         self.assertEqual(tab.native_session_name(), "/tmp/demo.kitty-session")
         self.assertEqual(tab.suggested_root(), "/new")
+
+    def test_previous_live_variables_are_recognized_then_replaced_in_place(self) -> None:
+        state: list[KittyOsWindowState] = [
+            {
+                "id": 1,
+                "tabs": [
+                    {
+                        "id": 2,
+                        "title": "Shell",
+                        "windows": [
+                            {
+                                "id": 3,
+                                "user_vars": {
+                                    legacy.SESSION_ID_VARIABLE: "session-id",
+                                    legacy.SESSION_SLUG_VARIABLE: "silver-seal",
+                                    legacy.SESSION_NAME_VARIABLE: "Silver Seal",
+                                    legacy.SESSION_SCOPE_VARIABLE: "1",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "id": 4,
+                        "title": "Old manager overlay",
+                        "windows": [{"id": 5, "user_vars": {legacy.UI_VARIABLE: "yes"}}],
+                    },
+                ],
+            }
+        ]
+        runner = RecordingCommandRunner(stdout=json.dumps(state))
+        client = KittyClient(executable="/kitty", socket="unix:/tmp/test.sock", runner=runner)
+
+        tabs = client.tabs(state)
+        self.assertEqual([tab.tab_id for tab in tabs], [2])
+        self.assertEqual(tabs[0].session_id(), "session-id")
+        self.assertEqual(tabs[0].session_scope(), "1")
+
+        manifest = SessionManifest(
+            name="Silver Seal",
+            slug="silver-seal",
+            project_root="/tmp",
+            id="session-id",
+        )
+        client.stamp_tab(tabs[0], manifest)
+        client.activate_session(manifest.id, tabs[0])
+
+        stamp_command = runner.commands[0]
+        self.assertIn(f"{SESSION_ID_VAR}=session-id", stamp_command)
+        self.assertIn(f"{SESSION_NAME_VAR}=Silver Seal", stamp_command)
+        self.assertIn(legacy.SESSION_ID_VARIABLE, stamp_command)
+        self.assertIn(legacy.SESSION_SLUG_VARIABLE, stamp_command)
+        self.assertIn(legacy.SESSION_NAME_VARIABLE, stamp_command)
+        scope_command = next(
+            command for command in runner.commands if f"{SESSION_SCOPE_VAR}=1" in command
+        )
+        self.assertIn(legacy.SESSION_SCOPE_VARIABLE, scope_command)
+        self.assertEqual(
+            runner.commands[-1][-1],
+            f"var:{SESSION_ID_VAR}=session-id or "
+            f"var:{legacy.SESSION_ID_VARIABLE}=session-id or "
+            f"not var:{SESSION_SCOPE_VAR}=1",
+        )
 
     def test_focused_tab_skips_a_standalone_manager_os_window(self) -> None:
         state: list[KittyOsWindowState] = [

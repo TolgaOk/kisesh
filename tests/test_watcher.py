@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 from unittest import mock
 
-from kisesh import watcher
+from kisesh import legacy, watcher
 
 
 class Child(watcher.WatcherChild):
@@ -281,6 +281,40 @@ class WatcherTests(unittest.TestCase):
             watcher._session_id(new_pane, boss=Boss([[stamped, new_pane]])), "session-id"
         )
 
+    def test_previous_live_markers_keep_autosave_identity_and_pane_location(self) -> None:
+        window = Window(session_id=None)
+        window.user_vars = {
+            legacy.SESSION_ID_VARIABLE: "session-id",
+            legacy.SESSION_SLUG_VARIABLE: "silver-seal",
+            legacy.SESSION_NAME_VARIABLE: "Silver Seal",
+            legacy.SESSION_SCOPE_VARIABLE: "1",
+        }
+        boss = Boss([[window]])
+
+        identity = watcher._window_identity(window)
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
+            watcher.on_title_change(boss, window, {"title": "new prompt"})
+
+        self.assertEqual(identity.session_id, "session-id")
+        self.assertEqual(identity.session_slug, "silver-seal")
+        self.assertEqual(identity.session_name, "Silver Seal")
+        self.assertEqual(identity.session_scope, "1")
+        self.assertEqual(watcher._session_location(window, boss, "session-id"), (0, 0))
+        self.assertIn("session-id", watcher._timers)
+        self.assertTrue(FakeTimer.instances[-1].started)
+
+        with mock.patch.object(watcher, "_schedule") as schedule:
+            watcher.on_set_user_var(
+                boss,
+                window,
+                {"key": legacy.SESSION_NAME_VARIABLE, "value": "Silver Seal"},
+            )
+        schedule.assert_called_once_with(
+            window,
+            {"key": legacy.SESSION_NAME_VARIABLE, "value": "Silver Seal"},
+            boss,
+        )
+
     def test_new_native_session_tab_is_stamped_before_its_autosave(self) -> None:
         """Persist a new tab as part of the session it inherited from Kitty."""
         owner = Window(
@@ -508,6 +542,12 @@ class WatcherTests(unittest.TestCase):
         original_path = list(sys.path)
         try:
             sys.path[:] = [entry for entry in sys.path if entry != project_root]
+            watcher._legacy_variable_aliases.cache_clear()
+            self.assertEqual(
+                watcher._legacy_variable_aliases()[watcher.SESSION_ID_VAR],
+                legacy.SESSION_ID_VARIABLE,
+            )
+            sys.path.remove(project_root)
             self.assertIsNotNone(watcher._refreshed_app_profiles().match("codex"))
             self.assertEqual(sys.path[0], project_root)
         finally:
@@ -527,6 +567,17 @@ class WatcherTests(unittest.TestCase):
             boss.remote_calls[-1][1][-2:],
             (f"{watcher.APP_VAR}=top", watcher.AGENT_VAR),
         )
+
+        variables.clear()
+        variables[legacy.APP_VARIABLE] = "claude"
+        variables[legacy.AGENT_VARIABLE] = "claude"
+        watcher.on_cmd_startstop(boss, window, {"is_start": True, "cmdline": ["top"]})
+
+        command = boss.remote_calls[-1][1]
+        self.assertIn(f"{watcher.APP_VAR}=top", command)
+        self.assertNotIn(watcher.AGENT_VAR, command)
+        self.assertIn(legacy.APP_VARIABLE, command)
+        self.assertIn(legacy.AGENT_VARIABLE, command)
 
     def test_autosave_uses_shared_launcher_and_receives_socket_before_subcommand(self) -> None:
         """Invoke the installed launcher with global options in Tyro order."""

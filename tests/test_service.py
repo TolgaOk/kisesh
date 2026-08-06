@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from kisesh import legacy
 from kisesh.domain import ClosingPaneCapture, CommandEvent, KittyWindow, SessionContext
 from kisesh.kitty_client import KittyError, LiveTab
 from kisesh.model import (
@@ -432,6 +433,41 @@ class ServiceTests(unittest.TestCase):
         self.assertIn(f"{SESSION_NAME_VAR}=Renamed Product", restored)
         self.assertIn("layout splits", restored)
         self.assertIn("--var=user_choice=keep", restored)
+
+    def test_renamed_running_session_stays_live_and_restamps_without_reopening(self) -> None:
+        stored = self.store.create("Silver Seal", "/tmp/project")
+        variables = self.kitty.window.setdefault("user_vars", {})
+        variables.update(
+            {
+                legacy.SESSION_ID_VARIABLE: stored.manifest.id,
+                legacy.SESSION_SLUG_VARIABLE: stored.manifest.slug,
+                legacy.SESSION_NAME_VARIABLE: stored.manifest.name,
+            }
+        )
+
+        current = self.service.current_session()
+        view = next(
+            candidate
+            for candidate in self.service.views()
+            if candidate.stored.manifest.id == stored.manifest.id
+        )
+        opened = self.service.open(stored.manifest.id)
+
+        self.assertEqual(current.manifest.id, stored.manifest.id)
+        self.assertTrue(view.live)
+        self.assertEqual([tab.tab_id for tab in view.live_tabs], [self.kitty.tab.tab_id])
+        self.assertEqual(opened.manifest.id, stored.manifest.id)
+        self.assertEqual(self.kitty.opened, [])
+        self.assertEqual(variables[SESSION_ID_VAR], stored.manifest.id)
+        self.assertEqual(variables[SESSION_SLUG_VAR], stored.manifest.slug)
+        self.assertEqual(variables[SESSION_NAME_VAR], stored.manifest.name)
+        self.assertNotIn(legacy.SESSION_ID_VARIABLE, variables)
+        self.assertNotIn(legacy.SESSION_SLUG_VARIABLE, variables)
+        self.assertNotIn(legacy.SESSION_NAME_VARIABLE, variables)
+        self.assertEqual(
+            self.kitty.activated_sessions[-1],
+            (stored.manifest.id, self.kitty.tab.tab_id),
+        )
 
     def test_cmd_w_after_reopen_persists_new_history_for_the_next_reopen(self) -> None:
         self.kitty.window.update(

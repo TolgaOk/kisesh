@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from .app_profiles import current_app_profiles
+from .legacy import VARIABLE_ALIASES as LEGACY_VARIABLE_ALIASES
 
 SESSION_ICON = ""
 ELLIPSIS = "…"
@@ -258,12 +259,20 @@ def _mapping(value: object) -> Mapping[object, object]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _first_variable(windows: Sequence[object], name: str) -> str | None:
-    """Return the first nonempty cached user variable across a tab's panes."""
-    for window in windows:
-        value = _mapping(getattr(window, "user_vars", {})).get(name)
+def _variable(variables: Mapping[object, object], name: str) -> str | None:
+    """Resolve a cached user variable through current and previous names."""
+    for candidate in (name, LEGACY_VARIABLE_ALIASES[name]):
+        value = variables.get(candidate)
         if value is not None and str(value).strip():
             return str(value).strip()
+    return None
+
+
+def _first_variable(windows: Sequence[object], name: str) -> str | None:
+    """Return the first compatible user variable across a tab's panes."""
+    for window in windows:
+        if value := _variable(_mapping(getattr(window, "user_vars", {})), name):
+            return value
     return None
 
 
@@ -304,7 +313,7 @@ def _foreground_application(child: object) -> str | None:
 def _cached_application(window: object) -> str | None:
     """Resolve an app from markers, Kitty's foreground command, or stable fallbacks."""
     variables = _mapping(getattr(window, "user_vars", {}))
-    marker = variables.get(APP_VAR) or variables.get(AGENT_VAR)
+    marker = _variable(variables, APP_VAR) or _variable(variables, AGENT_VAR)
     profile = current_app_profiles().named(str(marker).casefold() if marker is not None else None)
     if profile is not None:
         return profile.name

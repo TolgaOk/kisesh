@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from kisesh import legacy
 from kisesh.domain import KittyOsWindowState
 from kisesh.kitty_client import (
     SESSION_FILTER_KITTEN,
@@ -285,15 +286,23 @@ class KittyClientBoundaryTests(unittest.TestCase):
             [command[command.index("--match") + 1] for command in scope_commands[:-1]],
             ["id:3 or id:4 or id:6", "id:9"],
         )
-        self.assertEqual(scope_commands[0][-1], f"{SESSION_SCOPE_VAR}=1")
-        self.assertEqual(scope_commands[1][-1], SESSION_SCOPE_VAR)
+        self.assertEqual(
+            scope_commands[0][-2:],
+            [f"{SESSION_SCOPE_VAR}=1", legacy.SESSION_SCOPE_VARIABLE],
+        )
+        self.assertEqual(
+            scope_commands[1][-2:],
+            [SESSION_SCOPE_VAR, legacy.SESSION_SCOPE_VARIABLE],
+        )
         self.assertEqual(runner.commands[-2][-1], "id:2")
         self.assertEqual(
             runner.commands[-1][-3:],
             [
                 "kitten",
                 str(SESSION_FILTER_KITTEN),
-                f"var:{SESSION_ID_VAR}={session_id} or not var:{SESSION_SCOPE_VAR}=1",
+                f"var:{SESSION_ID_VAR}={session_id} or "
+                f"var:{legacy.SESSION_ID_VARIABLE}={session_id} or "
+                f"not var:{SESSION_SCOPE_VAR}=1",
             ],
         )
         self.assertFalse(any("load-config" in command for command in runner.commands))
@@ -305,8 +314,14 @@ class KittyClientBoundaryTests(unittest.TestCase):
             ["kitten", str(SESSION_FILTER_KITTEN), "all"],
         )
         self.assertEqual(runner.commands[-3][-1], "ls")
-        self.assertEqual(runner.commands[-2][-3:], ["--match", "id:9", SESSION_SCOPE_VAR])
-        self.assertEqual(runner.commands[-1][-1], f"var:{SESSION_ID_VAR}={session_id}")
+        self.assertEqual(
+            runner.commands[-2][-4:],
+            ["--match", "id:9", SESSION_SCOPE_VAR, legacy.SESSION_SCOPE_VARIABLE],
+        )
+        self.assertEqual(
+            runner.commands[-1][-1],
+            f"var:{SESSION_ID_VAR}={session_id} or var:{legacy.SESSION_ID_VARIABLE}={session_id}",
+        )
 
         client.close_tabs([5, 5, 8])
         self.assertEqual(runner.commands[-1][-2:], ["--match", "id:5 or id:8"])
@@ -326,21 +341,34 @@ class KittyClientBoundaryTests(unittest.TestCase):
         self.assertNotIn("load-config", runner.commands[0])
         self.assertNotIn("close-tab", runner.commands[0])
 
+    def test_session_capture_uses_one_action_compatible_restamped_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot = Path(temporary) / "session.kitty-session"
+            snapshot.write_text("new_tab Work\n", encoding="utf-8")
+            runner = RecordingCommandRunner()
+            client = KittyClient(
+                executable="/kitty",
+                socket="unix:/tmp/test",
+                runner=runner,
+            )
+
+            client.capture_session("session-id", snapshot)
+
+        match = next(argument for argument in runner.commands[0] if argument.startswith("--match="))
+        self.assertEqual(match, f"--match=var:{SESSION_ID_VAR}=session-id")
+        self.assertNotIn(" or ", match)
+
     def test_capture_operations_validate_files_and_always_clear_temporary_markers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            session_snapshot = root / "session.kitty-session"
             tab_snapshot = root / "tab.kitty-session"
-            session_snapshot.write_text("new_tab Work\n", encoding="utf-8")
             tab_snapshot.write_text("new_tab Tab\n", encoding="utf-8")
             runner = RecordingCommandRunner()
             client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
             tab = LiveTab(1, 2, 0, "Work", "splits", [{"id": 3}, {"id": 4}])
 
-            client.capture_session("session-id", session_snapshot)
             client.capture_tab(tab, tab_snapshot, "capture-id")
 
-            self.assertIn(f"--match=var:{SESSION_ID_VAR}=session-id", runner.commands[0])
             capture_commands = [
                 command for command in runner.commands if CAPTURE_VAR in " ".join(command)
             ]
