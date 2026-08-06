@@ -35,6 +35,19 @@ from .legacy import (
 from .legacy import (
     TAB_BAR_BACKUP as LEGACY_TAB_BAR_BACKUP,
 )
+from .runtime_install import (
+    RuntimeInstallError,
+    RuntimePaths,
+    check_runtime_target,
+    deploy_runtime,
+    ensure_command_link,
+    finish_runtime,
+    remove_command_link,
+    remove_runtime,
+    rollback_runtime,
+    runtime_paths,
+    validate_runtime_source,
+)
 from .tab_bar_install import (
     TabBarInstallError,
     TabBarPaths,
@@ -62,6 +75,7 @@ class InstallPaths:
 
     home: Path
     source: Path
+    launcher: Path
     target: Path
     kitty_config: Path
     app_config: Path
@@ -170,6 +184,30 @@ def _kitty_config(home: Path, override: Path | None = None) -> Path:
     return conventional
 
 
+def _cli_launcher(source: Path) -> Path:
+    """Resolve the persistent console command used by Kitty launch actions."""
+    configured = os.environ.get("KISESH_CLI")
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    invoked = Path(sys.argv[0]).expanduser()
+    if invoked.name == "kisesh":
+        invoked_path = invoked if invoked.is_absolute() else Path(shutil.which("kisesh") or invoked)
+        candidates.append(invoked_path)
+    candidates.extend(
+        (
+            Path(sys.executable).with_name("kisesh"),
+            source / ".venv" / "bin" / "kisesh",
+            source / "bin" / "kisesh",
+        )
+    )
+    for candidate in candidates:
+        absolute = candidate.absolute()
+        if absolute.is_file() and os.access(absolute, os.X_OK):
+            return absolute
+    raise InstallError("the kisesh CLI launcher was not found")
+
+
 def install_paths(*, kitty_config: Path | None = None) -> InstallPaths:
     """Resolve every path used by an install, disable, uninstall, or purge."""
     home = _home()
@@ -179,6 +217,7 @@ def install_paths(*, kitty_config: Path | None = None) -> InstallPaths:
     return InstallPaths(
         home=home,
         source=source,
+        launcher=_cli_launcher(source),
         target=home / ".local" / "lib" / "kisesh",
         kitty_config=_kitty_config(home, kitty_config),
         app_config=config_base / "kisesh" / "apps.toml",
@@ -207,24 +246,14 @@ def _legacy_tab_bar_paths(config: Path, legacy: LegacyInstallPaths) -> TabBarPat
 
 
 def _validate_source(paths: InstallPaths) -> None:
-    """Require all launchers, integration config, and watcher source files."""
-    required = (
-        paths.source / "bin" / "kisesh",
-        paths.source / "integration" / "kisesh.conf",
-        paths.source / "integration" / "reload_tab_bar.py",
-        paths.source / "integration" / "safe_close.py",
-        paths.source / "integration" / "session_filter.py",
-        paths.source / "integration" / "tab_bar.py",
-        paths.source / "kisesh" / "close_guard.py",
-        paths.source / "kisesh" / "app_profiles.py",
-        paths.source / "kisesh" / "default_apps.toml",
-        paths.source / "kisesh" / "session_bar.py",
-        paths.source / "kisesh" / "session_filter.py",
-        paths.source / "kisesh" / "watcher.py",
-    )
-    missing = [str(path) for path in required if not path.is_file()]
-    if missing:
-        raise InstallError(f"source checkout is incomplete; missing: {', '.join(missing)}")
+    """Require all packaged runtime and application-profile resources."""
+    try:
+        validate_runtime_source(_runtime_paths(paths))
+    except RuntimeInstallError as error:
+        raise InstallError(str(error)) from error
+    profile = paths.source / "kisesh" / "default_apps.toml"
+    if not profile.is_file():
+        raise InstallError(f"package is incomplete; missing: {profile}")
 
 
 def _same_target(link: Path, source: Path) -> bool:
@@ -235,42 +264,18 @@ def _same_target(link: Path, source: Path) -> bool:
         return False
 
 
+def _runtime_paths(paths: InstallPaths) -> RuntimePaths:
+    """Translate installer locations into one runtime deployment contract."""
+    return runtime_paths(paths.source, paths.launcher, paths.target)
+
+
 def _check_install_target(paths: InstallPaths, *, removing: bool = False) -> None:
-    """Reject any install target that is not absent, in-place, or our symlink."""
-    target = paths.target
-    if (
-        target.resolve(strict=False) == paths.source.resolve(strict=True)
-        and not target.is_symlink()
-    ):
-        return
-    if not target.exists() and not target.is_symlink():
-        return
-    if target.is_symlink() and _same_target(target, paths.source):
-        return
-    action = "remove" if removing else "replace"
-    raise InstallError(
-        f"refusing to {action} existing install path: {target}\n"
-        "Move it aside or remove it explicitly, then retry."
-    )
-
-
-def _ensure_install_link(paths: InstallPaths) -> bool:
-    """Create the source symlink when needed and report whether it changed."""
-    _check_install_target(paths)
-    if paths.target.resolve(strict=False) == paths.source.resolve(strict=True):
-        return False
-    paths.target.parent.mkdir(parents=True, exist_ok=True)
-    paths.target.symlink_to(paths.source, target_is_directory=True)
-    return True
-
-
-def _remove_install_link(paths: InstallPaths) -> bool:
-    """Remove only a verified KiSesh source symlink."""
-    _check_install_target(paths, removing=True)
-    if paths.target.is_symlink():
-        paths.target.unlink()
-        return True
-    return False
+    """Reject foreign runtime targets before an install or removal transaction."""
+    del removing
+    try:
+        check_runtime_target(_runtime_paths(paths))
+    except RuntimeInstallError as error:
+        raise InstallError(str(error)) from error
 
 
 def _strip_kisesh_config(text: str, paths: InstallPaths) -> tuple[str, bool]:
@@ -601,7 +606,8 @@ def _report_enabled(
     base: str,
 ) -> None:
     """Report the installed resources, preserved state, and mapping conflicts."""
-    print(f"code:    {paths.target} -> {paths.source}")
+    print(f"runtime: {paths.target}")
+    print(f"command: {paths.home / '.local' / 'bin' / 'kisesh'}")
     if legacy_link_removed:
         print(f"removed previous code link: {legacy.target}")
     state = (
@@ -624,7 +630,7 @@ def _report_enabled(
 
 
 def _enable(paths: InstallPaths) -> None:
-    """Validate, install, configure, and report an enabled KiSesh checkout."""
+    """Validate, deploy, configure, and report an enabled KiSesh package."""
     _validate_source(paths)
     _check_install_target(paths)
     kitty = _find_executable(
@@ -635,13 +641,17 @@ def _enable(paths: InstallPaths) -> None:
     original = _read_config(config)
     base, _ = _strip_kisesh_config(original, paths)
     app_config_plan = _app_config_plan(paths, legacy)
-    link_created = _ensure_install_link(paths)
+    runtime = _runtime_paths(paths)
+    transaction = deploy_runtime(runtime)
+    command_link = paths.home / ".local" / "bin" / "kisesh"
+    command_link_created = False
     bar_paths = tab_bar_paths(config, paths.target, paths.data)
     tab_bar_changed = False
     app_config_created = False
     legacy_state = LegacyUpgradeState()
     app_config_parent_existed = paths.app_config.parent.exists()
     try:
+        command_link_created = ensure_command_link(command_link, paths.launcher)
         desired = _validated_enabled_config(kitty, config, base)
         legacy_state = _prepare_legacy_upgrade(paths, legacy, config)
         tab_bar_changed = install_tab_bar(bar_paths)
@@ -665,9 +675,15 @@ def _enable(paths: InstallPaths) -> None:
         if tab_bar_changed:
             restore_tab_bar(bar_paths)
         _rollback_legacy_upgrade(paths, legacy, legacy_state)
-        if link_created and paths.target.is_symlink():
-            paths.target.unlink()
+        if command_link_created:
+            remove_command_link(command_link, paths.launcher)
+        rollback_runtime(transaction)
         raise
+
+    try:
+        finish_runtime(transaction)
+    except (OSError, RuntimeInstallError) as error:
+        print(f"warning: previous runtime remains: {error}", file=sys.stderr)
 
     legacy_link_removed = _finish_legacy_upgrade(
         paths,
@@ -727,13 +743,16 @@ def _remove_product_data(path: Path, base: Path) -> bool:
 
 
 def _uninstall(paths: InstallPaths, *, purge: bool) -> None:
-    """Disable integration, remove the code link, and optionally purge data."""
+    """Disable integration, remove managed launch paths, and optionally purge data."""
     _check_install_target(paths, removing=True)
     _disable(paths)
-    if _remove_install_link(paths):
-        print(f"removed code link: {paths.target}")
+    command_link = paths.home / ".local" / "bin" / "kisesh"
+    if remove_command_link(command_link, paths.launcher):
+        print(f"removed command link: {command_link}")
+    if remove_runtime(_runtime_paths(paths)):
+        print(f"removed runtime: {paths.target}")
     else:
-        print(f"code link already absent: {paths.target}")
+        print(f"runtime already absent: {paths.target}")
     if purge:
         data_base = paths.data.parent
         removed = [paths.data] if _remove_product_data(paths.data, data_base) else []
@@ -743,7 +762,7 @@ def _uninstall(paths: InstallPaths, *, purge: bool) -> None:
             print("session data already absent")
     else:
         print(f"sessions preserved: {paths.data}")
-        print("use ./install --purge only when you intentionally want to delete them")
+        print("use kisesh uninstall --purge only when you intentionally want to delete them")
     print("restart Kitty once to finish disabling KiSesh")
 
 
@@ -758,9 +777,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> InstallArguments:
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Execute one installer action and translate expected failures to status one."""
-    arguments = parse_arguments(argv)
+def run(arguments: InstallArguments) -> int:
+    """Execute one typed installer action and translate expected failures."""
     try:
         action = arguments.action()
         paths = install_paths(kitty_config=arguments.kitty_config)
@@ -771,13 +789,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("restart Kitty once to unload the KiSesh watcher and mappings")
         else:
             _uninstall(paths, purge=action == "purge")
-    except (InstallError, TabBarInstallError) as error:
+    except (InstallError, RuntimeInstallError, TabBarInstallError) as error:
         print(f"kisesh installer: {error}", file=sys.stderr)
         return 1
     except OSError as error:
         print(f"kisesh installer: {error}", file=sys.stderr)
         return 1
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Parse installer arguments and execute the selected reversible action."""
+    return run(parse_arguments(argv))
 
 
 if __name__ == "__main__":

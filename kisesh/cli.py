@@ -209,6 +209,33 @@ class Doctor:
     """Check storage, snapshots, context, and Kitty state."""
 
 
+@dataclass(frozen=True, slots=True)
+class InstallIntegration:
+    """Install and enable the packaged Kitty integration."""
+
+    kitty_config: Path | None = None
+    """Override the automatically detected kitty.conf path."""
+
+
+@dataclass(frozen=True, slots=True)
+class DisableIntegration:
+    """Disable Kitty integration while retaining the runtime and sessions."""
+
+    kitty_config: Path | None = None
+    """Override the automatically detected kitty.conf path."""
+
+
+@dataclass(frozen=True, slots=True)
+class UninstallIntegration:
+    """Remove Kitty integration and its runtime while retaining sessions."""
+
+    kitty_config: Path | None = None
+    """Override the automatically detected kitty.conf path."""
+
+    purge: bool = False
+    """Permanently delete saved session data as part of removal."""
+
+
 Command = (
     Annotated[Manager, tyro.conf.subcommand(name="manager")]
     | Annotated[ListSessions, tyro.conf.subcommand(name="list")]
@@ -237,6 +264,9 @@ Command = (
     ]
     | Annotated[AutosaveSession, tyro.conf.subcommand(name="autosave")]
     | Annotated[Doctor, tyro.conf.subcommand(name="doctor")]
+    | Annotated[InstallIntegration, tyro.conf.subcommand(name="install")]
+    | Annotated[DisableIntegration, tyro.conf.subcommand(name="disable")]
+    | Annotated[UninstallIntegration, tyro.conf.subcommand(name="uninstall")]
 )
 
 ReadCommand = ListSessions | ShowContext | PrintLastOutput | RestoreShell
@@ -245,6 +275,7 @@ MembershipCommand = (
 )
 LifecycleCommand = RenameSession | ArchiveSession | UnarchiveSession | RemoveSession
 MaintenanceCommand = AutosaveSession | Doctor
+IntegrationCommand = InstallIntegration | DisableIntegration | UninstallIntegration
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +319,9 @@ def _needs_kitty(command: Command) -> bool:
         ShowContext,
         PrintLastOutput,
         RestoreShell,
+        InstallIntegration,
+        DisableIntegration,
+        UninstallIntegration,
     )
     return not isinstance(command, offline_types)
 
@@ -467,9 +501,28 @@ def _run_maintenance(command: MaintenanceCommand, service: KiSeshService) -> int
     return int(any(finding.startswith("ERROR") for finding in findings))
 
 
+def _run_integration(command: IntegrationCommand) -> int:
+    """Translate public lifecycle commands into the reversible installer contract."""
+    from .installer import InstallArguments, run
+
+    if isinstance(command, InstallIntegration):
+        arguments = InstallArguments(enable=True, kitty_config=command.kitty_config)
+    elif isinstance(command, DisableIntegration):
+        arguments = InstallArguments(disable=True, kitty_config=command.kitty_config)
+    else:
+        arguments = InstallArguments(
+            uninstall=not command.purge,
+            purge=command.purge,
+            kitty_config=command.kitty_config,
+        )
+    return run(arguments)
+
+
 def _dispatch(config: CliConfig, service: KiSeshService) -> int:
     """Route one typed command to its cohesive operation family."""
     command = config.command
+    if isinstance(command, (InstallIntegration, DisableIntegration, UninstallIntegration)):
+        return _run_integration(command)
     if isinstance(command, Manager):
         return _run_manager(service)
     if isinstance(command, (ListSessions, ShowContext, PrintLastOutput, RestoreShell)):
@@ -496,6 +549,11 @@ def main(argv: list[str] | None = None) -> int:
     """Parse, dispatch, and translate expected operational failures to status one."""
     config = parse_arguments(argv)
     try:
+        if isinstance(
+            config.command,
+            (InstallIntegration, DisableIntegration, UninstallIntegration),
+        ):
+            return _run_integration(config.command)
         return _dispatch(config, _service(config))
     except (
         KittyError,

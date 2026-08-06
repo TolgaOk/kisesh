@@ -141,6 +141,17 @@ _pending_commands: dict[str, list[CommandPayload]] = {}
 _timer_lock = threading.Lock()
 
 
+def _runtime_root() -> Path:
+    """Resolve a direct Kitty import or packaged command to its stable runtime."""
+    configured = os.environ.get("KISESH_INSTALL_ROOT")
+    if configured:
+        return Path(configured).expanduser()
+    source = Path(__file__).absolute().parents[1]
+    if (source / "bin" / "kisesh").is_file():
+        return source
+    return Path("~/.local/lib/kisesh").expanduser()
+
+
 def _string_mapping(value: object) -> dict[str, str]:
     """Normalize a mapping or zero-argument mapping provider to strings."""
     if callable(value):
@@ -156,7 +167,7 @@ def _string_mapping(value: object) -> dict[str, str]:
 @cache
 def _legacy_variable_aliases() -> Mapping[str, str]:
     """Load previous user-variable names without requiring a package import at startup."""
-    project_root = str(Path(__file__).resolve().parents[1])
+    project_root = str(_runtime_root())
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     module = importlib.import_module("kisesh.legacy")
@@ -416,7 +427,7 @@ def _launch_autosave(
         encoded = json.dumps(payload, ensure_ascii=False)
     except (TypeError, ValueError):
         return None
-    project = Path(__file__).resolve().parents[1]
+    project = _runtime_root()
     launcher = project / "bin" / "kisesh"
     if not launcher.is_file():
         return None
@@ -734,7 +745,7 @@ def _command_arguments(value: object) -> tuple[str, ...]:
 
 def _refreshed_app_profiles() -> WatcherAppProfiles:
     """Load event-cached profiles even when Kitty imported this watcher by path."""
-    project_root = str(Path(__file__).resolve().parents[1])
+    project_root = str(_runtime_root())
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     module = importlib.import_module("kisesh.app_profiles")

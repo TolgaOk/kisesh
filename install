@@ -8,7 +8,7 @@ runtime_python="$project_dir/.venv/bin/python"
 runtime_cli="$project_dir/.venv/bin/kisesh"
 
 if [ -x "$runtime_cli" ] && "$runtime_python" -c 'import kisesh, tyro' 2>/dev/null; then
-    exec "$runtime_python" -m kisesh.installer "$@"
+    KISESH_CLI="$runtime_cli" exec "$runtime_python" -m kisesh.installer "$@"
 fi
 
 for python in \
@@ -25,7 +25,7 @@ do
         fi
         "$runtime_python" -m pip install --disable-pip-version-check --editable "$project_dir" \
             || exit 1
-        exec "$runtime_python" -m kisesh.installer "$@"
+        KISESH_CLI="$runtime_cli" exec "$runtime_python" -m kisesh.installer "$@"
     fi
 done
 

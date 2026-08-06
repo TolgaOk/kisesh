@@ -24,8 +24,9 @@ from .model import (
     SessionManifest,
     session_marker_name,
 )
+from .paths import runtime_root
 
-SESSION_FILTER_KITTEN = Path(__file__).resolve().parents[1] / "integration" / "session_filter.py"
+SESSION_FILTER_KITTEN = runtime_root() / "integration" / "session_filter.py"
 
 
 class KittyError(RuntimeError):

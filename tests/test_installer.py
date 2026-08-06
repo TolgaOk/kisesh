@@ -111,6 +111,20 @@ class InstallerTests(unittest.TestCase):
         self.config.parent.mkdir(parents=True, exist_ok=True)
         self.config.write_text(content, encoding="utf-8")
 
+    def assert_runtime(self) -> None:
+        """Assert the stable deployed layout and each packaged resource target."""
+        self.assertTrue(self.target.is_dir())
+        self.assertFalse(self.target.is_symlink())
+        self.assertEqual((self.target / "kisesh").resolve(), (PROJECT / "kisesh").resolve())
+        self.assertEqual(
+            (self.target / "integration").resolve(),
+            (PROJECT / "kisesh" / "integration").resolve(),
+        )
+        self.assertEqual(
+            (self.target / "bin" / "kisesh").resolve(),
+            (PROJECT / ".venv" / "bin" / "kisesh").resolve(),
+        )
+
     def test_launcher_is_executable_and_finds_python_with_a_gui_style_path(self) -> None:
         homebrew_bin = self.home / "homebrew" / "bin"
         homebrew_bin.mkdir(parents=True)
@@ -196,8 +210,7 @@ class InstallerTests(unittest.TestCase):
 
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertTrue(self.target.is_symlink())
-        self.assertEqual(self.target.resolve(), PROJECT.resolve())
+        self.assert_runtime()
         self.assertEqual(enabled, self.config.read_text(encoding="utf-8"))
         self.assertEqual(enabled.count(MANAGED_BEGIN), 1)
         self.assertEqual(enabled.count(MANAGED_END), 1)
@@ -253,7 +266,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(configured.count(INTEGRATION_INCLUDE), 1)
         self.assertNotIn(LEGACY_MANAGED_BEGIN, configured)
         self.assertNotIn(LEGACY_INTEGRATION_INCLUDE, configured)
-        self.assertTrue(self.target.is_symlink())
+        self.assert_runtime()
         self.assertFalse(self.legacy_target.exists())
         self.assertFalse(self.legacy_target.is_symlink())
         self.assertFalse(self.legacy_data.exists())
@@ -269,7 +282,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(self.tab_bar.is_symlink())
         self.assertEqual(
             self.tab_bar.resolve(),
-            (PROJECT / "integration" / "tab_bar.py").resolve(),
+            (PROJECT / "kisesh" / "integration" / "tab_bar.py").resolve(),
         )
         self.assertIn("(upgraded)", enabled.stdout)
 
@@ -308,7 +321,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(self.tab_bar.is_symlink())
         self.assertEqual(
             self.tab_bar.resolve(),
-            (PROJECT / "integration" / "tab_bar.py").resolve(),
+            (PROJECT / "kisesh" / "integration" / "tab_bar.py").resolve(),
         )
         self.assertFalse(self.tab_bar.with_suffix(".py.kisesh.bak").exists())
 
@@ -415,7 +428,7 @@ class InstallerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("allow_remote_control socket-only", config.read_text(encoding="utf-8"))
-        self.assertTrue(self.target.is_symlink())
+        self.assert_runtime()
         tab_bar = config.parent / "tab_bar.py"
         self.assertTrue(tab_bar.is_symlink())
         loader = (
@@ -455,7 +468,7 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn(MANAGED_BEGIN, disabled_config)
         self.assertNotIn(INTEGRATION_INCLUDE, disabled_config)
         self.assertIn("font_size 17", disabled_config)
-        self.assertTrue(self.target.is_symlink())
+        self.assert_runtime()
         self.assertTrue((self.data / "session.json").is_file())
         self.assertFalse(self.tab_bar.exists())
         self.assertFalse(self.tab_bar.is_symlink())
@@ -532,7 +545,7 @@ class InstallerTests(unittest.TestCase):
         result = self.run_installer("--uninstall")
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("refusing to remove existing install path", result.stderr)
+        self.assertIn("refusing to replace foreign runtime link", result.stderr)
         self.assertTrue(self.target.is_symlink())
         self.assertEqual(self.target.resolve(), foreign.resolve())
         self.assertEqual(self.config.read_text(encoding="utf-8"), original)

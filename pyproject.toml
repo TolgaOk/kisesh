@@ -15,7 +15,14 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = ""
-source-include = ["bin/**", "install", "integration/**", "justfile"]
+source-include = [
+  "bin/**",
+  "bootstrap.sh",
+  "install",
+  "integration/**",
+  "justfile",
+  "typings/**",
+]
 
 [dependency-groups]
 dev = [
@@ -65,6 +72,7 @@ max-statements = 60
 python_version = "3.11"
 strict = true
 files = ["kisesh", "tests"]
+mypy_path = "typings"
 
 [tool.coverage.run]
 branch = true

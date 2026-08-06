@@ -131,6 +131,18 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn(" undo", integration)
         self.assertNotIn(" park", integration)
 
+    def test_source_compatibility_configs_match_packaged_runtime_resources(self) -> None:
+        project = Path(__file__).parents[1]
+        packaged = project / "kisesh" / "integration"
+
+        for name in ("kisesh.conf", "quick-access-terminal.conf"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    (project / "integration" / name).read_bytes(),
+                    (packaged / name).read_bytes(),
+                )
+        self.assertTrue(os.access(packaged / "kisesh-panel", os.X_OK))
+
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_no_ui_close_kitten_loads_without_file_inside_kitty_runtime(self) -> None:
         project = Path(__file__).parents[1]

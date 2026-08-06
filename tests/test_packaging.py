@@ -80,6 +80,7 @@ class PackagingTests(unittest.TestCase):
             for relative in (
                 "bin/kisesh",
                 "bin/kisesh-panel",
+                "bootstrap.sh",
                 "install",
                 "integration/kisesh.conf",
                 "integration/safe_close.py",
@@ -95,6 +96,14 @@ class PackagingTests(unittest.TestCase):
                     f"kisesh-{__version__}.dist-info/entry_points.txt"
                 ).decode("utf-8")
             self.assertIn("kisesh/default_apps.toml", wheel_names)
+            for resource in (
+                "kisesh/integration/kisesh.conf",
+                "kisesh/integration/kisesh-panel",
+                "kisesh/integration/quick-access-terminal.conf",
+                "kisesh/integration/safe_close.py",
+                "kisesh/integration/tab_bar.py",
+            ):
+                self.assertIn(resource, wheel_names)
             self.assertFalse(any(name.startswith("tests/") for name in wheel_names))
             self.assertEqual(
                 entry_points,
@@ -140,6 +149,7 @@ class PackagingTests(unittest.TestCase):
             )
             self.assertEqual(invoked.returncode, 0, invoked.stderr)
             self.assertIn("usage: kisesh", invoked.stdout)
+            self.assertIn("install", invoked.stdout)
             imported = subprocess.run(
                 [sys.executable, "-c", "import kisesh; print(kisesh.__file__)"],
                 cwd=temporary,
@@ -154,6 +164,69 @@ class PackagingTests(unittest.TestCase):
                 Path(imported.stdout.strip()).resolve(),
                 (installed / "kisesh" / "__init__.py").resolve(),
             )
+
+            home = Path(temporary) / "home"
+            home.mkdir()
+            kitty = Path(temporary) / "kitty"
+            kitty.write_text(
+                f"#!{sys.executable}\n"
+                "import json, pathlib, sys\n"
+                "text = pathlib.Path(sys.argv[-1]).read_text(encoding='utf-8')\n"
+                "allow = 'no'\n"
+                "listen = 'none'\n"
+                "for raw in text.splitlines():\n"
+                "    fields = raw.strip().split(maxsplit=1)\n"
+                "    if len(fields) == 2 and fields[0] == 'allow_remote_control':\n"
+                "        allow = fields[1]\n"
+                "    if len(fields) == 2 and fields[0] == 'listen_on':\n"
+                "        listen = fields[1]\n"
+                "print(json.dumps({'bad': [], 'allow': allow, 'listen': listen}))\n",
+                encoding="utf-8",
+            )
+            kitty.chmod(0o755)
+            wheel_environment.update(
+                {
+                    "HOME": str(home),
+                    "XDG_CONFIG_HOME": str(home / "config"),
+                    "XDG_DATA_HOME": str(home / "data"),
+                    "KISESH_KITTY": str(kitty),
+                }
+            )
+            enabled = subprocess.run(
+                [str(installed / "bin" / "kisesh"), "install"],
+                cwd=temporary,
+                env=wheel_environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertEqual(enabled.returncode, 0, enabled.stderr)
+            runtime = home / ".local" / "lib" / "kisesh"
+            command_link = home / ".local" / "bin" / "kisesh"
+            kitty_config = home / "config" / "kitty" / "kitty.conf"
+            self.assertTrue(runtime.is_dir())
+            self.assertEqual((runtime / "kisesh").resolve(), (installed / "kisesh").resolve())
+            self.assertEqual(
+                (runtime / "integration").resolve(),
+                (installed / "kisesh" / "integration").resolve(),
+            )
+            self.assertEqual(command_link.resolve(), (installed / "bin" / "kisesh").resolve())
+            self.assertIn("# BEGIN kisesh", kitty_config.read_text(encoding="utf-8"))
+
+            uninstalled = subprocess.run(
+                [str(installed / "bin" / "kisesh"), "uninstall"],
+                cwd=temporary,
+                env=wheel_environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertEqual(uninstalled.returncode, 0, uninstalled.stderr)
+            self.assertFalse(runtime.exists())
+            self.assertFalse(command_link.exists())
+            self.assertNotIn("# BEGIN kisesh", kitty_config.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

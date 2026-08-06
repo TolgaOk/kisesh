@@ -6,6 +6,7 @@ import subprocess
 import unittest
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import cast
 from unittest import mock
 
@@ -450,7 +451,10 @@ class CloseGuardTests(unittest.TestCase):
             side_effect=OSError("cannot fork"),
         ):
             self.assertIsNone(_launch_close(request))
-        with mock.patch("kisesh.close_guard.Path.is_file", return_value=False):
+        with mock.patch(
+            "kisesh.close_guard.runtime_root",
+            return_value=Path("/definitely/missing/kisesh"),
+        ):
             self.assertIsNone(_launch_close(request))
 
         for failure in (OSError("lost child"), subprocess.SubprocessError("broken child")):

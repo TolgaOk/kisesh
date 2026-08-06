@@ -10,7 +10,7 @@ from pathlib import Path
 
 PROJECT = Path(__file__).parents[1]
 SOURCE_FILES = [
-    *sorted((PROJECT / "kisesh").glob("*.py")),
+    *sorted((PROJECT / "kisesh").rglob("*.py")),
     *sorted((PROJECT / "integration").glob("*.py")),
 ]
 

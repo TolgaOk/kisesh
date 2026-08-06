@@ -1,0 +1,3 @@
+"""Typed marker for Kitty's concrete Boss object."""
+
+class Boss: ...

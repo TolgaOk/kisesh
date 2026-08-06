@@ -4,6 +4,7 @@ import io
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -24,6 +25,7 @@ from kisesh.installer import (
     _app_config_plan,
     _backup_once,
     _check_install_target,
+    _cli_launcher,
     _disable,
     _editable_config,
     _enable,
@@ -66,6 +68,7 @@ class InstallerBoundaryTests(unittest.TestCase):
         return InstallPaths(
             home=self.home,
             source=source,
+            launcher=PROJECT / ".venv" / "bin" / "kisesh",
             target=self.home / ".local" / "lib" / "kisesh",
             kitty_config=self.home / ".config" / "kitty" / "kitty.conf",
             app_config=self.home / ".config" / "kisesh" / "apps.toml",
@@ -122,7 +125,13 @@ class InstallerBoundaryTests(unittest.TestCase):
     def test_source_and_target_checks_fail_closed_without_replacing_foreign_files(self) -> None:
         incomplete = self.root / "incomplete"
         incomplete.mkdir()
-        with self.assertRaisesRegex(InstallError, "source checkout is incomplete"):
+        with self.assertRaisesRegex(InstallError, "package is incomplete"):
+            _validate_source(self.paths(source=incomplete))
+
+        with (
+            mock.patch("kisesh.installer.validate_runtime_source"),
+            self.assertRaisesRegex(InstallError, "default_apps.toml"),
+        ):
             _validate_source(self.paths(source=incomplete))
 
         with mock.patch.object(Path, "resolve", side_effect=OSError("unreadable")):
@@ -132,6 +141,7 @@ class InstallerBoundaryTests(unittest.TestCase):
         in_place = InstallPaths(
             home=in_place.home,
             source=PROJECT,
+            launcher=in_place.launcher,
             target=PROJECT,
             kitty_config=in_place.kitty_config,
             app_config=in_place.app_config,
@@ -144,6 +154,38 @@ class InstallerBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(InstallError, "app config is not a file"):
             paths = self.paths()
             _app_config_plan(paths, _legacy_paths(paths))
+
+    def test_cli_launcher_resolves_each_install_style_and_rejects_missing_commands(self) -> None:
+        executable = self.root / "valid" / "kisesh"
+        executable.parent.mkdir()
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+
+        with mock.patch.dict("os.environ", {"KISESH_CLI": str(executable)}, clear=True):
+            self.assertEqual(_cli_launcher(self.root / "source"), executable)
+
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch.object(sys, "argv", [str(executable)]),
+        ):
+            self.assertEqual(_cli_launcher(self.root / "source"), executable)
+
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch.object(sys, "argv", ["kisesh"]),
+            mock.patch.object(shutil, "which", return_value=str(executable)),
+        ):
+            self.assertEqual(_cli_launcher(self.root / "source"), executable)
+
+        unavailable = self.root / "unavailable"
+        unavailable.write_text("not executable", encoding="utf-8")
+        with (
+            mock.patch.dict("os.environ", {"KISESH_CLI": str(unavailable)}, clear=True),
+            mock.patch.object(sys, "argv", ["test-runner"]),
+            mock.patch.object(sys, "executable", str(self.root / "missing-python")),
+            self.assertRaisesRegex(InstallError, "launcher was not found"),
+        ):
+            _cli_launcher(self.root / "missing-source")
 
     def test_previous_app_config_must_also_be_a_regular_file(self) -> None:
         paths = self.paths()
@@ -369,13 +411,56 @@ class InstallerBoundaryTests(unittest.TestCase):
                 mock.patch("kisesh.installer._validate_source"),
                 mock.patch("kisesh.installer._check_install_target"),
                 mock.patch("kisesh.installer._find_executable", return_value="/binary"),
-                mock.patch("kisesh.installer._ensure_install_link", return_value=False),
+                mock.patch("kisesh.installer.deploy_runtime") as deploy,
+                mock.patch("kisesh.installer.rollback_runtime"),
                 mock.patch("kisesh.installer._probe_config", side_effect=(valid, final)),
                 self.assertRaisesRegex(InstallError, message),
             ):
+                deploy.return_value = mock.MagicMock(changed=False)
                 _enable(paths)
         self.assertFalse(paths.kitty_config.exists())
         self.assertFalse(paths.target.exists())
+
+    def test_enable_failure_preserves_a_package_manager_owned_command(self) -> None:
+        paths = self.paths()
+        command = paths.home / ".local" / "bin" / "kisesh"
+        command.parent.mkdir(parents=True)
+        command.symlink_to(paths.launcher)
+        valid = ConfigProbe((), "socket-only", DEFAULT_LISTEN_ON)
+        invalid = ConfigProbe((), "no", DEFAULT_LISTEN_ON)
+
+        with (
+            mock.patch("kisesh.installer._validate_source"),
+            mock.patch("kisesh.installer._check_install_target"),
+            mock.patch("kisesh.installer._find_executable", return_value="/binary"),
+            mock.patch("kisesh.installer.deploy_runtime") as deploy,
+            mock.patch("kisesh.installer.rollback_runtime"),
+            mock.patch("kisesh.installer._probe_config", side_effect=(valid, invalid)),
+            self.assertRaisesRegex(InstallError, "remote control"),
+        ):
+            deploy.return_value = mock.MagicMock(changed=False)
+            _enable(paths)
+
+        self.assertTrue(command.is_symlink())
+        self.assertEqual(command.resolve(), paths.launcher.resolve())
+
+    def test_enable_reports_a_previous_runtime_that_cannot_be_cleaned_up(self) -> None:
+        paths = self.paths()
+        valid = ConfigProbe((), "socket-only", DEFAULT_LISTEN_ON)
+        errors = io.StringIO()
+        output = io.StringIO()
+
+        with (
+            mock.patch("kisesh.installer._find_executable", return_value="/binary"),
+            mock.patch("kisesh.installer._probe_config", side_effect=(valid, valid)),
+            mock.patch("kisesh.installer.finish_runtime", side_effect=OSError("busy")),
+            redirect_stdout(output),
+            redirect_stderr(errors),
+        ):
+            _enable(paths)
+
+        self.assertIn("previous runtime remains", errors.getvalue())
+        self.assertTrue(paths.target.is_dir())
 
     def test_enable_restores_the_previous_tab_bar_when_config_write_fails(self) -> None:
         paths = self.paths()

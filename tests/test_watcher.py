@@ -294,6 +294,17 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(environment["PATH"], "/fresh")
         self.assertEqual(environment["KITTY_LISTEN_ON"], "unix:/tmp/kitty")
 
+    def test_runtime_root_honors_the_direct_kitty_loader_override(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {"KISESH_INSTALL_ROOT": "~/configured-kisesh"},
+            clear=True,
+        ):
+            self.assertEqual(
+                watcher._runtime_root(),
+                Path("~/configured-kisesh").expanduser(),
+            )
+
     def test_new_pane_inherits_autosave_identity_from_stamped_sibling(self) -> None:
         """Associate an unstamped split with a stamped sibling immediately."""
         stamped = Window()

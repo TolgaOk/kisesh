@@ -8,11 +8,11 @@ import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 
 from .legacy import VARIABLE_ALIASES as LEGACY_VARIABLE_ALIASES
 from .model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SLUG_VAR
+from .paths import runtime_root
 
 
 class CloseGuardChild(Protocol):
@@ -171,7 +171,7 @@ def _release_session(session_id: str) -> None:
 
 def _launch_close(request: CloseRequest) -> subprocess.Popen[str] | None:
     """Launch the shell-free save-close operation without blocking Kitty."""
-    project = Path(__file__).resolve().parents[1]
+    project = runtime_root()
     launcher = project / "bin" / "kisesh"
     if not launcher.is_file():
         return None

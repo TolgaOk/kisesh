@@ -24,7 +24,9 @@ from kisesh.cli import (
     CopyTab,
     CreateSession,
     DetachTab,
+    DisableIntegration,
     Doctor,
+    InstallIntegration,
     ListSessions,
     Manager,
     OpenSession,
@@ -35,11 +37,13 @@ from kisesh.cli import (
     SaveSession,
     ShowContext,
     UnarchiveSession,
+    UninstallIntegration,
     _autosave_payload_from_stdin,
     _closing_capture,
     _dispatch,
     _needs_kitty,
     _normalized_events,
+    _run_integration,
     _run_lifecycle,
     _run_maintenance,
     _run_manager,
@@ -144,6 +148,7 @@ class CliTests(unittest.TestCase):
         )
         discard = parse_arguments(["open", "project", "--unowned-tabs", "discard"])
         promoted = parse_arguments(["close", "project", "--promote-os-window", "41"])
+        integration = parse_arguments(["install", "--kitty-config", "/tmp/kitty.conf"])
 
         self.assertIsInstance(before.command, AddTab)
         self.assertEqual(before.socket, "unix:/tmp/kitty")
@@ -161,6 +166,10 @@ class CliTests(unittest.TestCase):
             UnownedTabsAction.DISCARD,
         )
         self.assertEqual(cast(CloseSession, promoted.command).promote_os_window, 41)
+        self.assertEqual(
+            cast(InstallIntegration, integration.command).kitty_config,
+            Path("/tmp/kitty.conf"),
+        )
 
     def test_only_live_operations_construct_an_eager_kitty_client(self) -> None:
         """Keep stored-context reads offline unless a connection override is explicit."""
@@ -425,6 +434,7 @@ class CliTests(unittest.TestCase):
             (CreateSession("Project"), "_run_membership", 13),
             (ArchiveSession("project"), "_run_lifecycle", 14),
             (Doctor(), "_run_maintenance", 15),
+            (InstallIntegration(), "_run_integration", 16),
         )
         for command, function_name, result in cases:
             config = CliConfig(command)
@@ -438,8 +448,30 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(_dispatch(config, service), result)
             if isinstance(command, Manager):
                 runner.assert_called_once_with(service)
+            elif isinstance(command, InstallIntegration):
+                runner.assert_called_once_with(command)
             else:
                 runner.assert_called_once_with(command, service)
+
+    def test_integration_commands_map_to_reversible_typed_installer_actions(self) -> None:
+        """Keep install, disable, uninstall, and purge available from packaged wheels."""
+        config = Path("/tmp/kitty.conf")
+        cases = (
+            (InstallIntegration(config), {"enable": True}),
+            (DisableIntegration(config), {"disable": True}),
+            (UninstallIntegration(config), {"uninstall": True, "purge": False}),
+            (UninstallIntegration(config, purge=True), {"uninstall": False, "purge": True}),
+        )
+        for command, expected in cases:
+            with (
+                self.subTest(command=command),
+                mock.patch("kisesh.installer.run", return_value=19) as install,
+            ):
+                self.assertEqual(_run_integration(command), 19)
+            arguments = install.call_args.args[0]
+            self.assertEqual(arguments.kitty_config, config)
+            for field, value in expected.items():
+                self.assertEqual(getattr(arguments, field), value)
 
     def test_manager_uses_panel_dismissal_only_for_the_resident_surface(self) -> None:
         """Keep normal overlays self-contained while resident panels hide on dismissal."""
@@ -497,6 +529,16 @@ class CliTests(unittest.TestCase):
         ):
             self.assertEqual(main([]), 1)
         self.assertEqual(stderr.getvalue(), "kisesh: not live\n")
+
+        integration = CliConfig(InstallIntegration())
+        with (
+            mock.patch("kisesh.cli.parse_arguments", return_value=integration),
+            mock.patch("kisesh.cli._run_integration", return_value=8) as install,
+            mock.patch("kisesh.cli._service") as service_factory,
+        ):
+            self.assertEqual(main([]), 8)
+        install.assert_called_once_with(integration.command)
+        service_factory.assert_not_called()
 
 
 if __name__ == "__main__":

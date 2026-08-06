@@ -30,6 +30,7 @@ from .domain import ClosingPaneCapture, KittyOsWindowState, SessionContext
 from .filesystem import temporary_path
 from .kitty_client import KittyClient, KittyController, KittyError, LiveTab
 from .model import SessionManifest, slugify
+from .paths import runtime_root
 from .session_file import clean_tab_title, rename_snapshot_tab, sanitize_session, snapshot_summary
 from .store import SessionStore, StoredSession, StoreError
 
@@ -714,7 +715,7 @@ class KiSeshService:
         stored_snapshot = stored.snapshot_path.read_text(encoding="utf-8")
         snapshot = sanitize_session(stored_snapshot, stored.manifest)
         shell_restorer = (
-            str(Path(__file__).resolve().parents[1] / "bin" / "kisesh"),
+            str(runtime_root() / "bin" / "kisesh"),
             "--data-dir",
             str(self.store.root),
             "restore-shell",
