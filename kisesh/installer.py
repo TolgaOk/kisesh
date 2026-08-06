@@ -1,4 +1,4 @@
-"""Reversible, single-command installation for kitty-workbench."""
+"""Reversible, single-command installation for KiSesh."""
 
 from __future__ import annotations
 
@@ -17,17 +17,36 @@ import tyro
 
 from .app_profiles import AppProfileError, parse_app_profiles
 from .filesystem import atomic_write_text, temporary_path
+from .legacy import (
+    INTEGRATION_FILE as LEGACY_INTEGRATION_FILE,
+)
+from .legacy import (
+    INTEGRATION_INCLUDE as LEGACY_INTEGRATION_INCLUDE,
+)
+from .legacy import (
+    MANAGED_BEGIN as LEGACY_MANAGED_BEGIN,
+)
+from .legacy import (
+    MANAGED_END as LEGACY_MANAGED_END,
+)
+from .legacy import (
+    PRODUCT_DIRECTORY as LEGACY_PRODUCT_DIRECTORY,
+)
+from .legacy import (
+    TAB_BAR_BACKUP as LEGACY_TAB_BAR_BACKUP,
+)
 from .tab_bar_install import (
     TabBarInstallError,
+    TabBarPaths,
     install_tab_bar,
     restore_tab_bar,
     tab_bar_paths,
 )
 
-MANAGED_BEGIN = "# BEGIN kitty-workbench (managed by ./install)"
-MANAGED_END = "# END kitty-workbench (managed by ./install)"
-INTEGRATION_INCLUDE = "include ~/.local/lib/kitty-workbench/integration/kitty-workbench.conf"
-DEFAULT_LISTEN_ON = "unix:/tmp/kitty-workbench-main"
+MANAGED_BEGIN = "# BEGIN kisesh (managed by ./install)"
+MANAGED_END = "# END kisesh (managed by ./install)"
+INTEGRATION_INCLUDE = "include ~/.local/lib/kisesh/integration/kisesh.conf"
+DEFAULT_LISTEN_ON = "unix:/tmp/kisesh-main"
 MANAGED_KEYS = ("alt+s", "alt+shift+s", "cmd+w")
 
 InstallAction = Literal["enable", "disable", "uninstall", "purge"]
@@ -50,6 +69,31 @@ class InstallPaths:
 
 
 @dataclass(frozen=True, slots=True)
+class LegacyInstallPaths:
+    """Locations owned by the product identity that preceded KiSesh."""
+
+    target: Path
+    app_config: Path
+    data: Path
+
+
+@dataclass(frozen=True, slots=True)
+class AppConfigPlan:
+    """Validated app-profile content and its optional previous source."""
+
+    content: str | None
+    legacy_source: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyUpgradeState:
+    """Reversible filesystem changes made while enabling a renamed checkout."""
+
+    data_moved: bool = False
+    restored_tab_bar: TabBarPaths | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ConfigProbe:
     """Relevant values returned after Kitty parses a candidate config."""
 
@@ -63,7 +107,7 @@ class InstallArguments:
     """Typed installer flags with a validated mutually exclusive action."""
 
     enable: bool = False
-    """Install and enable Workbench, which is also the default action."""
+    """Install and enable KiSesh, which is also the default action."""
 
     disable: bool = False
     """Remove Kitty integration while retaining code and sessions."""
@@ -72,7 +116,7 @@ class InstallArguments:
     """Disable integration and remove the code link while retaining sessions."""
 
     purge: bool = False
-    """Uninstall and permanently delete Workbench session data."""
+    """Uninstall and permanently delete KiSesh session data."""
 
     kitty_config: Path | None = None
     """Override the automatically detected kitty.conf path."""
@@ -113,7 +157,7 @@ def _kitty_config(home: Path, override: Path | None = None) -> Path:
     """Resolve kitty.conf through explicit, environment, XDG, then platform paths."""
     if override is not None:
         return _expand_home(override, home)
-    if configured := os.environ.get("KITTY_WORKBENCH_KITTY_CONFIG"):
+    if configured := os.environ.get("KISESH_KITTY_CONFIG"):
         return _expand_home(configured, home)
     if configured := os.environ.get("KITTY_CONFIG_DIRECTORY"):
         return _expand_home(configured, home) / "kitty.conf"
@@ -135,28 +179,48 @@ def install_paths(*, kitty_config: Path | None = None) -> InstallPaths:
     return InstallPaths(
         home=home,
         source=source,
-        target=home / ".local" / "lib" / "kitty-workbench",
+        target=home / ".local" / "lib" / "kisesh",
         kitty_config=_kitty_config(home, kitty_config),
-        app_config=config_base / "kitty-workbench" / "apps.toml",
-        data=data_base / "kitty-workbench",
+        app_config=config_base / "kisesh" / "apps.toml",
+        data=data_base / "kisesh",
+    )
+
+
+def _legacy_paths(paths: InstallPaths) -> LegacyInstallPaths:
+    """Resolve previous product locations beside their KiSesh replacements."""
+    return LegacyInstallPaths(
+        target=paths.target.with_name(LEGACY_PRODUCT_DIRECTORY),
+        app_config=paths.app_config.parent.with_name(LEGACY_PRODUCT_DIRECTORY) / "apps.toml",
+        data=paths.data.with_name(LEGACY_PRODUCT_DIRECTORY),
+    )
+
+
+def _legacy_tab_bar_paths(config: Path, legacy: LegacyInstallPaths) -> TabBarPaths:
+    """Resolve previous tab-bar recovery files without changing their names."""
+    recovery = legacy.data / ".integration"
+    return TabBarPaths(
+        live=config.parent / "tab_bar.py",
+        source=legacy.target / "integration" / "tab_bar.py",
+        state=recovery / "tab-bar.json",
+        backup=recovery / LEGACY_TAB_BAR_BACKUP,
     )
 
 
 def _validate_source(paths: InstallPaths) -> None:
     """Require all launchers, integration config, and watcher source files."""
     required = (
-        paths.source / "bin" / "kitty-workbench",
-        paths.source / "integration" / "kitty-workbench.conf",
+        paths.source / "bin" / "kisesh",
+        paths.source / "integration" / "kisesh.conf",
         paths.source / "integration" / "reload_tab_bar.py",
         paths.source / "integration" / "safe_close.py",
         paths.source / "integration" / "session_filter.py",
         paths.source / "integration" / "tab_bar.py",
-        paths.source / "kitty_workbench" / "close_guard.py",
-        paths.source / "kitty_workbench" / "app_profiles.py",
-        paths.source / "kitty_workbench" / "default_apps.toml",
-        paths.source / "kitty_workbench" / "session_bar.py",
-        paths.source / "kitty_workbench" / "session_filter.py",
-        paths.source / "kitty_workbench" / "watcher.py",
+        paths.source / "kisesh" / "close_guard.py",
+        paths.source / "kisesh" / "app_profiles.py",
+        paths.source / "kisesh" / "default_apps.toml",
+        paths.source / "kisesh" / "session_bar.py",
+        paths.source / "kisesh" / "session_filter.py",
+        paths.source / "kisesh" / "watcher.py",
     )
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -201,7 +265,7 @@ def _ensure_install_link(paths: InstallPaths) -> bool:
 
 
 def _remove_install_link(paths: InstallPaths) -> bool:
-    """Remove only a verified Workbench source symlink."""
+    """Remove only a verified KiSesh source symlink."""
     _check_install_target(paths, removing=True)
     if paths.target.is_symlink():
         paths.target.unlink()
@@ -209,35 +273,47 @@ def _remove_install_link(paths: InstallPaths) -> bool:
     return False
 
 
-def _strip_workbench_config(text: str, paths: InstallPaths) -> tuple[str, bool]:
-    """Remove complete managed blocks and the old one-line manual include."""
+def _strip_kisesh_config(text: str, paths: InstallPaths) -> tuple[str, bool]:
+    """Remove current or previous managed blocks and manual includes."""
     lines = text.splitlines(keepends=True)
     output: list[str] = []
-    inside = False
+    active_end: str | None = None
     changed = False
-    absolute_include = f"include {paths.target / 'integration' / 'kitty-workbench.conf'}"
-    manual_includes = {INTEGRATION_INCLUDE, absolute_include}
+    legacy = _legacy_paths(paths)
+    absolute_include = f"include {paths.target / 'integration' / 'kisesh.conf'}"
+    legacy_absolute_include = f"include {legacy.target / 'integration' / LEGACY_INTEGRATION_FILE}"
+    manual_includes = {
+        INTEGRATION_INCLUDE,
+        absolute_include,
+        LEGACY_INTEGRATION_INCLUDE,
+        legacy_absolute_include,
+    }
+    managed_blocks = {
+        MANAGED_BEGIN: MANAGED_END,
+        LEGACY_MANAGED_BEGIN: LEGACY_MANAGED_END,
+    }
+    managed_ends = frozenset(managed_blocks.values())
     for line in lines:
         marker = line.rstrip("\r\n")
-        if marker == MANAGED_BEGIN:
-            if inside:
-                raise InstallError("kitty.conf contains a nested kitty-workbench managed block")
-            inside = True
+        if marker in managed_blocks:
+            if active_end is not None:
+                raise InstallError("kitty.conf contains a nested KiSesh managed block")
+            active_end = managed_blocks[marker]
             changed = True
             continue
-        if marker == MANAGED_END:
-            if not inside:
-                raise InstallError("kitty.conf contains an unmatched kitty-workbench end marker")
-            inside = False
+        if marker in managed_ends:
+            if marker != active_end:
+                raise InstallError("kitty.conf contains an unmatched KiSesh end marker")
+            active_end = None
             continue
-        if inside:
+        if active_end is not None:
             continue
         if line.strip() in manual_includes:
             changed = True
             continue
         output.append(line)
-    if inside:
-        raise InstallError("kitty.conf contains an unterminated kitty-workbench managed block")
+    if active_end is not None:
+        raise InstallError("kitty.conf contains an unterminated KiSesh managed block")
     stripped = "".join(output).rstrip()
     return (f"{stripped}\n" if stripped else ""), changed
 
@@ -280,36 +356,95 @@ def _read_config(path: Path) -> str:
 def _atomic_write(path: Path, content: str) -> None:
     """Replace configuration atomically while retaining its current mode."""
     mode = path.stat().st_mode & 0o7777 if path.exists() else 0o600
-    atomic_write_text(path, content, mode=mode, prefix=".kitty-workbench-config.")
+    atomic_write_text(path, content, mode=mode, prefix=".kisesh-config.")
 
 
-def _app_config_candidate(paths: InstallPaths) -> str | None:
-    """Validate existing app profiles or return bundled content for first install."""
-    bundled = paths.source / "kitty_workbench" / "default_apps.toml"
+def _app_config_plan(paths: InstallPaths, legacy: LegacyInstallPaths) -> AppConfigPlan:
+    """Validate current, previous, or bundled profiles in precedence order."""
+    bundled = paths.source / "kisesh" / "default_apps.toml"
     try:
-        content = bundled.read_text(encoding="utf-8")
-        parse_app_profiles(content, source=str(bundled))
-        if paths.app_config.exists():
+        bundled_content = bundled.read_text(encoding="utf-8")
+        parse_app_profiles(bundled_content, source=str(bundled))
+        if paths.app_config.exists() or paths.app_config.is_symlink():
             if not paths.app_config.is_file():
                 raise InstallError(f"app config is not a file: {paths.app_config}")
             existing = paths.app_config.read_text(encoding="utf-8")
             parse_app_profiles(existing, source=str(paths.app_config))
-            return None
+            return AppConfigPlan(None)
+        if legacy.app_config.exists() or legacy.app_config.is_symlink():
+            if not legacy.app_config.is_file():
+                raise InstallError(f"previous app config is not a file: {legacy.app_config}")
+            previous = legacy.app_config.read_text(encoding="utf-8")
+            parse_app_profiles(previous, source=str(legacy.app_config))
+            return AppConfigPlan(previous, legacy.app_config)
     except (AppProfileError, OSError) as error:
         raise InstallError(f"cannot use app config: {error}") from error
-    return content
+    return AppConfigPlan(bundled_content)
+
+
+def _prepare_legacy_upgrade(
+    paths: InstallPaths,
+    legacy: LegacyInstallPaths,
+    config: Path,
+) -> LegacyUpgradeState:
+    """Restore previous integration state and move session data as one step."""
+    legacy_data_exists = legacy.data.exists() or legacy.data.is_symlink()
+    current_data_exists = paths.data.exists() or paths.data.is_symlink()
+    if legacy_data_exists and current_data_exists:
+        raise InstallError(
+            "both KiSesh and previous session-data directories exist; move one aside and retry"
+        )
+    legacy_bar = _legacy_tab_bar_paths(config, legacy)
+    restored_bar = restore_tab_bar(legacy_bar)
+    try:
+        if legacy_data_exists:
+            paths.data.parent.mkdir(parents=True, exist_ok=True)
+            legacy.data.rename(paths.data)
+    except OSError:
+        if restored_bar:
+            install_tab_bar(legacy_bar)
+        raise
+    return LegacyUpgradeState(
+        data_moved=legacy_data_exists,
+        restored_tab_bar=legacy_bar if restored_bar else None,
+    )
+
+
+def _rollback_legacy_upgrade(
+    paths: InstallPaths,
+    legacy: LegacyInstallPaths,
+    state: LegacyUpgradeState,
+) -> None:
+    """Return previous data and tab-bar state after a failed KiSesh enable."""
+    if state.data_moved:
+        paths.data.rename(legacy.data)
+    if state.restored_tab_bar is not None:
+        install_tab_bar(state.restored_tab_bar)
+
+
+def _remove_legacy_link(paths: InstallPaths, legacy: LegacyInstallPaths) -> bool:
+    """Remove only a previous code symlink that resolves to this checkout."""
+    if not legacy.target.is_symlink():
+        return False
+    raw_target = Path(os.readlink(legacy.target))
+    linked_path = raw_target if raw_target.is_absolute() else legacy.target.parent / raw_target
+    previous_source = paths.source.with_name(LEGACY_PRODUCT_DIRECTORY)
+    if linked_path != previous_source and not _same_target(legacy.target, paths.source):
+        return False
+    legacy.target.unlink()
+    return True
 
 
 def _write_app_config(path: Path, content: str) -> None:
     """Install a private first-use app config without replacing user choices."""
-    atomic_write_text(path, content, mode=0o600, prefix=".kitty-workbench-apps.")
+    atomic_write_text(path, content, mode=0o600, prefix=".kisesh-apps.")
 
 
 def _backup_once(path: Path) -> Path | None:
     """Create one metadata-preserving config backup without overwriting it."""
     if not path.exists():
         return None
-    backup = path.with_name(f"{path.name}.kitty-workbench.bak")
+    backup = path.with_name(f"{path.name}.kisesh.bak")
     if not backup.exists():
         try:
             shutil.copy2(path, backup)
@@ -348,7 +483,7 @@ def _probe_config(kitty: str, config_path: Path, content: str) -> ConfigProbe:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     with temporary_path(
         config_path.parent,
-        prefix=".kitty-workbench-validate.",
+        prefix=".kisesh-validate.",
         suffix=".conf",
     ) as temporary:
         temporary.write_text(content, encoding="utf-8")
@@ -403,7 +538,7 @@ def _socket_missing(value: str) -> bool:
 
 
 def _mapping_conflicts(base: str) -> tuple[str, ...]:
-    """Find existing key mappings shadowed by the Workbench include."""
+    """Find existing key mappings shadowed by the KiSesh include."""
     keys: set[str] = set()
     managed = set(MANAGED_KEYS)
     for line in base.splitlines():
@@ -413,40 +548,105 @@ def _mapping_conflicts(base: str) -> tuple[str, ...]:
     return tuple(sorted(keys))
 
 
+def _validated_enabled_config(kitty: str, config: Path, base: str) -> str:
+    """Build and validate the complete enabled config before any durable edit."""
+    base_probe = _probe_config(kitty, config, base)
+    if base_probe.bad_lines:
+        raise _format_bad_config("Existing kitty.conf", base_probe)
+    block = _managed_block(
+        add_remote_control=_remote_control_disabled(base_probe.allow_remote_control),
+        add_socket=_socket_missing(base_probe.listen_on),
+    )
+    desired = _enabled_config(base, block)
+    final_probe = _probe_config(kitty, config, desired)
+    if final_probe.bad_lines:
+        raise _format_bad_config("KiSesh-enabled kitty.conf", final_probe)
+    if _remote_control_disabled(final_probe.allow_remote_control):
+        raise InstallError("Kitty remote control is still disabled; no changes were made")
+    if _socket_missing(final_probe.listen_on):
+        raise InstallError("Kitty has no persistent listen_on socket; no changes were made")
+    return desired
+
+
+def _finish_legacy_upgrade(
+    paths: InstallPaths,
+    legacy: LegacyInstallPaths,
+    app_config_plan: AppConfigPlan,
+    app_config_created: bool,
+) -> bool:
+    """Retire verified previous paths after the KiSesh transaction succeeds."""
+    if app_config_created and app_config_plan.legacy_source is not None:
+        try:
+            app_config_plan.legacy_source.unlink()
+        except OSError as error:
+            print(f"warning: previous app config remains: {error}", file=sys.stderr)
+        else:
+            with suppress(OSError):
+                app_config_plan.legacy_source.parent.rmdir()
+    try:
+        return _remove_legacy_link(paths, legacy)
+    except OSError as error:
+        print(f"warning: previous code link remains: {error}", file=sys.stderr)
+        return False
+
+
+def _report_enabled(
+    paths: InstallPaths,
+    legacy: LegacyInstallPaths,
+    app_config_plan: AppConfigPlan,
+    app_config_created: bool,
+    legacy_state: LegacyUpgradeState,
+    legacy_link_removed: bool,
+    bar_paths: TabBarPaths,
+    base: str,
+) -> None:
+    """Report the installed resources, preserved state, and mapping conflicts."""
+    print(f"code:    {paths.target} -> {paths.source}")
+    if legacy_link_removed:
+        print(f"removed previous code link: {legacy.target}")
+    state = (
+        "upgraded"
+        if app_config_plan.legacy_source is not None
+        else "created"
+        if app_config_created
+        else "preserved"
+    )
+    print(f"apps:    {paths.app_config} ({state})")
+    if legacy_state.data_moved:
+        print(f"sessions: {paths.data} (upgraded)")
+    print(f"tab bar: {bar_paths.live} -> {bar_paths.source}")
+    if conflicts := _mapping_conflicts(base):
+        print(
+            "warning: KiSesh takes precedence over existing mappings for " + ", ".join(conflicts),
+            file=sys.stderr,
+        )
+    print("restart Kitty once, then press Alt+S and n to create your first session")
+
+
 def _enable(paths: InstallPaths) -> None:
-    """Validate, install, configure, and report an enabled Workbench checkout."""
+    """Validate, install, configure, and report an enabled KiSesh checkout."""
     _validate_source(paths)
     _check_install_target(paths)
     kitty = _find_executable(
-        "KITTY_WORKBENCH_KITTY", "kitty", "/Applications/kitty.app/Contents/MacOS/kitty"
+        "KISESH_KITTY", "kitty", "/Applications/kitty.app/Contents/MacOS/kitty"
     )
     config = _editable_config(paths.kitty_config)
+    legacy = _legacy_paths(paths)
     original = _read_config(config)
-    base, _ = _strip_workbench_config(original, paths)
-    app_config_candidate = _app_config_candidate(paths)
+    base, _ = _strip_kisesh_config(original, paths)
+    app_config_plan = _app_config_plan(paths, legacy)
     link_created = _ensure_install_link(paths)
     bar_paths = tab_bar_paths(config, paths.target, paths.data)
     tab_bar_changed = False
     app_config_created = False
+    legacy_state = LegacyUpgradeState()
     app_config_parent_existed = paths.app_config.parent.exists()
     try:
-        base_probe = _probe_config(kitty, config, base)
-        if base_probe.bad_lines:
-            raise _format_bad_config("Existing kitty.conf", base_probe)
-        add_remote = _remote_control_disabled(base_probe.allow_remote_control)
-        add_socket = _socket_missing(base_probe.listen_on)
-        block = _managed_block(add_remote_control=add_remote, add_socket=add_socket)
-        desired = _enabled_config(base, block)
-        final_probe = _probe_config(kitty, config, desired)
-        if final_probe.bad_lines:
-            raise _format_bad_config("Workbench-enabled kitty.conf", final_probe)
-        if _remote_control_disabled(final_probe.allow_remote_control):
-            raise InstallError("Kitty remote control is still disabled; no changes were made")
-        if _socket_missing(final_probe.listen_on):
-            raise InstallError("Kitty has no persistent listen_on socket; no changes were made")
+        desired = _validated_enabled_config(kitty, config, base)
+        legacy_state = _prepare_legacy_upgrade(paths, legacy, config)
         tab_bar_changed = install_tab_bar(bar_paths)
-        if app_config_candidate is not None:
-            _write_app_config(paths.app_config, app_config_candidate)
+        if app_config_plan.content is not None:
+            _write_app_config(paths.app_config, app_config_plan.content)
             app_config_created = True
         if desired != original:
             backup = _backup_once(config)
@@ -464,28 +664,34 @@ def _enable(paths: InstallPaths) -> None:
                     paths.app_config.parent.rmdir()
         if tab_bar_changed:
             restore_tab_bar(bar_paths)
+        _rollback_legacy_upgrade(paths, legacy, legacy_state)
         if link_created and paths.target.is_symlink():
             paths.target.unlink()
         raise
 
-    print(f"code:    {paths.target} -> {paths.source}")
-    state = "created" if app_config_created else "preserved"
-    print(f"apps:    {paths.app_config} ({state})")
-    print(f"tab bar: {bar_paths.live} -> {bar_paths.source}")
-    if conflicts := _mapping_conflicts(base):
-        print(
-            "warning: Workbench takes precedence over existing mappings for "
-            + ", ".join(conflicts),
-            file=sys.stderr,
-        )
-    print("restart Kitty once, then press Alt+S and n to create your first session")
+    legacy_link_removed = _finish_legacy_upgrade(
+        paths,
+        legacy,
+        app_config_plan,
+        app_config_created,
+    )
+    _report_enabled(
+        paths,
+        legacy,
+        app_config_plan,
+        app_config_created,
+        legacy_state,
+        legacy_link_removed,
+        bar_paths,
+        base,
+    )
 
 
 def _disable(paths: InstallPaths) -> bool:
-    """Remove only Workbench configuration while preserving code and sessions."""
+    """Remove only KiSesh configuration while preserving code and sessions."""
     config = _editable_config(paths.kitty_config)
     original = _read_config(config)
-    desired, changed = _strip_workbench_config(original, paths)
+    desired, changed = _strip_kisesh_config(original, paths)
     bar_paths = tab_bar_paths(config, paths.target, paths.data)
     bar_restored = restore_tab_bar(bar_paths)
     try:
@@ -507,9 +713,9 @@ def _disable(paths: InstallPaths) -> bool:
 
 
 def _remove_product_data(path: Path, base: Path) -> bool:
-    """Delete only a verified kitty-workbench data directory during explicit purge."""
-    expected = base / "kitty-workbench"
-    if path != expected or path.name != "kitty-workbench":
+    """Delete only a verified KiSesh data directory during explicit purge."""
+    expected = base / "kisesh"
+    if path != expected or path.name != "kisesh":
         raise InstallError(f"refusing unsafe purge path: {path}")
     if path.is_symlink():
         path.unlink()
@@ -538,7 +744,7 @@ def _uninstall(paths: InstallPaths, *, purge: bool) -> None:
     else:
         print(f"sessions preserved: {paths.data}")
         print("use ./install --purge only when you intentionally want to delete them")
-    print("restart Kitty once to finish disabling Workbench")
+    print("restart Kitty once to finish disabling KiSesh")
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> InstallArguments:
@@ -546,7 +752,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> InstallArguments:
     return tyro.cli(
         InstallArguments,
         prog="./install",
-        description="Install, disable, or remove kitty-workbench safely.",
+        description="Install, disable, or remove KiSesh safely.",
         args=list(argv) if argv is not None else None,
         config=(tyro.conf.HelptextFromCommentsOff,),
     )
@@ -562,14 +768,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             _enable(paths)
         elif action == "disable":
             _disable(paths)
-            print("restart Kitty once to unload the Workbench watcher and mappings")
+            print("restart Kitty once to unload the KiSesh watcher and mappings")
         else:
             _uninstall(paths, purge=action == "purge")
     except (InstallError, TabBarInstallError) as error:
-        print(f"kitty-workbench installer: {error}", file=sys.stderr)
+        print(f"kisesh installer: {error}", file=sys.stderr)
         return 1
     except OSError as error:
-        print(f"kitty-workbench installer: {error}", file=sys.stderr)
+        print(f"kisesh installer: {error}", file=sys.stderr)
         return 1
     return 0
 

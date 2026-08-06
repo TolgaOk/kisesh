@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from kitty_workbench import app_profiles, session_bar
-from kitty_workbench.app_profiles import (
+from kisesh import app_profiles, session_bar
+from kisesh.app_profiles import (
     DEFAULT_APP_PROFILES,
     AppProfileError,
     app_config_path,
@@ -17,14 +17,14 @@ from kitty_workbench.app_profiles import (
     parse_app_profiles,
     refresh_app_profiles,
 )
-from kitty_workbench.context import build_context
-from kitty_workbench.domain import KittyWindow
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.model import SessionManifest
-from kitty_workbench.preview import build_session_preview
-from kitty_workbench.service import SessionView
-from kitty_workbench.session_bar import SessionBarTab, render_tab_label
-from kitty_workbench.store import StoredSession
+from kisesh.context import build_context
+from kisesh.domain import KittyWindow
+from kisesh.kitty_client import LiveTab
+from kisesh.model import SessionManifest
+from kisesh.preview import build_session_preview
+from kisesh.service import SessionView
+from kisesh.session_bar import SessionBarTab, render_tab_label
+from kisesh.store import StoredSession
 
 PROJECT = Path(__file__).parents[1]
 
@@ -182,7 +182,7 @@ class AppProfileBehaviorTests(unittest.TestCase):
         """Reload an edited standard config only at an explicit event boundary."""
         with tempfile.TemporaryDirectory() as temporary:
             config_home = Path(temporary)
-            config = config_home / "kitty-workbench" / "apps.toml"
+            config = config_home / "kisesh" / "apps.toml"
             config.parent.mkdir()
             config.write_text(CUSTOM_CONFIG, encoding="utf-8")
             with (
@@ -228,7 +228,7 @@ class AppProfileBoundaryTests(unittest.TestCase):
             with mock.patch.dict(
                 "os.environ",
                 {
-                    "KITTY_WORKBENCH_APP_CONFIG": str(environment),
+                    "KISESH_APP_CONFIG": str(environment),
                     "XDG_CONFIG_HOME": str(xdg),
                 },
                 clear=True,
@@ -246,7 +246,7 @@ class AppProfileBoundaryTests(unittest.TestCase):
             ):
                 self.assertEqual(
                     app_config_path(),
-                    xdg / "kitty-workbench" / "apps.toml",
+                    xdg / "kisesh" / "apps.toml",
                 )
                 self.assertEqual(load_app_profiles(), DEFAULT_APP_PROFILES)
 
@@ -256,7 +256,7 @@ class AppProfileBoundaryTests(unittest.TestCase):
             ):
                 self.assertEqual(
                     app_config_path(),
-                    root / "home-config" / "kitty-workbench" / "apps.toml",
+                    root / "home-config" / "kisesh" / "apps.toml",
                 )
 
             with self.assertRaisesRegex(AppProfileError, "does not exist"):

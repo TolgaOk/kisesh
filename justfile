@@ -1,6 +1,6 @@
 set export
 
-UV_CACHE_DIR := env_var_or_default("UV_CACHE_DIR", "/tmp/kitty-workbench-uv-cache")
+UV_CACHE_DIR := env_var_or_default("UV_CACHE_DIR", "/tmp/kisesh-uv-cache")
 
 default: check
 
@@ -18,7 +18,7 @@ typecheck:
     uv run mypy
 
 live-close:
-    KITTY_WORKBENCH_LIVE_TESTS=1 uv run python -m unittest tests.test_live_kitty_close -v
+    KISESH_LIVE_TESTS=1 uv run python -m unittest tests.test_live_kitty_close -v
 
 test:
     uv run python -m unittest discover -s tests -v

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from kitty_workbench.panel import (
+from kisesh.panel import (
     PanelError,
     _find_kitten,
     _run_panel_command,
@@ -22,12 +22,12 @@ class PanelTests(unittest.TestCase):
 
         with patch.dict(
             "os.environ",
-            {"KITTY_WORKBENCH_PANEL_CONFIG": "/workbench/panel.conf"},
+            {"KISESH_PANEL_CONFIG": "/kisesh/panel.conf"},
             clear=False,
         ):
             hide_quick_access_panel(
                 executable="/kitten",
-                instance_group="workbench-preview",
+                instance_group="kisesh-preview",
                 runner=runner,
             )
 
@@ -37,8 +37,8 @@ class PanelTests(unittest.TestCase):
                 [
                     "/kitten",
                     "quick-access-terminal",
-                    "--instance-group=workbench-preview",
-                    "--config=/workbench/panel.conf",
+                    "--instance-group=kisesh-preview",
+                    "--config=/kisesh/panel.conf",
                 ]
             ],
         )
@@ -116,13 +116,13 @@ class PanelTests(unittest.TestCase):
     def test_panel_mode_is_explicit_not_inferred_from_an_os_window(self) -> None:
         with patch.dict(
             "os.environ",
-            {"KITTY_WORKBENCH_CALLER": "panel"},
+            {"KISESH_CALLER": "panel"},
             clear=True,
         ):
             self.assertTrue(is_panel_process())
         with patch.dict(
             "os.environ",
-            {"KITTY_WORKBENCH_CALLER": "manager"},
+            {"KISESH_CALLER": "manager"},
             clear=True,
         ):
             self.assertFalse(is_panel_process())

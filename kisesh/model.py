@@ -1,4 +1,4 @@
-"""Validated domain models for persisted Workbench sessions."""
+"""Validated domain models for persisted KiSesh sessions."""
 
 from __future__ import annotations
 
@@ -13,20 +13,20 @@ from typing import Literal, cast
 from .domain import JsonObject
 
 SCHEMA_VERSION = 1
-SESSION_ID_VAR = "kitty_workbench_session"
-SESSION_SLUG_VAR = "kitty_workbench_slug"
-SESSION_NAME_VAR = "kitty_workbench_name"
-SESSION_SCOPE_VAR = "kitty_workbench_scope"
-CAPTURE_VAR = "kitty_workbench_capture"
-AGENT_VAR = "kitty_workbench_agent"
-APP_VAR = "kitty_workbench_app"
-WORKBENCH_UI_VAR = "kitty_workbench_ui"
+SESSION_ID_VAR = "kisesh_session"
+SESSION_SLUG_VAR = "kisesh_slug"
+SESSION_NAME_VAR = "kisesh_name"
+SESSION_SCOPE_VAR = "kisesh_scope"
+CAPTURE_VAR = "kisesh_capture"
+AGENT_VAR = "kisesh_agent"
+APP_VAR = "kisesh_app"
+KISESH_UI_VAR = "kisesh_ui"
 
 SessionStatus = Literal["active", "archived"]
 
 
 def utc_now() -> str:
-    """Return the current UTC time in the persisted Workbench format."""
+    """Return the current UTC time in the persisted KiSesh format."""
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 

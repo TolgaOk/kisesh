@@ -49,7 +49,7 @@ def _run_panel_command(
 
 def is_panel_process() -> bool:
     """Report whether the current manager was launched by the panel helper."""
-    return os.environ.get("KITTY_WORKBENCH_CALLER") == "panel"
+    return os.environ.get("KISESH_CALLER") == "panel"
 
 
 def hide_quick_access_panel(
@@ -59,7 +59,7 @@ def hide_quick_access_panel(
     runner: PanelRunner = _run_panel_command,
 ) -> None:
     """Toggle the named running quick-access instance into its hidden state."""
-    group = instance_group or os.environ.get("KITTY_WORKBENCH_PANEL_GROUP")
+    group = instance_group or os.environ.get("KISESH_PANEL_GROUP")
     if not group:
         raise PanelError("quick-access panel instance group is unavailable")
     command = [
@@ -67,7 +67,7 @@ def hide_quick_access_panel(
         "quick-access-terminal",
         f"--instance-group={group}",
     ]
-    config = os.environ.get("KITTY_WORKBENCH_PANEL_CONFIG")
+    config = os.environ.get("KISESH_PANEL_CONFIG")
     if config:
         command.append(f"--config={config}")
     try:

@@ -5,11 +5,11 @@
 set -u
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-panel_config=${KITTY_WORKBENCH_PANEL_CONFIG:-"$project_dir/integration/quick-access-terminal.conf"}
-panel_group=${KITTY_WORKBENCH_PANEL_GROUP:-kitty-workbench}
-panel_socket_override=${KITTY_WORKBENCH_PANEL_SOCKET:-}
-panel_socket_prefix=/tmp/kitty-workbench-panel
-target_socket=${KITTY_WORKBENCH_TARGET_SOCKET:-${KITTY_LISTEN_ON:-}}
+panel_config=${KISESH_PANEL_CONFIG:-"$project_dir/integration/quick-access-terminal.conf"}
+panel_group=${KISESH_PANEL_GROUP:-kisesh}
+panel_socket_override=${KISESH_PANEL_SOCKET:-}
+panel_socket_prefix=/tmp/kisesh-panel
+target_socket=${KISESH_TARGET_SOCKET:-${KITTY_LISTEN_ON:-}}
 prewarm=no
 
 if [ "${1:-}" = "--prewarm" ]; then
@@ -21,17 +21,17 @@ if [ "$#" -eq 0 ]; then
 fi
 
 if [ -z "$target_socket" ]; then
-    printf '%s\n' 'kitty-workbench: the main Kitty control socket is unavailable' >&2
+    printf '%s\n' 'kisesh: the main Kitty control socket is unavailable' >&2
     exit 1
 fi
 case "$target_socket" in
     fd:*)
-        printf '%s\n' 'kitty-workbench: the popup needs a persistent unix Kitty socket' >&2
+        printf '%s\n' 'kisesh: the popup needs a persistent unix Kitty socket' >&2
         exit 1
         ;;
 esac
 
-kitten_executable=${KITTY_WORKBENCH_KITTEN:-}
+kitten_executable=${KISESH_KITTEN:-}
 if [ -z "$kitten_executable" ]; then
     for candidate in \
         /Applications/kitty.app/Contents/MacOS/kitten \
@@ -44,7 +44,7 @@ if [ -z "$kitten_executable" ]; then
     done
 fi
 if [ -z "$kitten_executable" ]; then
-    printf '%s\n' 'kitty-workbench: kitten was not found' >&2
+    printf '%s\n' 'kisesh: kitten was not found' >&2
     exit 1
 fi
 
@@ -54,24 +54,24 @@ if [ "$prewarm" = yes ]; then
         --config="$panel_config" \
         --override=start_as_hidden=yes \
         /usr/bin/env \
-        KITTY_WORKBENCH_CALLER=panel \
-        KITTY_WORKBENCH_PANEL_CONFIG="$panel_config" \
-        KITTY_WORKBENCH_PANEL_GROUP="$panel_group" \
-        KITTY_WORKBENCH_PANEL_SOCKET="${panel_socket_override:-unix:$panel_socket_prefix}" \
-        KITTY_WORKBENCH_TARGET_SOCKET="$target_socket" \
-        "$project_dir/bin/kitty-workbench" "$@"
+        KISESH_CALLER=panel \
+        KISESH_PANEL_CONFIG="$panel_config" \
+        KISESH_PANEL_GROUP="$panel_group" \
+        KISESH_PANEL_SOCKET="${panel_socket_override:-unix:$panel_socket_prefix}" \
+        KISESH_TARGET_SOCKET="$target_socket" \
+        "$project_dir/bin/kisesh" "$@"
 else
     "$kitten_executable" quick-access-terminal \
         --instance-group="$panel_group" \
         --config="$panel_config" \
         --override=start_as_hidden=no \
         /usr/bin/env \
-        KITTY_WORKBENCH_CALLER=panel \
-        KITTY_WORKBENCH_PANEL_CONFIG="$panel_config" \
-        KITTY_WORKBENCH_PANEL_GROUP="$panel_group" \
-        KITTY_WORKBENCH_PANEL_SOCKET="${panel_socket_override:-unix:$panel_socket_prefix}" \
-        KITTY_WORKBENCH_TARGET_SOCKET="$target_socket" \
-        "$project_dir/bin/kitty-workbench" "$@"
+        KISESH_CALLER=panel \
+        KISESH_PANEL_CONFIG="$panel_config" \
+        KISESH_PANEL_GROUP="$panel_group" \
+        KISESH_PANEL_SOCKET="${panel_socket_override:-unix:$panel_socket_prefix}" \
+        KISESH_TARGET_SOCKET="$target_socket" \
+        "$project_dir/bin/kisesh" "$@"
 fi
 status=$?
 if [ "$status" -ne 0 ]; then
@@ -92,5 +92,5 @@ fi
 "$kitten_executable" @ \
     --to "$panel_socket" \
     send-key \
-    --match 'env:KITTY_WORKBENCH_CALLER=panel' \
+    --match 'env:KISESH_CALLER=panel' \
     ctrl+g >/dev/null 2>&1 || :

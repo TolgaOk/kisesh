@@ -1,4 +1,4 @@
-"""Render Workbench identity inside Kitty's native custom tab bar."""
+"""Render KiSesh identity inside Kitty's native custom tab bar."""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ from .app_profiles import current_app_profiles
 SESSION_ICON = ""
 ELLIPSIS = "…"
 TAB_START_CAP = ""
-SESSION_ID_VAR = "kitty_workbench_session"
-SESSION_SLUG_VAR = "kitty_workbench_slug"
-SESSION_NAME_VAR = "kitty_workbench_name"
-AGENT_VAR = "kitty_workbench_agent"
-APP_VAR = "kitty_workbench_app"
+SESSION_ID_VAR = "kisesh_session"
+SESSION_SLUG_VAR = "kisesh_slug"
+SESSION_NAME_VAR = "kisesh_name"
+AGENT_VAR = "kisesh_agent"
+APP_VAR = "kisesh_app"
 MIN_SPLIT_SEGMENT_CELLS = 6
 
 
@@ -90,7 +90,7 @@ class _SegmentExtraData:
 
 @dataclass(frozen=True, slots=True)
 class _ResolvedTabs:
-    """Workbench metadata resolved for the current and previous native tabs."""
+    """KiSesh metadata resolved for the current and previous native tabs."""
 
     current: SessionBarTab | None
     previous: SessionBarTab | None
@@ -414,7 +414,7 @@ def _rounded_draw_data(draw_data: object) -> object | None:
 
 
 def _resolved_tabs(datum: _TabDatum, neighbors: _ExtraData) -> _ResolvedTabs:
-    """Resolve cached Workbench metadata while tolerating disappearing native tabs."""
+    """Resolve cached KiSesh metadata while tolerating disappearing native tabs."""
     try:
         boss = _kitty_boss()
         current = _bar_tab(datum, boss)

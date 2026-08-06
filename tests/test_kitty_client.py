@@ -3,13 +3,13 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from kitty_workbench.domain import KittyOsWindowState, KittyWindow
-from kitty_workbench.kitty_client import KittyClient, LiveTab
-from kitty_workbench.model import (
+from kisesh.domain import KittyOsWindowState, KittyWindow
+from kisesh.kitty_client import KittyClient, LiveTab
+from kisesh.model import (
+    KISESH_UI_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SLUG_VAR,
-    WORKBENCH_UI_VAR,
     SessionManifest,
 )
 from tests.fakes import RecordingCommandRunner
@@ -92,7 +92,7 @@ class KittyClientTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "KITTY_WORKBENCH_TARGET_SOCKET": "unix:/tmp/main-kitty.sock",
+                "KISESH_TARGET_SOCKET": "unix:/tmp/main-kitty.sock",
                 "KITTY_LISTEN_ON": "unix:/tmp/popup-kitty.sock",
             },
             clear=False,
@@ -117,7 +117,7 @@ class KittyClientTests(unittest.TestCase):
                             {
                                 "id": 3,
                                 "session_name": "/tmp/demo.kitty-session",
-                                "user_vars": {"kitty_workbench_session": "session-id"},
+                                "user_vars": {"kisesh_session": "session-id"},
                                 "cwd": "/old",
                                 "foreground_processes": [{"cwd": "/new"}],
                             }
@@ -188,7 +188,7 @@ class KittyClientTests(unittest.TestCase):
                                 "id": 13,
                                 "is_active": True,
                                 "cwd": "/manager",
-                                "user_vars": {WORKBENCH_UI_VAR: "yes"},
+                                "user_vars": {KISESH_UI_VAR: "yes"},
                             },
                         ],
                     }

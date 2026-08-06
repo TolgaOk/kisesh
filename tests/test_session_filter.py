@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass, field
 
-from kitty_workbench.session_filter import set_session_filter
+from kisesh.session_filter import set_session_filter
 
 
 @dataclass(slots=True)
@@ -34,9 +34,9 @@ class SessionFilterTests(unittest.TestCase):
         options = Options("all", 22.5, "custom-runtime-theme")
         managers = [Manager(), Manager()]
 
-        set_session_filter("var:kitty_workbench_session=session-id", Boss(managers), options)
+        set_session_filter("var:kisesh_session=session-id", Boss(managers), options)
 
-        self.assertEqual(options.tab_bar_filter, "var:kitty_workbench_session=session-id")
+        self.assertEqual(options.tab_bar_filter, "var:kisesh_session=session-id")
         self.assertEqual(options.font_size, 22.5)
         self.assertEqual(options.theme, "custom-runtime-theme")
         self.assertEqual([manager.events for manager in managers], [["dirty", "update"]] * 2)

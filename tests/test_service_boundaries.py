@@ -5,18 +5,18 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from kitty_workbench.domain import SessionContext
-from kitty_workbench.kitty_client import KittyError, LiveTab
-from kitty_workbench.service import (
+from kisesh.domain import SessionContext
+from kisesh.kitty_client import KittyError, LiveTab
+from kisesh.service import (
+    KiSeshError,
+    KiSeshService,
     UnownedTabsAction,
     UnownedTabsDecision,
-    WorkbenchError,
-    WorkbenchService,
     _capture_pane_texts,
     _environment_window_id,
 )
-from kitty_workbench.session_file import sanitize_session, snapshot_summary
-from kitty_workbench.store import SessionStore, StoredSession, StoreError
+from kisesh.session_file import sanitize_session, snapshot_summary
+from kisesh.store import SessionStore, StoredSession, StoreError
 from tests.fakes import FakeKitty
 
 
@@ -26,7 +26,7 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.store = SessionStore(self.root / "data")
         self.kitty = FakeKitty()
-        self.service = WorkbenchService(self.store, self.kitty)
+        self.service = KiSeshService(self.store, self.kitty)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -59,7 +59,7 @@ class ServiceBoundaryTests(unittest.TestCase):
             constructions += 1
             return self.kitty
 
-        service = WorkbenchService(self.store, kitty_factory=factory)
+        service = KiSeshService(self.store, kitty_factory=factory)
         views = service.views()
         self.assertEqual(constructions, 1)
         self.assertTrue(views[0].live)
@@ -74,16 +74,16 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.assertIsNone(service.kitty)
 
     def test_create_rejects_blank_names(self) -> None:
-        with self.assertRaisesRegex(WorkbenchError, "name cannot be empty"):
+        with self.assertRaisesRegex(KiSeshError, "name cannot be empty"):
             self.service.create_from_active("   ")
 
     def test_unowned_creation_validates_names_decisions_and_current_window_state(self) -> None:
-        with self.assertRaisesRegex(WorkbenchError, "name cannot be empty"):
+        with self.assertRaisesRegex(KiSeshError, "name cannot be empty"):
             self.service.create_from_unowned(
                 "   ",
                 UnownedTabsDecision(UnownedTabsAction.ATTACH),
             )
-        with self.assertRaisesRegex(WorkbenchError, "only save-separately accepts"):
+        with self.assertRaisesRegex(KiSeshError, "only save-separately accepts"):
             self.service.create_from_unowned(
                 "New",
                 UnownedTabsDecision(UnownedTabsAction.ATTACH, "Unexpected"),
@@ -91,7 +91,7 @@ class ServiceBoundaryTests(unittest.TestCase):
 
         owned = self.store.create("Existing", "/tmp")
         self.kitty.stamp_tab(self.kitty.tab, owned.manifest)
-        with self.assertRaisesRegex(WorkbenchError, "no unowned tabs"):
+        with self.assertRaisesRegex(KiSeshError, "no unowned tabs"):
             self.service.create_from_unowned(
                 "New",
                 UnownedTabsDecision(UnownedTabsAction.DISCARD),
@@ -177,9 +177,9 @@ class ServiceBoundaryTests(unittest.TestCase):
             mock.patch.object(
                 self.service,
                 "_open_inactive_snapshot",
-                side_effect=WorkbenchError("fresh shell failed"),
+                side_effect=KiSeshError("fresh shell failed"),
             ),
-            self.assertRaisesRegex(WorkbenchError, "fresh shell failed"),
+            self.assertRaisesRegex(KiSeshError, "fresh shell failed"),
         ):
             self.service.create_from_unowned(
                 "Failed Fresh Start",
@@ -196,9 +196,9 @@ class ServiceBoundaryTests(unittest.TestCase):
             mock.patch.object(
                 self.service,
                 "_open_inactive_snapshot",
-                side_effect=WorkbenchError("fresh shell failed"),
+                side_effect=KiSeshError("fresh shell failed"),
             ),
-            self.assertRaisesRegex(WorkbenchError, "fresh shell failed"),
+            self.assertRaisesRegex(KiSeshError, "fresh shell failed"),
         ):
             self.service.create_from_unowned(
                 "Failed Target",
@@ -228,11 +228,11 @@ class ServiceBoundaryTests(unittest.TestCase):
             stored = self.store.get(identifier)
             self.kitty.stamp_tab(fresh_shell, stored.manifest)
             self.kitty.extra_tabs.append(fresh_shell)
-            raise WorkbenchError(f"activation failed after {decision.action}")
+            raise KiSeshError(f"activation failed after {decision.action}")
 
         with (
             mock.patch.object(self.service, "open", side_effect=fail_after_open),
-            self.assertRaisesRegex(WorkbenchError, "activation failed"),
+            self.assertRaisesRegex(KiSeshError, "activation failed"),
         ):
             self.service.create_from_unowned(
                 "Still Recoverable",
@@ -250,12 +250,12 @@ class ServiceBoundaryTests(unittest.TestCase):
                 root = self.root / ("socket" if failure is not None else "trash")
                 store = SessionStore(root)
                 kitty = FakeKitty()
-                service = WorkbenchService(store, kitty)
+                service = KiSeshService(store, kitty)
                 patches = [
                     mock.patch.object(
                         service,
                         "open",
-                        side_effect=WorkbenchError("open failed"),
+                        side_effect=KiSeshError("open failed"),
                     )
                 ]
                 if failure is not None:
@@ -273,7 +273,7 @@ class ServiceBoundaryTests(unittest.TestCase):
                 with (
                     patches[0],
                     patches[1],
-                    self.assertRaisesRegex(WorkbenchError, "open failed"),
+                    self.assertRaisesRegex(KiSeshError, "open failed"),
                 ):
                     service.create_from_unowned(
                         "Retained Blank",
@@ -335,13 +335,13 @@ class ServiceBoundaryTests(unittest.TestCase):
 
     def test_add_tab_rejects_archived_and_foreign_membership_and_is_idempotent(self) -> None:
         archived = self.store.archive(self.store.create("Archived", "/tmp").manifest.id)
-        with self.assertRaisesRegex(WorkbenchError, "unarchive"):
+        with self.assertRaisesRegex(KiSeshError, "unarchive"):
             self.service.add_current_tab(archived.manifest.id)
 
         first = self.store.create("First", "/tmp")
         second = self.store.create("Second", "/tmp")
         self.kitty.stamp_tab(self.kitty.tab, first.manifest)
-        with self.assertRaisesRegex(WorkbenchError, "another session"):
+        with self.assertRaisesRegex(KiSeshError, "another session"):
             self.service.add_current_tab(second.manifest.id)
 
         saved = self.service.add_current_tab(first.manifest.id)
@@ -371,23 +371,23 @@ class ServiceBoundaryTests(unittest.TestCase):
         def failed_rollback() -> None:
             raise KittyError("socket gone")
 
-        WorkbenchService._rollback_membership(failed_rollback)
+        KiSeshService._rollback_membership(failed_rollback)
 
     def test_detach_rejects_a_tab_owned_by_another_session(self) -> None:
         target = self.store.create("Target", "/tmp")
         other = self.store.create("Other", "/tmp")
         self.kitty.stamp_tab(self.kitty.tab, other.manifest)
-        with self.assertRaisesRegex(WorkbenchError, "does not belong"):
+        with self.assertRaisesRegex(KiSeshError, "does not belong"):
             self.service.detach_current_tab(target.manifest.id)
 
     def test_copy_rejects_archived_and_same_session_but_supports_an_empty_target(self) -> None:
         archived = self.store.archive(self.store.create("Archived", "/tmp").manifest.id)
-        with self.assertRaisesRegex(WorkbenchError, "unarchive"):
+        with self.assertRaisesRegex(KiSeshError, "unarchive"):
             self.service.copy_current_tab(archived.manifest.id)
 
         target = self.store.create("Target", "/tmp")
         self.kitty.stamp_tab(self.kitty.tab, target.manifest)
-        with self.assertRaisesRegex(WorkbenchError, "already belongs"):
+        with self.assertRaisesRegex(KiSeshError, "already belongs"):
             self.service.copy_current_tab(target.manifest.id)
 
         self.kitty.clear_tab_session(self.kitty.tab)
@@ -396,7 +396,7 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.assertTrue(copied.snapshot_path.is_file())
 
     def test_current_session_save_current_and_not_live_failures_are_explicit(self) -> None:
-        with self.assertRaisesRegex(WorkbenchError, "does not belong"):
+        with self.assertRaisesRegex(KiSeshError, "does not belong"):
             self.service.current_session()
 
         stored = self.service.create_from_active("Current")
@@ -405,7 +405,7 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.assertIsNotNone(self.service.context(stored.manifest.id))
 
         self.kitty.include_tab = False
-        with self.assertRaisesRegex(WorkbenchError, "session is not live"):
+        with self.assertRaisesRegex(KiSeshError, "session is not live"):
             self.service.save(stored.manifest.id)
 
     def test_open_focuses_live_sessions_unarchives_saved_sessions_and_rejects_missing_snapshots(
@@ -418,7 +418,7 @@ class ServiceBoundaryTests(unittest.TestCase):
 
         self.kitty.clear_tab_session(self.kitty.tab)
         missing = self.store.create("Missing", "/tmp")
-        with self.assertRaisesRegex(WorkbenchError, "has no snapshot"):
+        with self.assertRaisesRegex(KiSeshError, "has no snapshot"):
             self.service.open(missing.manifest.id)
 
         archived = self.store.archive(self.store.create("Archived", "/tmp").manifest.id)
@@ -520,7 +520,7 @@ class ServiceBoundaryTests(unittest.TestCase):
                 1,
                 "Stale",
                 "splits",
-                [{"id": 13, "user_vars": {"kitty_workbench_session": "missing"}}],
+                [{"id": 13, "user_vars": {"kisesh_session": "missing"}}],
                 True,
             ),
             LiveTab(
@@ -623,7 +623,7 @@ class ServiceBoundaryTests(unittest.TestCase):
         target = self.store.create("Empty Restore", "/tmp/target")
         self.snapshot(target.manifest.id, "Empty Restore")
 
-        with self.assertRaisesRegex(WorkbenchError, "did not create any live tabs"):
+        with self.assertRaisesRegex(KiSeshError, "did not create any live tabs"):
             self.service.open(
                 target.manifest.id,
                 UnownedTabsDecision(UnownedTabsAction.ATTACH),
@@ -656,7 +656,7 @@ class ServiceBoundaryTests(unittest.TestCase):
         self.assertEqual(archived.manifest.status, "archived")
 
         active = self.store.create("Active", "/tmp")
-        with self.assertRaisesRegex(WorkbenchError, "not archived"):
+        with self.assertRaisesRegex(KiSeshError, "not archived"):
             self.service.unarchive(active.manifest.id)
 
     def test_doctor_reports_store_kitty_snapshot_and_context_failures(self) -> None:
@@ -700,10 +700,10 @@ class ServiceBoundaryTests(unittest.TestCase):
     def test_environment_window_id_requires_a_confirmed_overlay_and_valid_integer(self) -> None:
         scenarios: tuple[tuple[dict[str, str], int | None], ...] = (
             ({}, None),
-            ({"KITTY_WORKBENCH_CALLER": "shell", "KITTY_WINDOW_ID": "9"}, None),
-            ({"KITTY_WORKBENCH_CALLER": "overlay"}, None),
-            ({"KITTY_WORKBENCH_CALLER": "manager", "KITTY_WINDOW_ID": "9"}, 9),
-            ({"KITTY_WORKBENCH_CALLER": "overlay", "KITTY_WINDOW_ID": "bad"}, None),
+            ({"KISESH_CALLER": "shell", "KITTY_WINDOW_ID": "9"}, None),
+            ({"KISESH_CALLER": "overlay"}, None),
+            ({"KISESH_CALLER": "manager", "KITTY_WINDOW_ID": "9"}, 9),
+            ({"KISESH_CALLER": "overlay", "KITTY_WINDOW_ID": "bad"}, None),
         )
         for environment, expected in scenarios:
             with (

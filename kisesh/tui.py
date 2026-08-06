@@ -1,4 +1,4 @@
-"""Theme-aware, Vim-keyed terminal interface for Workbench sessions."""
+"""Theme-aware, Vim-keyed terminal interface for KiSesh sessions."""
 
 from __future__ import annotations
 
@@ -267,7 +267,7 @@ ListEntry = SessionEntry | TextEntry | PreviewEntry
 
 
 class SessionManager:
-    """Render and control the Vim-keyed Workbench session manager."""
+    """Render and control the Vim-keyed KiSesh session manager."""
 
     def __init__(
         self,
@@ -350,13 +350,13 @@ class SessionManager:
                 screen,
                 0,
                 0,
-                "kitty-workbench needs at least 48x8 cells",
+                "KiSesh needs at least 48x8 cells",
                 self.palette.warning,
             )
             screen.refresh()
             return
 
-        title = " kitty workbench · sessions "
+        title = " KiSesh · sessions "
         _safe_addstr(screen, 0, 2, title, self.palette.accent | curses.A_BOLD)
         _safe_hline(screen, 1, 1, width - 2, self.palette.muted)
 

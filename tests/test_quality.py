@@ -10,9 +10,8 @@ from pathlib import Path
 
 PROJECT = Path(__file__).parents[1]
 SOURCE_FILES = [
-    *sorted((PROJECT / "kitty_workbench").glob("*.py")),
+    *sorted((PROJECT / "kisesh").glob("*.py")),
     *sorted((PROJECT / "integration").glob("*.py")),
-    PROJECT / "workbench.py",
 ]
 
 
@@ -81,17 +80,18 @@ class QualityContractTests(unittest.TestCase):
         self.assertNotIn("\ntypes:", recipes)
 
     def test_obsolete_lifecycle_terms_are_absent_from_the_product(self) -> None:
+        legacy_module = PROJECT / "kisesh" / "legacy.py"
         roots = (
-            PROJECT / "kitty_workbench",
+            PROJECT / "kisesh",
             PROJECT / "integration",
             PROJECT / "bin",
         )
-        files = [PROJECT / "README.md", PROJECT / "install", PROJECT / "workbench.py"]
+        files = [PROJECT / "README.md", PROJECT / "install"]
         for root in roots:
             files.extend(
                 path
                 for path in root.rglob("*")
-                if path.is_file() and "__pycache__" not in path.parts
+                if path.is_file() and path != legacy_module and "__pycache__" not in path.parts
             )
 
         obsolete = ("park", "undo", "migrate", "migration", "adopt")
@@ -100,6 +100,23 @@ class QualityContractTests(unittest.TestCase):
             for term in obsolete:
                 with self.subTest(path=path, term=term):
                     self.assertNotIn(term, text)
+
+    def test_previous_product_identifiers_are_isolated_to_one_module(self) -> None:
+        legacy_module = PROJECT / "kisesh" / "legacy.py"
+        old_names = ("kitty-workbench", "kitty_workbench", "KITTY_WORKBENCH")
+        production_files = [
+            *sorted((PROJECT / "kisesh").glob("*.py")),
+            *sorted((PROJECT / "integration").glob("*.py")),
+            *sorted((PROJECT / "bin").glob("*")),
+            PROJECT / "install",
+        ]
+        for path in production_files:
+            if path == legacy_module:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for old_name in old_names:
+                with self.subTest(path=path, old_name=old_name):
+                    self.assertNotIn(old_name, text)
 
 
 if __name__ == "__main__":

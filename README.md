@@ -1,10 +1,10 @@
-# kitty-workbench
+# KiSesh
 
 Kitty-native, recoverable sessions without a terminal multiplexer.
 
 `experimental` · `Kitty 0.47.2+` · `tested 0.48.2` · `macOS` · `Vim keys`
 
-A session can contain many Kitty tabs and panes. Workbench saves their layout,
+A session can contain many Kitty tabs and panes. KiSesh saves their layout,
 working directories, bounded terminal context, and safe foreground-app restore
 instructions while Kitty continues to own every PTY directly.
 
@@ -23,10 +23,12 @@ the overlay; it never creates a split or a manager pane. The installer validates
 the complete Kitty config before changing it and keeps one backup beside
 `kitty.conf`. It also restores any previous custom tab bar on disable.
 
-The installer creates `~/.config/kitty-workbench/apps.toml` once and never
+The installer creates `~/.config/kisesh/apps.toml` once and never
 overwrites it. It maps executable globs to restore behavior, exact arguments,
 labels, icons, and agent identity. Icons require a Nerd Font—or another font
 containing the configured glyphs; replace them with plain text if needed.
+Running `./install` over the earlier project identity carries forward saved
+sessions and profile choices while replacing its managed Kitty integration.
 
 ```sh
 ./install --disable    # keep code and sessions
@@ -72,7 +74,7 @@ next live session in that Kitty window. Repeated presses cannot close through
 the confirmation into the next session.
 
 Archive (`e`) moves an inactive session to the lower list. Remove (`D`) sends
-one to recoverable Workbench trash.
+one to recoverable KiSesh trash.
 
 ## Keys
 

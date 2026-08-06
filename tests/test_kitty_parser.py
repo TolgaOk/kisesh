@@ -7,9 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kitty_workbench.context import restore_session
-from kitty_workbench.model import SessionManifest
-from kitty_workbench.session_file import sanitize_session
+from kisesh.context import restore_session
+from kisesh.model import SessionManifest
+from kisesh.session_file import sanitize_session
 
 PARSE_SESSION_PROGRAM = (
     "import json,sys; "
@@ -37,8 +37,8 @@ import json
 from kitty.search_query_parser import search
 
 query = (
-    "var:kitty_workbench_session=target "
-    "or not var:kitty_workbench_scope=1"
+    "var:kisesh_session=target "
+    "or not var:kisesh_scope=1"
 )
 universal = {"target", "same-window-other", "other-os-window"}
 
@@ -47,8 +47,8 @@ def get_matches(
     value,
     candidates,
     matches={
-        "kitty_workbench_session=target": {"target"},
-        "kitty_workbench_scope=1": {"target", "same-window-other"},
+        "kisesh_session=target": {"target"},
+        "kisesh_scope=1": {"target", "same-window-other"},
     },
 ):
     assert location == "var"
@@ -69,7 +69,7 @@ print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_safe_multi_tab_snapshot_is_accepted_by_installed_kitty(self) -> None:
-        """Exercise Kitty's real parser, not a workbench imitation of it."""
+        """Exercise Kitty's real parser, not a kisesh imitation of it."""
 
         raw = (
             "new_os_window\n"
@@ -123,13 +123,13 @@ print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
             "new_tab Shell\n"
             "layout stack\n"
             'set_layout_state {"pairs":{"one":1,"two":2}}\n'
-            "launch 'kitty-unserialize-data={\"id\":1}' --var=kitty_workbench_scope=4\n"
+            "launch 'kitty-unserialize-data={\"id\":1}' --var=kisesh_scope=4\n"
             "launch 'kitty-unserialize-data={\"id\":2}' "
-            "--var=kitty_workbench_ui=yes --title=Workbench\n"
-            "new_tab Workbench\n"
+            "--var=kisesh_ui=yes --title=KiSesh\n"
+            "new_tab KiSesh\n"
             "layout splits\n"
             "launch 'kitty-unserialize-data={\"id\":3}' "
-            "--var=kitty_workbench_ui=yes --title=Workbench\n",
+            "--var=kisesh_ui=yes --title=KiSesh\n",
             manifest,
         )
 
@@ -149,14 +149,14 @@ print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
                 timeout=15,
             )
 
-        self.assertNotIn("kitty_workbench_ui", safe)
-        self.assertNotIn("kitty_workbench_scope", safe)
+        self.assertNotIn("kisesh_ui", safe)
+        self.assertNotIn("kisesh_scope", safe)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {"os_windows": 1, "tabs": 1, "panes": [1]})
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_opt_in_integration_is_accepted_by_installed_kitty(self) -> None:
-        integration = Path(__file__).parents[1] / "integration" / "kitty-workbench.conf"
+        integration = Path(__file__).parents[1] / "integration" / "kisesh.conf"
         program = (
             "import json,sys; "
             "from kitty.config import load_config; "
@@ -177,7 +177,7 @@ print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
     def test_manager_shortcut_resolves_to_open_or_close_from_real_focus_state(self) -> None:
         """Exercise Kitty's conditional-key resolver, not only config parsing."""
 
-        integration = Path(__file__).parents[1] / "integration" / "kitty-workbench.conf"
+        integration = Path(__file__).parents[1] / "integration" / "kisesh.conf"
         program = """
 import json
 import sys
@@ -188,23 +188,23 @@ options = load_config(sys.argv[1])
 candidates = next(
     definitions
     for definitions in options.keyboard_modes[""].keymap.values()
-    if any("kitty-workbench manager" in definition.definition for definition in definitions)
+    if any("kisesh manager" in definition.definition for definition in definitions)
 )
 
 class FocusScenario(Mappings):
-    def __init__(self, workbench_has_focus):
+    def __init__(self, kisesh_has_focus):
         self.window = object()
-        self.workbench_has_focus = workbench_has_focus
+        self.kisesh_has_focus = kisesh_has_focus
 
     def get_active_window(self):
         return self.window
 
     def match_windows(self, expression):
-        assert expression == "var:kitty_workbench_ui"
-        return iter((self.window,)) if self.workbench_has_focus else iter(())
+        assert expression == "var:kisesh_ui"
+        return iter((self.window,)) if self.kisesh_has_focus else iter(())
 
 resolved = {}
-for label, focused in (("source", False), ("workbench", True)):
+for label, focused in (("source", False), ("kisesh", True)):
     matches = FocusScenario(focused).matching_key_actions(candidates)
     resolved[label] = [definition.definition for definition in matches]
 print(json.dumps(resolved))
@@ -221,13 +221,13 @@ print(json.dumps(resolved))
         resolved = json.loads(result.stdout)
         self.assertEqual(len(resolved["source"]), 1)
         self.assertIn("launch --type=overlay", resolved["source"][0])
-        self.assertEqual(resolved["workbench"], ["close_window"])
+        self.assertEqual(resolved["kisesh"], ["close_window"])
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_command_w_resolves_to_safe_close_or_overlay_close_in_real_kitty(self) -> None:
         """Resolve the real Command-W chord through Kitty's conditional key engine."""
 
-        integration = Path(__file__).parents[1] / "integration" / "kitty-workbench.conf"
+        integration = Path(__file__).parents[1] / "integration" / "kisesh.conf"
         program = """
 import json
 import sys
@@ -242,19 +242,19 @@ key, candidates = next(
 )
 
 class FocusScenario(Mappings):
-    def __init__(self, workbench_has_focus):
+    def __init__(self, kisesh_has_focus):
         self.window = object()
-        self.workbench_has_focus = workbench_has_focus
+        self.kisesh_has_focus = kisesh_has_focus
 
     def get_active_window(self):
         return self.window
 
     def match_windows(self, expression):
-        assert expression == "var:kitty_workbench_ui"
-        return iter((self.window,)) if self.workbench_has_focus else iter(())
+        assert expression == "var:kisesh_ui"
+        return iter((self.window,)) if self.kisesh_has_focus else iter(())
 
 resolved = {}
-for label, focused in (("source", False), ("workbench", True)):
+for label, focused in (("source", False), ("kisesh", True)):
     resolved[label] = [
         definition.definition
         for definition in FocusScenario(focused).matching_key_actions(candidates)
@@ -275,15 +275,15 @@ print(json.dumps({"mods": key.mods, "key": key.key, "resolved": resolved}))
         self.assertEqual(parsed["key"], ord("w"))
         self.assertEqual(
             parsed["resolved"]["source"],
-            ["kitten ~/.local/lib/kitty-workbench/integration/safe_close.py"],
+            ["kitten ~/.local/lib/kisesh/integration/safe_close.py"],
         )
-        self.assertEqual(parsed["resolved"]["workbench"], ["close_window"])
+        self.assertEqual(parsed["resolved"]["kisesh"], ["close_window"])
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_layout_fallback_is_scoped_to_tracked_sessions_by_real_kitty(self) -> None:
         """Resolve the Alt-Z condition through Kitty's real key engine."""
 
-        integration = Path(__file__).parents[1] / "integration" / "kitty-workbench.conf"
+        integration = Path(__file__).parents[1] / "integration" / "kisesh.conf"
         program = """
 import json
 import sys
@@ -306,7 +306,7 @@ class FocusScenario(Mappings):
         return self.window
 
     def match_windows(self, expression):
-        assert expression == "var:kitty_workbench_session"
+        assert expression == "var:kisesh_session"
         return iter((self.window,)) if self.tracked else iter(())
 
 resolved = {
@@ -339,7 +339,7 @@ print(json.dumps(resolved))
         self.assertEqual(
             json.loads(result.stdout),
             {
-                "tracked": ["kitten ~/.local/lib/kitty-workbench/integration/layout_toggle.py"],
+                "tracked": ["kitten ~/.local/lib/kisesh/integration/layout_toggle.py"],
                 "untracked": ["toggle_layout stack"],
             },
         )
@@ -415,7 +415,7 @@ print(json.dumps(resolved))
                 ],
                 "restore_commands": [],
             },
-            shell_restore_argv=["/workbench", "restore-shell", manifest.id],
+            shell_restore_argv=["/kisesh", "restore-shell", manifest.id],
         )
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -434,7 +434,7 @@ print(json.dumps(resolved))
                 timeout=15,
             )
 
-        self.assertIn("/workbench restore-shell", restored)
+        self.assertIn("/kisesh restore-shell", restored)
         self.assertNotIn("touch /tmp/must-not-run", restored)
         self.assertNotIn("tests passed", restored)
         self.assertEqual(result.returncode, 0, result.stderr)

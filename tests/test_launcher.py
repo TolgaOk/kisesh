@@ -9,12 +9,18 @@ import unittest
 from pathlib import Path
 
 
+def kitty_runtime_environment(project: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["KISESH_INSTALL_ROOT"] = str(project)
+    return environment
+
+
 class LauncherTests(unittest.TestCase):
     def test_gui_style_reduced_path_still_finds_modern_homebrew_python(self) -> None:
         """Reproduce Kitty's GUI PATH instead of relying on the test shell's PATH."""
 
         project = Path(__file__).parents[1]
-        launcher = project / "bin/kitty-workbench"
+        launcher = project / "bin/kisesh"
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary) / "home"
             homebrew_bin = home / "homebrew/bin"
@@ -24,7 +30,7 @@ class LauncherTests(unittest.TestCase):
             environment.update({"HOME": str(home), "PATH": "/usr/bin:/bin"})
             result = subprocess.run(
                 [str(launcher), "--help"],
-                cwd=project,
+                cwd=home,
                 env=environment,
                 check=False,
                 capture_output=True,
@@ -33,7 +39,7 @@ class LauncherTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("kitty-workbench", result.stdout)
+        self.assertIn("kisesh", result.stdout)
         self.assertIn("manager", result.stdout)
         self.assertIn("add-tab", result.stdout)
         self.assertIn("detach-tab", result.stdout)
@@ -42,13 +48,13 @@ class LauncherTests(unittest.TestCase):
 
     def test_kitty_mappings_use_launcher_instead_of_ambient_python(self) -> None:
         project = Path(__file__).parents[1]
-        integration = (project / "integration/kitty-workbench.conf").read_text(encoding="utf-8")
+        integration = (project / "integration/kisesh.conf").read_text(encoding="utf-8")
         mappings = [line for line in integration.splitlines() if line.startswith("map ")]
 
         launch_mappings = [line for line in mappings if " launch " in line]
         self.assertEqual(len(mappings), 6)
         for mapping in launch_mappings:
-            self.assertIn("~/.local/lib/kitty-workbench/bin/kitty-workbench", mapping)
+            self.assertIn("~/.local/lib/kisesh/bin/kisesh", mapping)
             self.assertNotIn(" python3 ", mapping)
 
         manager_mappings = [line for line in mappings if line.startswith("map alt+s ")]
@@ -56,39 +62,33 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(all("launch --type=overlay" in line for line in manager_mappings))
         self.assertTrue(all("--location=" not in line for line in manager_mappings))
         self.assertTrue(all("--bias=" not in line for line in manager_mappings))
-        self.assertTrue(all("--var=kitty_workbench_ui=yes" in line for line in manager_mappings))
-        self.assertTrue(
-            all("--env=KITTY_WORKBENCH_CALLER=overlay" in line for line in manager_mappings)
-        )
-        self.assertTrue(all("bin/kitty-workbench manager" in line for line in manager_mappings))
+        self.assertTrue(all("--var=kisesh_ui=yes" in line for line in manager_mappings))
+        self.assertTrue(all("--env=KISESH_CALLER=overlay" in line for line in manager_mappings))
+        self.assertTrue(all("bin/kisesh manager" in line for line in manager_mappings))
 
         toggle_mappings = [
-            line
-            for line in mappings
-            if line.startswith("map --when-focus-on var:kitty_workbench_ui ")
+            line for line in mappings if line.startswith("map --when-focus-on var:kisesh_ui ")
         ]
         self.assertEqual(
             toggle_mappings,
             [
-                "map --when-focus-on var:kitty_workbench_ui alt+s close_window",
-                "map --when-focus-on var:kitty_workbench_ui cmd+w close_window",
+                "map --when-focus-on var:kisesh_ui alt+s close_window",
+                "map --when-focus-on var:kisesh_ui cmd+w close_window",
             ],
         )
         launch_index = mappings.index(manager_mappings[0])
-        close_index = mappings.index(
-            "map --when-focus-on var:kitty_workbench_ui alt+s close_window"
-        )
+        close_index = mappings.index("map --when-focus-on var:kisesh_ui alt+s close_window")
         self.assertLess(launch_index, close_index)
-        close_mapping = "map cmd+w kitten ~/.local/lib/kitty-workbench/integration/safe_close.py"
+        close_mapping = "map cmd+w kitten ~/.local/lib/kisesh/integration/safe_close.py"
         self.assertIn(close_mapping, mappings)
         self.assertLess(
             mappings.index(close_mapping),
-            mappings.index("map --when-focus-on var:kitty_workbench_ui cmd+w close_window"),
+            mappings.index("map --when-focus-on var:kisesh_ui cmd+w close_window"),
         )
         self.assertTrue((project / "integration/safe_close.py").is_file())
         layout_mapping = (
-            "map --when-focus-on var:kitty_workbench_session alt+z kitten "
-            "~/.local/lib/kitty-workbench/integration/layout_toggle.py"
+            "map --when-focus-on var:kisesh_session alt+z kitten "
+            "~/.local/lib/kisesh/integration/layout_toggle.py"
         )
         self.assertIn(layout_mapping, mappings)
         self.assertTrue((project / "integration/layout_toggle.py").is_file())
@@ -108,6 +108,7 @@ class LauncherTests(unittest.TestCase):
         result = subprocess.run(
             [shutil.which("kitty") or "kitty", "+runpy", expression],
             cwd=project,
+            env=kitty_runtime_environment(project),
             check=False,
             capture_output=True,
             text=True,
@@ -130,6 +131,7 @@ class LauncherTests(unittest.TestCase):
         result = subprocess.run(
             [shutil.which("kitty") or "kitty", "+runpy", expression],
             cwd=project,
+            env=kitty_runtime_environment(project),
             check=False,
             capture_output=True,
             text=True,
@@ -152,6 +154,7 @@ class LauncherTests(unittest.TestCase):
         result = subprocess.run(
             [shutil.which("kitty") or "kitty", "+runpy", expression],
             cwd=project,
+            env=kitty_runtime_environment(project),
             check=False,
             capture_output=True,
             text=True,
@@ -174,6 +177,7 @@ class LauncherTests(unittest.TestCase):
         result = subprocess.run(
             [shutil.which("kitty") or "kitty", "+runpy", expression],
             cwd=project,
+            env=kitty_runtime_environment(project),
             check=False,
             capture_output=True,
             text=True,
@@ -185,25 +189,25 @@ class LauncherTests(unittest.TestCase):
 
     def test_panel_launcher_builds_cold_and_prewarmed_toggle_commands(self) -> None:
         project = Path(__file__).parents[1]
-        launcher = project / "bin/kitty-workbench-panel"
+        launcher = project / "bin/kisesh-panel"
         self.assertTrue(os.access(launcher, os.X_OK))
 
         with tempfile.TemporaryDirectory() as temporary:
             fake_kitten = Path(temporary) / "kitten"
             command_log = Path(temporary) / "commands.log"
             fake_kitten.write_text(
-                '#!/bin/sh\nprintf \'<%s>\\n\' "$@" >> "$KITTY_WORKBENCH_FAKE_LOG"\n',
+                '#!/bin/sh\nprintf \'<%s>\\n\' "$@" >> "$KISESH_FAKE_LOG"\n',
                 encoding="utf-8",
             )
             fake_kitten.chmod(0o755)
             environment = os.environ.copy()
             environment.update(
                 {
-                    "KITTY_WORKBENCH_KITTEN": str(fake_kitten),
-                    "KITTY_WORKBENCH_TARGET_SOCKET": "unix:/tmp/main-kitty.sock",
-                    "KITTY_WORKBENCH_PANEL_GROUP": "test-workbench",
-                    "KITTY_WORKBENCH_PANEL_SOCKET": "unix:/tmp/test-panel.sock",
-                    "KITTY_WORKBENCH_FAKE_LOG": str(command_log),
+                    "KISESH_KITTEN": str(fake_kitten),
+                    "KISESH_TARGET_SOCKET": "unix:/tmp/main-kitty.sock",
+                    "KISESH_PANEL_GROUP": "test-kisesh",
+                    "KISESH_PANEL_SOCKET": "unix:/tmp/test-panel.sock",
+                    "KISESH_FAKE_LOG": str(command_log),
                 }
             )
 
@@ -227,10 +231,10 @@ class LauncherTests(unittest.TestCase):
                 with self.subTest(prewarm=prewarm):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn(f"<--override={expected}>", logged)
-                    self.assertIn("<KITTY_WORKBENCH_CALLER=panel>", logged)
-                    self.assertIn("<KITTY_WORKBENCH_PANEL_CONFIG=", logged)
+                    self.assertIn("<KISESH_CALLER=panel>", logged)
+                    self.assertIn("<KISESH_PANEL_CONFIG=", logged)
                     self.assertIn(
-                        "<KITTY_WORKBENCH_TARGET_SOCKET=unix:/tmp/main-kitty.sock>",
+                        "<KISESH_TARGET_SOCKET=unix:/tmp/main-kitty.sock>",
                         logged,
                     )
                     self.assertIn("<--data-dir>", logged)
@@ -250,7 +254,7 @@ class LauncherTests(unittest.TestCase):
             "hide_on_focus_loss yes",
             "start_as_hidden no",
             "allow_remote_control=socket-only",
-            "listen_on=unix:/tmp/kitty-workbench-panel",
+            "listen_on=unix:/tmp/kisesh-panel",
         ):
             self.assertIn(setting, profile)
         active_profile = "\n".join(

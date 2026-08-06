@@ -83,10 +83,10 @@ def app_config_path(override: str | os.PathLike[str] | None = None) -> Path:
     """Resolve an explicit, environment, or standard XDG application config path."""
     if override is not None:
         return Path(override).expanduser()
-    if configured := os.environ.get("KITTY_WORKBENCH_APP_CONFIG"):
+    if configured := os.environ.get("KISESH_APP_CONFIG"):
         return Path(configured).expanduser()
     base = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser()
-    return base / "kitty-workbench" / "apps.toml"
+    return base / "kisesh" / "apps.toml"
 
 
 def _table(value: object, location: str) -> Mapping[str, object]:
@@ -244,7 +244,7 @@ def parse_app_profiles(text: str, *, source: str = "apps.toml") -> AppProfiles:
 def load_app_profiles(path: str | os.PathLike[str] | None = None) -> AppProfiles:
     """Load an explicit profile file or fall back to bundled defaults when absent."""
     configured = app_config_path(path)
-    explicit = path is not None or bool(os.environ.get("KITTY_WORKBENCH_APP_CONFIG"))
+    explicit = path is not None or bool(os.environ.get("KISESH_APP_CONFIG"))
     if configured.exists() and not configured.is_file():
         raise AppProfileError(f"app config is not a file: {configured}")
     source = configured if configured.is_file() else BUNDLED_APP_CONFIG

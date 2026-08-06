@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from kitty_workbench.tab_bar_install import (
+from kisesh.tab_bar_install import (
     BackupRecord,
     TabBarInstallError,
     TabBarPaths,
@@ -31,7 +31,7 @@ class TabBarInstallTests(unittest.TestCase):
         self.source = self.source_root / "integration" / "tab_bar.py"
         self.source.parent.mkdir(parents=True)
         self.source.write_text("def draw_tab():\n    return 1\n", encoding="utf-8")
-        self.data = self.root / "data" / "kitty-workbench"
+        self.data = self.root / "data" / "kisesh"
         self.paths = tab_bar_paths(self.config, self.source_root, self.data)
 
     def tearDown(self) -> None:
@@ -74,7 +74,7 @@ class TabBarInstallTests(unittest.TestCase):
         self.assertTrue(self.paths.live.is_symlink())
         self.assertEqual(os.readlink(self.paths.live), "legacy.py")
 
-    def test_preexisting_workbench_link_is_treated_as_user_owned_original_state(self) -> None:
+    def test_preexisting_kisesh_link_is_treated_as_user_owned_original_state(self) -> None:
         self.paths.live.symlink_to(self.paths.source)
 
         self.assertFalse(install_tab_bar(self.paths))
@@ -160,7 +160,7 @@ class TabBarInstallTests(unittest.TestCase):
         self.paths.live.write_text("original = True\n", encoding="utf-8")
         with (
             mock.patch(
-                "kitty_workbench.tab_bar_install.atomic_write_text",
+                "kisesh.tab_bar_install.atomic_write_text",
                 side_effect=OSError("disk full"),
             ),
             self.assertRaisesRegex(OSError, "disk full"),

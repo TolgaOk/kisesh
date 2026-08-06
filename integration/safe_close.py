@@ -1,7 +1,8 @@
-"""No-UI Kitty kitten that routes Command-W through Workbench safeguards."""
+"""No-UI Kitty kitten that routes Command-W through KiSesh safeguards."""
 
 from __future__ import annotations
 
+import os
 import sys
 from importlib import import_module
 from pathlib import Path
@@ -20,12 +21,12 @@ class CloseHandler(Protocol):
         """Route one Kitty close request."""
 
 
-PROJECT_ROOT = Path.home() / ".local" / "lib" / "kitty-workbench"
+PROJECT_ROOT = Path(os.environ.get("KISESH_INSTALL_ROOT", "~/.local/lib/kisesh")).expanduser()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 request_tab_close = cast(
     CloseHandler,
-    import_module("kitty_workbench.close_guard").request_tab_close,
+    import_module("kisesh.close_guard").request_tab_close,
 )
 
 

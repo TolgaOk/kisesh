@@ -6,22 +6,23 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from kitty_workbench.domain import ClosingPaneCapture, CommandEvent, KittyWindow, SessionContext
-from kitty_workbench.kitty_client import KittyError, LiveTab
-from kitty_workbench.model import (
+from kisesh.domain import ClosingPaneCapture, CommandEvent, KittyWindow, SessionContext
+from kisesh.kitty_client import KittyError, LiveTab
+from kisesh.model import (
     SESSION_ID_VAR,
+    SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
 )
-from kitty_workbench.service import (
+from kisesh.service import (
+    KiSeshError,
+    KiSeshService,
     UnownedTabsAction,
     UnownedTabsDecision,
     UnownedTabsInfo,
-    WorkbenchError,
-    WorkbenchService,
 )
-from kitty_workbench.session_file import sanitize_session, snapshot_summary
-from kitty_workbench.store import (
+from kisesh.session_file import sanitize_session, snapshot_summary
+from kisesh.store import (
     SessionConflict,
     SessionNotFound,
     SessionStore,
@@ -50,7 +51,7 @@ class ServiceTests(unittest.TestCase):
         self.kitty = FakeKitty()
         self.kitty.capture_session_text = UNSAFE_CAPTURE
         self.kitty.capture_tab_text = UNSAFE_CAPTURE
-        self.service = WorkbenchService(self.store, self.kitty)
+        self.service = KiSeshService(self.store, self.kitty)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -404,6 +405,34 @@ class ServiceTests(unittest.TestCase):
         self.assertNotIn("build completed", restored)
         self.assertEqual(list(self.store.root.glob(".shell-work.restore.*")), [])
 
+    def test_open_rewrites_previous_ownership_markers_without_altering_layout(self) -> None:
+        stored = self.store.create("Renamed Product", "/tmp/project")
+        previous_snapshot = (
+            "new_tab Editor\n"
+            "layout splits\n"
+            "launch --cwd=/tmp/project "
+            f"--var=kitty_workbench_session={stored.manifest.id} "
+            "--var=kitty_workbench_slug=renamed-product "
+            "--var=kitty_workbench_name='Renamed Product' "
+            "--var=user_choice=keep\n"
+        )
+        self.store.write_snapshot(
+            stored.manifest.id,
+            previous_snapshot,
+            snapshot_summary(previous_snapshot),
+        )
+        self.kitty.include_tab = False
+
+        self.service.open(stored.manifest.id)
+
+        restored = self.kitty.opened_contents[-1]
+        self.assertNotIn("kitty_workbench", restored)
+        self.assertIn(f"{SESSION_ID_VAR}={stored.manifest.id}", restored)
+        self.assertIn(f"{SESSION_SLUG_VAR}=renamed-product", restored)
+        self.assertIn(f"{SESSION_NAME_VAR}=Renamed Product", restored)
+        self.assertIn("layout splits", restored)
+        self.assertIn("--var=user_choice=keep", restored)
+
     def test_cmd_w_after_reopen_persists_new_history_for_the_next_reopen(self) -> None:
         self.kitty.window.update(
             {
@@ -689,11 +718,11 @@ class ServiceTests(unittest.TestCase):
 
     def test_tab_rename_rejects_missing_or_incoherent_saved_material(self) -> None:
         empty = self.store.create("Empty", "/tmp/empty")
-        with self.assertRaisesRegex(WorkbenchError, "no saved tab layout"):
+        with self.assertRaisesRegex(KiSeshError, "no saved tab layout"):
             self.service.rename_tab(empty.manifest.id, 0, "Missing")
 
         stored = self._create_two_tab_session("Stale Context")
-        with self.assertRaisesRegex(WorkbenchError, "live session"):
+        with self.assertRaisesRegex(KiSeshError, "live session"):
             self.service.rename_tab(stored.manifest.id, 4, "Unavailable")
         self.kitty.close_session_tabs(stored.manifest.id)
         context = self.store.read_context(stored.manifest.id)
@@ -703,11 +732,11 @@ class ServiceTests(unittest.TestCase):
         self.store.write_context(stored.manifest.id, context)
         original = stored.snapshot_path.read_text(encoding="utf-8")
 
-        with self.assertRaisesRegex(WorkbenchError, "saved context"):
+        with self.assertRaisesRegex(KiSeshError, "saved context"):
             self.service.rename_tab(stored.manifest.id, 1, "Unavailable")
         self.assertEqual(stored.snapshot_path.read_text(encoding="utf-8"), original)
 
-        with self.assertRaisesRegex(WorkbenchError, "saved snapshot"):
+        with self.assertRaisesRegex(KiSeshError, "saved snapshot"):
             self.service.rename_tab(stored.manifest.id, 4, "Unavailable")
 
     def test_failed_live_tab_autosave_restores_the_native_title(self) -> None:
@@ -718,9 +747,9 @@ class ServiceTests(unittest.TestCase):
             mock.patch.object(
                 self.service,
                 "save",
-                side_effect=WorkbenchError("capture failed"),
+                side_effect=KiSeshError("capture failed"),
             ),
-            self.assertRaisesRegex(WorkbenchError, "capture failed"),
+            self.assertRaisesRegex(KiSeshError, "capture failed"),
         ):
             self.service.rename_tab(stored.manifest.id, 1, "Temporary title")
 
@@ -912,12 +941,12 @@ class ServiceTests(unittest.TestCase):
         self.kitty.stamp_tab(target_tab, target.manifest)
         self.kitty.extra_tabs.extend((target_tab, scratch_tab))
 
-        with mock.patch("kitty_workbench.service.secrets.randbelow", return_value=0):
+        with mock.patch("kisesh.service.secrets.randbelow", return_value=0):
             self.assertEqual(
                 self.service.unowned_tabs_info(),
                 UnownedTabsInfo(2, "Amber Badger"),
             )
-        with self.assertRaisesRegex(WorkbenchError, "2 unowned tab"):
+        with self.assertRaisesRegex(KiSeshError, "2 unowned tab"):
             self.service.open(target.manifest.id)
 
         self.assertIsNone(self.kitty.tab.session_id())
@@ -1019,7 +1048,7 @@ class ServiceTests(unittest.TestCase):
         owned = self.store.create("Amber Badger", "/existing")
         self.store.create("Amber Badger 2", "/another")
 
-        with mock.patch("kitty_workbench.service.secrets.randbelow", return_value=0):
+        with mock.patch("kisesh.service.secrets.randbelow", return_value=0):
             self.assertEqual(
                 self.service.unowned_tabs_info(),
                 UnownedTabsInfo(1, "Amber Badger 3"),
@@ -1129,12 +1158,12 @@ class ServiceTests(unittest.TestCase):
             snapshot_summary(snapshot),
         )
 
-        with self.assertRaisesRegex(WorkbenchError, "only save-separately accepts"):
+        with self.assertRaisesRegex(KiSeshError, "only save-separately accepts"):
             self.service.open(
                 target.manifest.id,
                 UnownedTabsDecision(UnownedTabsAction.ATTACH, "invalid"),
             )
-        with self.assertRaisesRegex(WorkbenchError, "name cannot be empty"):
+        with self.assertRaisesRegex(KiSeshError, "name cannot be empty"):
             self.service.open(
                 target.manifest.id,
                 UnownedTabsDecision(UnownedTabsAction.SAVE_SEPARATELY, " "),
@@ -1151,9 +1180,9 @@ class ServiceTests(unittest.TestCase):
             mock.patch.object(
                 self.service,
                 "_open_inactive_snapshot",
-                side_effect=WorkbenchError("restore failed"),
+                side_effect=KiSeshError("restore failed"),
             ),
-            self.assertRaisesRegex(WorkbenchError, "restore failed"),
+            self.assertRaisesRegex(KiSeshError, "restore failed"),
         ):
             self.service.open(
                 target.manifest.id,
@@ -1184,7 +1213,7 @@ class ServiceTests(unittest.TestCase):
         original = sanitize_session("new_tab Existing\nlaunch --cwd=/tmp/saved\n", target.manifest)
         self.store.write_snapshot(target.manifest.id, original, snapshot_summary(original))
 
-        with self.assertRaisesRegex(WorkbenchError, "open the saved session"):
+        with self.assertRaisesRegex(KiSeshError, "open the saved session"):
             self.service.add_current_tab(target.manifest.id)
 
         self.assertIsNone(self.kitty.tab.session_id())
@@ -1206,7 +1235,7 @@ class ServiceTests(unittest.TestCase):
     def test_detach_tab_refuses_to_orphan_the_sessions_only_live_tab(self) -> None:
         target = self.service.create_from_active("Only Tab")
 
-        with self.assertRaisesRegex(WorkbenchError, "only live tab"):
+        with self.assertRaisesRegex(KiSeshError, "only live tab"):
             self.service.detach_current_tab(target.manifest.id)
 
         self.assertEqual(self.kitty.tab.session_id(), target.manifest.id)
@@ -1246,7 +1275,7 @@ class ServiceTests(unittest.TestCase):
         self.kitty.extra_tabs.append(source)
         self.kitty.current_tab = source
 
-        with self.assertRaisesRegex(WorkbenchError, "saved target session"):
+        with self.assertRaisesRegex(KiSeshError, "saved target session"):
             self.service.copy_current_tab(target.manifest.id)
 
     def test_unarchive_returns_a_session_to_the_active_store(self) -> None:
@@ -1261,14 +1290,14 @@ class ServiceTests(unittest.TestCase):
     def test_live_session_cannot_be_archived(self) -> None:
         stored = self.service.create_from_active("Active Project")
 
-        with self.assertRaisesRegex(WorkbenchError, "^live sessions cannot be archived$"):
+        with self.assertRaisesRegex(KiSeshError, "^live sessions cannot be archived$"):
             self.service.archive(stored.manifest.id)
 
         self.assertEqual(self.store.get(stored.manifest.id).manifest.status, "active")
 
     def test_remove_refuses_live_and_preserves_saved_and_archived_payloads_in_trash(self) -> None:
         live = self.service.create_from_active("Live Project")
-        with self.assertRaisesRegex(WorkbenchError, "^live sessions cannot be removed$"):
+        with self.assertRaisesRegex(KiSeshError, "^live sessions cannot be removed$"):
             self.service.remove(live.manifest.id)
         self.assertEqual(self.store.get(live.manifest.id).manifest.id, live.manifest.id)
 

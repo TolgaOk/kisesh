@@ -10,16 +10,18 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from kitty_workbench.installer import (
+from kisesh.installer import (
     DEFAULT_LISTEN_ON,
     INTEGRATION_INCLUDE,
     MANAGED_BEGIN,
     MANAGED_END,
+    AppConfigPlan,
     ConfigProbe,
     InstallArguments,
     InstallError,
     InstallPaths,
-    _app_config_candidate,
+    LegacyUpgradeState,
+    _app_config_plan,
     _backup_once,
     _check_install_target,
     _disable,
@@ -27,18 +29,25 @@ from kitty_workbench.installer import (
     _enable,
     _expand_home,
     _find_executable,
+    _finish_legacy_upgrade,
     _home,
     _kitty_config,
+    _legacy_paths,
+    _legacy_tab_bar_paths,
+    _prepare_legacy_upgrade,
     _probe_config,
     _read_config,
+    _remove_legacy_link,
     _remove_product_data,
+    _rollback_legacy_upgrade,
     _same_target,
-    _strip_workbench_config,
+    _strip_kisesh_config,
     _uninstall,
     _validate_source,
     main,
 )
-from kitty_workbench.tab_bar_install import install_tab_bar, tab_bar_paths
+from kisesh.legacy import INTEGRATION_INCLUDE as LEGACY_INTEGRATION_INCLUDE
+from kisesh.tab_bar_install import install_tab_bar, tab_bar_paths
 
 PROJECT = Path(__file__).parents[1]
 
@@ -57,10 +66,10 @@ class InstallerBoundaryTests(unittest.TestCase):
         return InstallPaths(
             home=self.home,
             source=source,
-            target=self.home / ".local" / "lib" / "kitty-workbench",
+            target=self.home / ".local" / "lib" / "kisesh",
             kitty_config=self.home / ".config" / "kitty" / "kitty.conf",
-            app_config=self.home / ".config" / "kitty-workbench" / "apps.toml",
-            data=self.home / ".local" / "share" / "kitty-workbench",
+            app_config=self.home / ".config" / "kisesh" / "apps.toml",
+            data=self.home / ".local" / "share" / "kisesh",
         )
 
     def test_home_and_config_resolution_follow_every_documented_precedence(self) -> None:
@@ -78,8 +87,8 @@ class InstallerBoundaryTests(unittest.TestCase):
             (Path("~/explicit.conf"), {}, self.home / "explicit.conf"),
             (
                 None,
-                {"KITTY_WORKBENCH_KITTY_CONFIG": "~/workbench.conf"},
-                self.home / "workbench.conf",
+                {"KISESH_KITTY_CONFIG": "~/kisesh.conf"},
+                self.home / "kisesh.conf",
             ),
             (
                 None,
@@ -133,7 +142,16 @@ class InstallerBoundaryTests(unittest.TestCase):
         app_directory = self.paths().app_config
         app_directory.mkdir(parents=True)
         with self.assertRaisesRegex(InstallError, "app config is not a file"):
-            _app_config_candidate(self.paths())
+            paths = self.paths()
+            _app_config_plan(paths, _legacy_paths(paths))
+
+    def test_previous_app_config_must_also_be_a_regular_file(self) -> None:
+        paths = self.paths()
+        legacy = _legacy_paths(paths)
+        legacy.app_config.mkdir(parents=True)
+
+        with self.assertRaisesRegex(InstallError, "previous app config is not a file"):
+            _app_config_plan(paths, legacy)
 
     def test_config_stripping_rejects_nested_and_unmatched_markers(self) -> None:
         paths = self.paths()
@@ -143,12 +161,98 @@ class InstallerBoundaryTests(unittest.TestCase):
         )
         for content, message in cases:
             with self.subTest(message=message), self.assertRaisesRegex(InstallError, message):
-                _strip_workbench_config(content, paths)
+                _strip_kisesh_config(content, paths)
 
-        absolute = f"include {paths.target / 'integration' / 'kitty-workbench.conf'}\n"
-        stripped, changed = _strip_workbench_config(f"font_size 14\n{absolute}", paths)
+        absolute = f"include {paths.target / 'integration' / 'kisesh.conf'}\n"
+        stripped, changed = _strip_kisesh_config(f"font_size 14\n{absolute}", paths)
         self.assertTrue(changed)
         self.assertEqual(stripped, "font_size 14\n")
+
+        stripped, changed = _strip_kisesh_config(
+            f"font_size 15\n{LEGACY_INTEGRATION_INCLUDE}\n",
+            paths,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(stripped, "font_size 15\n")
+
+    def test_previous_upgrade_rolls_back_each_changed_resource_after_failures(self) -> None:
+        paths = self.paths()
+        legacy = _legacy_paths(paths)
+        legacy.data.mkdir(parents=True)
+        config = paths.kitty_config
+
+        for restored_bar in (False, True):
+            with (
+                self.subTest(restored_bar=restored_bar),
+                mock.patch(
+                    "kisesh.installer.restore_tab_bar",
+                    return_value=restored_bar,
+                ),
+                mock.patch.object(Path, "rename", side_effect=OSError("rename failed")),
+                mock.patch("kisesh.installer.install_tab_bar") as reinstall,
+                self.assertRaisesRegex(OSError, "rename failed"),
+            ):
+                _prepare_legacy_upgrade(paths, legacy, config)
+            self.assertEqual(reinstall.called, restored_bar)
+
+        legacy.data.rmdir()
+        payload = paths.data / "sessions" / "saved"
+        payload.mkdir(parents=True)
+        bar_paths = _legacy_tab_bar_paths(config, legacy)
+        with mock.patch("kisesh.installer.install_tab_bar") as reinstall:
+            _rollback_legacy_upgrade(
+                paths,
+                legacy,
+                LegacyUpgradeState(data_moved=True, restored_tab_bar=bar_paths),
+            )
+
+        self.assertTrue((legacy.data / "sessions" / "saved").is_dir())
+        reinstall.assert_called_once_with(bar_paths)
+
+    def test_previous_link_and_cleanup_failures_never_remove_foreign_resources(self) -> None:
+        paths = self.paths()
+        legacy = _legacy_paths(paths)
+        legacy.target.parent.mkdir(parents=True)
+        foreign = self.root / "foreign-previous-code"
+        foreign.mkdir()
+        legacy.target.symlink_to(foreign, target_is_directory=True)
+
+        self.assertFalse(_remove_legacy_link(paths, legacy))
+        self.assertTrue(legacy.target.is_symlink())
+        legacy.target.unlink()
+        source_alias = legacy.target.parent / "current-source"
+        source_alias.symlink_to(paths.source, target_is_directory=True)
+        legacy.target.symlink_to(source_alias.name, target_is_directory=True)
+        self.assertTrue(_remove_legacy_link(paths, legacy))
+        self.assertFalse(legacy.target.exists())
+
+        legacy.app_config.parent.mkdir(parents=True)
+        legacy.app_config.write_text("profiles", encoding="utf-8")
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(Path, "unlink", side_effect=OSError("profiles denied")),
+            redirect_stderr(stderr),
+        ):
+            removed = _finish_legacy_upgrade(
+                paths,
+                legacy,
+                AppConfigPlan("profiles", legacy.app_config),
+                True,
+            )
+        self.assertFalse(removed)
+        self.assertIn("previous app config remains", stderr.getvalue())
+
+        stderr = io.StringIO()
+        with (
+            mock.patch(
+                "kisesh.installer._remove_legacy_link",
+                side_effect=OSError("link denied"),
+            ),
+            redirect_stderr(stderr),
+        ):
+            removed = _finish_legacy_upgrade(paths, legacy, AppConfigPlan(None), False)
+        self.assertFalse(removed)
+        self.assertIn("previous code link remains", stderr.getvalue())
 
     def test_config_symlinks_preserve_targets_and_report_resolution_or_read_errors(self) -> None:
         target = self.root / "real-kitty.conf"
@@ -262,11 +366,11 @@ class InstallerBoundaryTests(unittest.TestCase):
         for final, message in invalid_finals:
             with (
                 self.subTest(message=message),
-                mock.patch("kitty_workbench.installer._validate_source"),
-                mock.patch("kitty_workbench.installer._check_install_target"),
-                mock.patch("kitty_workbench.installer._find_executable", return_value="/binary"),
-                mock.patch("kitty_workbench.installer._ensure_install_link", return_value=False),
-                mock.patch("kitty_workbench.installer._probe_config", side_effect=(valid, final)),
+                mock.patch("kisesh.installer._validate_source"),
+                mock.patch("kisesh.installer._check_install_target"),
+                mock.patch("kisesh.installer._find_executable", return_value="/binary"),
+                mock.patch("kisesh.installer._ensure_install_link", return_value=False),
+                mock.patch("kisesh.installer._probe_config", side_effect=(valid, final)),
                 self.assertRaisesRegex(InstallError, message),
             ):
                 _enable(paths)
@@ -286,9 +390,9 @@ class InstallerBoundaryTests(unittest.TestCase):
         valid = ConfigProbe((), "socket-only", DEFAULT_LISTEN_ON)
 
         with (
-            mock.patch("kitty_workbench.installer._find_executable", return_value="/binary"),
-            mock.patch("kitty_workbench.installer._probe_config", side_effect=(valid, valid)),
-            mock.patch("kitty_workbench.installer._atomic_write", side_effect=OSError("disk full")),
+            mock.patch("kisesh.installer._find_executable", return_value="/binary"),
+            mock.patch("kisesh.installer._probe_config", side_effect=(valid, valid)),
+            mock.patch("kisesh.installer._atomic_write", side_effect=OSError("disk full")),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             _enable(paths)
@@ -306,9 +410,9 @@ class InstallerBoundaryTests(unittest.TestCase):
         valid = ConfigProbe((), "socket-only", DEFAULT_LISTEN_ON)
 
         with (
-            mock.patch("kitty_workbench.installer._find_executable", return_value="/binary"),
-            mock.patch("kitty_workbench.installer._probe_config", side_effect=(valid, valid)),
-            mock.patch("kitty_workbench.installer._atomic_write", side_effect=OSError("disk full")),
+            mock.patch("kisesh.installer._find_executable", return_value="/binary"),
+            mock.patch("kisesh.installer._probe_config", side_effect=(valid, valid)),
+            mock.patch("kisesh.installer._atomic_write", side_effect=OSError("disk full")),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             _enable(paths)
@@ -331,7 +435,7 @@ class InstallerBoundaryTests(unittest.TestCase):
         install_tab_bar(bar_paths)
 
         with (
-            mock.patch("kitty_workbench.installer._atomic_write", side_effect=OSError("disk full")),
+            mock.patch("kisesh.installer._atomic_write", side_effect=OSError("disk full")),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             _disable(paths)
@@ -351,8 +455,8 @@ class InstallerBoundaryTests(unittest.TestCase):
         )
 
         with (
-            mock.patch("kitty_workbench.installer._atomic_write", side_effect=OSError("disk full")),
-            mock.patch("kitty_workbench.installer.install_tab_bar") as reinstall,
+            mock.patch("kisesh.installer._atomic_write", side_effect=OSError("disk full")),
+            mock.patch("kisesh.installer.install_tab_bar") as reinstall,
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             _disable(paths)
@@ -383,7 +487,7 @@ class InstallerBoundaryTests(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch(
-                "kitty_workbench.installer._read_config",
+                "kisesh.installer._read_config",
                 return_value=f"{INTEGRATION_INCLUDE}\n",
             ),
             redirect_stdout(output),
@@ -396,15 +500,15 @@ class InstallerBoundaryTests(unittest.TestCase):
         stderr = io.StringIO()
         with (
             mock.patch(
-                "kitty_workbench.installer.parse_arguments",
+                "kisesh.installer.parse_arguments",
                 return_value=InstallArguments(),
             ),
-            mock.patch("kitty_workbench.installer.install_paths", return_value=self.paths()),
-            mock.patch("kitty_workbench.installer._enable", side_effect=OSError("disk failed")),
+            mock.patch("kisesh.installer.install_paths", return_value=self.paths()),
+            mock.patch("kisesh.installer._enable", side_effect=OSError("disk failed")),
             redirect_stderr(stderr),
         ):
             self.assertEqual(main([]), 1)
-        self.assertEqual(stderr.getvalue(), "kitty-workbench installer: disk failed\n")
+        self.assertEqual(stderr.getvalue(), "kisesh installer: disk failed\n")
 
 
 if __name__ == "__main__":

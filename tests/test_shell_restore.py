@@ -14,12 +14,12 @@ import unittest
 from contextlib import suppress
 from pathlib import Path
 
-from kitty_workbench.context import build_context
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.store import SessionStore
+from kisesh.context import build_context
+from kisesh.kitty_client import LiveTab
+from kisesh.store import SessionStore
 
 PROJECT = Path(__file__).parents[1]
-LAUNCHER = PROJECT / "bin" / "kitty-workbench"
+LAUNCHER = PROJECT / "bin" / "kisesh"
 
 
 def _read_until(fd: int, needle: bytes, timeout: float = 8.0) -> bytes:
@@ -165,7 +165,7 @@ class ShellRestoreTests(unittest.TestCase):
 
                 # Exercise the user's normal interactive history gesture.  The
                 # recalled line must be editable at the prompt, not executed
-                # as startup code by Workbench.
+                # as startup code by KiSesh.
                 os.write(master, b"\x1b[A")
                 history_view = _read_until(master, history_command.encode())
                 self.assertIn(history_command.encode(), history_view)
@@ -250,7 +250,8 @@ class ShellRestoreTests(unittest.TestCase):
             empty_path.mkdir()
             command = [
                 sys.executable,
-                str(PROJECT / "workbench.py"),
+                "-m",
+                "kisesh",
                 "--data-dir",
                 str(store.root),
                 "restore-shell",
@@ -267,8 +268,9 @@ class ShellRestoreTests(unittest.TestCase):
                     "SHELL": shutil.which("zsh") or "/bin/zsh",
                     "TERM": "xterm-kitty",
                     "PATH": str(empty_path),
+                    "PYTHONPATH": str(PROJECT),
                     "ZDOTDIR": str(user_zdotdir),
-                    "KITTY_WORKBENCH_KITTEN": shutil.which("kitten") or "kitten",
+                    "KISESH_KITTEN": shutil.which("kitten") or "kitten",
                 }
             )
             pid, master = pty.fork()
@@ -302,7 +304,7 @@ class ShellRestoreTests(unittest.TestCase):
         shutil.which("kitten") and shutil.which("zsh"), "kitten and zsh are required"
     )
     def test_two_reopens_restore_2000_scrollback_lines_and_shell_commands(self) -> None:
-        """Exercise Workbench's own saved state twice in real interactive zsh PTYs."""
+        """Exercise KiSesh's own saved state twice in real interactive zsh PTYs."""
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -351,7 +353,7 @@ class ShellRestoreTests(unittest.TestCase):
             user_zdotdir = root / "user-zsh"
             user_zdotdir.mkdir()
             (user_zdotdir / ".zshenv").write_text(
-                "export WORKBENCH_TEST_ZSHENV=loaded\n",
+                "export KISESH_TEST_ZSHENV=loaded\n",
                 encoding="utf-8",
             )
             (user_zdotdir / ".zshrc").write_text(
@@ -362,7 +364,7 @@ class ShellRestoreTests(unittest.TestCase):
                         "SAVEHIST=0",
                         "unsetopt share_history",
                         "PS1='RESTORED> '",
-                        "[[ $WORKBENCH_TEST_ZSHENV == loaded ]] || PS1='BROKEN-ZSHENV> '",
+                        "[[ $KISESH_TEST_ZSHENV == loaded ]] || PS1='BROKEN-ZSHENV> '",
                         "RPS1=''",
                     )
                 )
@@ -417,9 +419,9 @@ class ShellRestoreTests(unittest.TestCase):
                     self.assertFalse(sentinel.exists())
                     _read_until(master, b"RESTORED> ", timeout=5)
 
-                    os.write(master, b"print -r -- __WORKBENCH_COMMAND_EVENT__\r")
+                    os.write(master, b"print -r -- __KISESH_COMMAND_EVENT__\r")
                     completed = _read_until(master, b"RESTORED> ", timeout=5)
-                    self.assertIn(b"__WORKBENCH_COMMAND_EVENT__", completed)
+                    self.assertIn(b"__KISESH_COMMAND_EVENT__", completed)
                     self.assertIn(b"\x1b]133;C;cmdline=", completed)
                 finally:
                     with suppress(OSError):

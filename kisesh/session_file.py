@@ -10,15 +10,17 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
+from .legacy import MANAGED_VARIABLES as LEGACY_MANAGED_VARIABLES
+from .legacy import UI_VARIABLE as LEGACY_UI_VARIABLE
 from .model import (
     AGENT_VAR,
     APP_VAR,
     CAPTURE_VAR,
+    KISESH_UI_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
-    WORKBENCH_UI_VAR,
     SessionManifest,
     SnapshotSummary,
     session_marker_name,
@@ -83,8 +85,8 @@ _MANAGED_VARIABLES = {
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
     CAPTURE_VAR,
-    WORKBENCH_UI_VAR,
-}
+    KISESH_UI_VAR,
+} | LEGACY_MANAGED_VARIABLES
 
 
 def _variable_name(value: str) -> str:
@@ -93,7 +95,7 @@ def _variable_name(value: str) -> str:
 
 
 def _is_managed_variable(value: str) -> bool:
-    """Report whether Workbench owns a Kitty user variable."""
+    """Report whether KiSesh owns a Kitty user variable."""
     return _variable_name(value) in _MANAGED_VARIABLES
 
 
@@ -169,7 +171,7 @@ def _parse_launch(line: str) -> list[str]:
     return tokens
 
 
-def _is_workbench_ui_launch(line: str) -> bool:
+def _is_kisesh_ui_launch(line: str) -> bool:
     """Identify a serialized transient manager window from its user variable."""
     tokens = _parse_launch(line)
     marker: str | None = None
@@ -186,7 +188,7 @@ def _is_workbench_ui_launch(line: str) -> bool:
         else:
             index += 1
         name, separator, value = assignment.partition("=")
-        if name == WORKBENCH_UI_VAR:
+        if name in {KISESH_UI_VAR, LEGACY_UI_VARIABLE}:
             marker = value if separator else ""
     return marker is not None and marker.casefold() not in {"", "0", "false", "no"}
 
@@ -205,7 +207,7 @@ def _transient_ui_locations(lines: Sequence[str]) -> _TransientUiLocations:
         if not stripped.startswith("launch"):
             continue
         launch_counts[tab_index] = launch_counts.get(tab_index, 0) + 1
-        if _is_workbench_ui_launch(stripped):
+        if _is_kisesh_ui_launch(stripped):
             launch_lines.add(line_index)
             transient_counts[tab_index] = transient_counts.get(tab_index, 0) + 1
     contaminated_tabs = frozenset(transient_counts)

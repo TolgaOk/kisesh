@@ -11,11 +11,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from kitty_workbench import shell_restore
-from kitty_workbench.context import build_context
-from kitty_workbench.domain import SessionContext
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.store import SessionStore
+from kisesh import shell_restore
+from kisesh.context import build_context
+from kisesh.domain import SessionContext
+from kisesh.kitty_client import LiveTab
+from kisesh.store import SessionStore
 
 
 class ShellRestoreUnitTests(unittest.TestCase):
@@ -151,7 +151,7 @@ class ShellRestoreUnitTests(unittest.TestCase):
         configured = self.root / "kitten"
         configured.write_text("binary", encoding="utf-8")
         self.assertEqual(
-            shell_restore._kitten_executable({"KITTY_WORKBENCH_KITTEN": str(configured)}),
+            shell_restore._kitten_executable({"KISESH_KITTEN": str(configured)}),
             str(configured),
         )
 
@@ -182,7 +182,7 @@ class ShellRestoreUnitTests(unittest.TestCase):
         environment = {
             "HOME": str(self.root),
             "SHELL": "/bin/zsh -l",
-            "KITTY_WORKBENCH_KITTEN": str(kitten),
+            "KISESH_KITTEN": str(kitten),
         }
 
         zsh = shell_restore.shell_launch_command(
@@ -224,7 +224,7 @@ class ShellRestoreUnitTests(unittest.TestCase):
 
         self.assertEqual(zsh[:3], [str(kitten), "run-shell", "--shell=/bin/zsh -l"])
         self.assertTrue(any(item.startswith("--env=ZDOTDIR=") for item in zsh))
-        self.assertIn("--env=KITTY_WORKBENCH_RESTORING_SHELL=1", zsh)
+        self.assertIn("--env=KISESH_RESTORING_SHELL=1", zsh)
         self.assertEqual(empty_zsh, [str(kitten), "run-shell", "--shell=/bin/zsh -l"])
         self.assertEqual(fish, [str(kitten), "run-shell", "--shell=/bin/fish"])
         self.assertEqual(
@@ -261,7 +261,7 @@ class ShellRestoreUnitTests(unittest.TestCase):
         environment = {
             "HOME": str(self.root),
             "SHELL": "/bin/zsh",
-            "KITTY_WORKBENCH_KITTEN": str(kitten),
+            "KISESH_KITTEN": str(kitten),
         }
 
         command = shell_restore.shell_launch_command(

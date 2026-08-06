@@ -1,4 +1,4 @@
-"""Typed remote-control boundary between Workbench and a running Kitty."""
+"""Typed remote-control boundary between KiSesh and a running Kitty."""
 
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ from typing import Protocol, cast
 from .domain import KittyOsWindowState, KittyWindow
 from .model import (
     CAPTURE_VAR,
+    KISESH_UI_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
-    WORKBENCH_UI_VAR,
     SessionManifest,
     session_marker_name,
 )
@@ -69,7 +69,7 @@ def _run_command(
 
 @dataclass(slots=True)
 class LiveTab:
-    """Normalized subset of live Kitty tab state used by Workbench."""
+    """Normalized subset of live Kitty tab state used by KiSesh."""
 
     os_window_id: int
     tab_id: int
@@ -89,7 +89,7 @@ class LiveTab:
         return (active or self.windows[0])["id"]
 
     def session_id(self) -> str | None:
-        """Return the stable Workbench session UUID stamped on this tab."""
+        """Return the stable KiSesh session UUID stamped on this tab."""
         return _first_user_var(self.windows, SESSION_ID_VAR)
 
     def native_session_name(self) -> str | None:
@@ -124,9 +124,9 @@ def _first_user_var(windows: Iterable[KittyWindow], name: str) -> str | None:
     return None
 
 
-def _is_workbench_ui_window(window: KittyWindow) -> bool:
+def _is_kisesh_ui_window(window: KittyWindow) -> bool:
     """Identify transient manager overlays that must never become session panes."""
-    value = window.get("user_vars", {}).get(WORKBENCH_UI_VAR, "")
+    value = window.get("user_vars", {}).get(KISESH_UI_VAR, "")
     return value.casefold() not in {"", "0", "false", "no"}
 
 
@@ -216,7 +216,7 @@ class KittyClient:
         self.executable = executable or _find_kitty()
         self.socket = (
             socket
-            or os.environ.get("KITTY_WORKBENCH_TARGET_SOCKET")
+            or os.environ.get("KISESH_TARGET_SOCKET")
             or os.environ.get("KITTY_LISTEN_ON")
             or _find_socket()
         )
@@ -295,9 +295,7 @@ class KittyClient:
         for os_window in os_windows:
             for index, tab in enumerate(os_window.get("tabs", [])):
                 windows = [
-                    window
-                    for window in tab.get("windows", [])
-                    if not _is_workbench_ui_window(window)
+                    window for window in tab.get("windows", []) if not _is_kisesh_ui_window(window)
                 ]
                 if windows:
                     tabs.append(
@@ -345,7 +343,7 @@ class KittyClient:
                 windows = [
                     window
                     for window in tab.get("windows", [])
-                    if not _is_workbench_ui_window(window)
+                    if not _is_kisesh_ui_window(window)
                     and (exclude_window_id is None or window["id"] != exclude_window_id)
                 ]
                 if windows:

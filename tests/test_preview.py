@@ -3,18 +3,18 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from kitty_workbench.domain import (
+from kisesh.domain import (
     KittyWindow,
     PaneContext,
     RestoreSpec,
     SessionContext,
     TabContext,
 )
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.model import SessionManifest, SnapshotSummary
-from kitty_workbench.preview import build_session_preview, is_shell_program
-from kitty_workbench.service import SessionView
-from kitty_workbench.store import StoredSession
+from kisesh.kitty_client import LiveTab
+from kisesh.model import SessionManifest, SnapshotSummary
+from kisesh.preview import build_session_preview, is_shell_program
+from kisesh.service import SessionView
+from kisesh.store import StoredSession
 
 
 def _context(tabs: list[TabContext]) -> SessionContext:

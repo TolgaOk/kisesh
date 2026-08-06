@@ -14,14 +14,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
-from kitty_workbench.domain import KittyOsWindowState, KittyTabState, KittyWindow
-from kitty_workbench.kitty_client import KittyClient
-from kitty_workbench.model import SESSION_ID_VAR, SESSION_SLUG_VAR, WORKBENCH_UI_VAR
-from kitty_workbench.store import SessionStore
+from kisesh.domain import KittyOsWindowState, KittyTabState, KittyWindow
+from kisesh.kitty_client import KittyClient
+from kisesh.model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SLUG_VAR
+from kisesh.store import SessionStore
 
 PROJECT = Path(__file__).parents[1]
-LIVE_TESTS_ENABLED = os.environ.get("KITTY_WORKBENCH_LIVE_TESTS") == "1"
-LIVE_TEST_REASON = "set KITTY_WORKBENCH_LIVE_TESTS=1 to start an isolated hidden Kitty"
+LIVE_TESTS_ENABLED = os.environ.get("KISESH_LIVE_TESTS") == "1"
+LIVE_TEST_REASON = "set KISESH_LIVE_TESTS=1 to start an isolated hidden Kitty"
 StatePredicate = Callable[[list[KittyOsWindowState]], bool]
 
 
@@ -32,7 +32,7 @@ class IsolatedKitty:
         """Create isolated paths and environment without starting Kitty yet."""
         self.root = root
         self.home = root / "home"
-        self.data = root / "data" / "kitty-workbench"
+        self.data = root / "data" / "kisesh"
         self.config = root / "kitty.conf"
         self.socket = f"unix:{root / 'kitty.sock'}"
         self.kitty = shutil.which("kitty") or "kitty"
@@ -48,7 +48,7 @@ class IsolatedKitty:
 
     def start(self) -> None:
         """Install the checkout into a temporary home and start Kitty hidden."""
-        install = self.home / ".local" / "lib" / "kitty-workbench"
+        install = self.home / ".local" / "lib" / "kisesh"
         install.parent.mkdir(parents=True)
         install.symlink_to(PROJECT, target_is_directory=True)
         self.config.write_text(
@@ -56,7 +56,7 @@ class IsolatedKitty:
             f"listen_on {self.socket}\n"
             "font_size 13\n"
             "confirm_os_window_close 0\n"
-            "include ~/.local/lib/kitty-workbench/integration/kitty-workbench.conf\n",
+            "include ~/.local/lib/kisesh/integration/kisesh.conf\n",
             encoding="utf-8",
         )
         self.process = subprocess.Popen(
@@ -68,7 +68,7 @@ class IsolatedKitty:
                 "--listen-on",
                 self.socket,
                 "--title",
-                "Workbench isolated close test",
+                "KiSesh isolated close test",
                 "/bin/sh",
                 "-c",
                 "while :; do sleep 1; done",
@@ -170,23 +170,23 @@ def _session_tabs(state: list[KittyOsWindowState], session_id: str) -> list[Kitt
 
 
 def _session_windows(state: list[KittyOsWindowState], session_id: str) -> list[KittyWindow]:
-    """Flatten all panes belonging to one live Workbench session."""
+    """Flatten all panes belonging to one live KiSesh session."""
     return [window for tab in _session_tabs(state, session_id) for window in tab.get("windows", [])]
 
 
 def _ui_windows(state: list[KittyOsWindowState]) -> list[KittyWindow]:
-    """Return native prompts marked as transient Workbench UI."""
+    """Return native prompts marked as transient KiSesh UI."""
     return [
         window
         for tab in _tabs(state)
         for window in tab.get("windows", [])
-        if window.get("user_vars", {}).get(WORKBENCH_UI_VAR) == "yes"
+        if window.get("user_vars", {}).get(KISESH_UI_VAR) == "yes"
     ]
 
 
 def _mapped_close_action() -> list[str]:
     """Read the exact action attached to Command-W in the shipped integration."""
-    integration = (PROJECT / "integration/kitty-workbench.conf").read_text(encoding="utf-8")
+    integration = (PROJECT / "integration/kisesh.conf").read_text(encoding="utf-8")
     definition = next(
         line.split(maxsplit=2)[2]
         for line in integration.splitlines()
@@ -220,7 +220,7 @@ class LiveKittyCloseTests(unittest.TestCase):
                 server.start()
                 created = subprocess.run(
                     [
-                        str(PROJECT / "bin" / "kitty-workbench"),
+                        str(PROJECT / "bin" / "kisesh"),
                         "--socket",
                         server.socket,
                         "create",

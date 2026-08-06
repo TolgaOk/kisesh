@@ -1,4 +1,4 @@
-"""Resolve the Workbench session-data directory."""
+"""Resolve the KiSesh session-data directory."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ def data_root(override: str | os.PathLike[str] | None = None) -> Path:
     """Resolve the session-data root using explicit, environment, then XDG values."""
     if override:
         return Path(override).expanduser()
-    configured = os.environ.get("KITTY_WORKBENCH_DATA_DIR")
+    configured = os.environ.get("KISESH_DATA_DIR")
     if configured:
         return Path(configured).expanduser()
     base = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
-    return base / "kitty-workbench"
+    return base / "kisesh"

@@ -15,13 +15,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
-SESSION_ID_VAR = "kitty_workbench_session"
-SESSION_SLUG_VAR = "kitty_workbench_slug"
-SESSION_NAME_VAR = "kitty_workbench_name"
-SESSION_SCOPE_VAR = "kitty_workbench_scope"
-AGENT_VAR = "kitty_workbench_agent"
-APP_VAR = "kitty_workbench_app"
-WORKBENCH_UI_VAR = "kitty_workbench_ui"
+SESSION_ID_VAR = "kisesh_session"
+SESSION_SLUG_VAR = "kisesh_slug"
+SESSION_NAME_VAR = "kisesh_name"
+SESSION_SCOPE_VAR = "kisesh_scope"
+AGENT_VAR = "kisesh_agent"
+APP_VAR = "kisesh_app"
+KISESH_UI_VAR = "kisesh_ui"
 DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
 COMMAND_HISTORY_LIMIT = 2000
@@ -62,7 +62,7 @@ class WatcherScreen(Protocol):
 
 
 class WatcherWindow(Protocol):
-    """Window attributes required by Workbench watcher callbacks."""
+    """Window attributes required by KiSesh watcher callbacks."""
 
     id: int
     user_vars: object
@@ -108,7 +108,7 @@ class WatcherAppProfile(Protocol):
 
 
 class WatcherAppProfiles(Protocol):
-    """Configured app lookup exposed through the installed Workbench package."""
+    """Configured app lookup exposed through the installed KiSesh package."""
 
     def match(self, command: str | None) -> WatcherAppProfile | None:
         """Return the profile matching one executable basename."""
@@ -130,7 +130,7 @@ class WindowIdentity:
     session_scope: str | None
     native_session_name: str | None
     last_focused_at: float
-    workbench_ui: bool
+    kisesh_ui: bool
 
 
 _timers: dict[str, threading.Timer] = {}
@@ -183,7 +183,7 @@ def _window_identity(window: WatcherWindow) -> WindowIdentity:
             if isinstance(focused_at, (int, float)) and not isinstance(focused_at, bool)
             else 0.0
         ),
-        workbench_ui=bool(variables.get(WORKBENCH_UI_VAR)),
+        kisesh_ui=bool(variables.get(KISESH_UI_VAR)),
     )
 
 
@@ -206,7 +206,7 @@ def _tab_inheritance(
     if source_tab is None:
         return None
     source = next(identity for identity in source_tab if identity.window.id == window_id)
-    if source.workbench_ui or source.session_id is not None:
+    if source.kisesh_ui or source.session_id is not None:
         return None
     sibling_owners = [identity for identity in source_tab if identity.session_id is not None]
     owners = sibling_owners
@@ -227,7 +227,7 @@ def _tab_inheritance(
     targets = tuple(
         identity.window.id
         for identity in source_tab
-        if identity.session_id is None and not identity.workbench_ui
+        if identity.session_id is None and not identity.kisesh_ui
     )
     return (owner, targets) if targets else None
 
@@ -285,7 +285,7 @@ def _session_id(
     if data and data.get("key") == SESSION_ID_VAR and data.get("value"):
         return str(data["value"])
     variables = _string_mapping(window.user_vars)
-    if variables.get(WORKBENCH_UI_VAR):
+    if variables.get(KISESH_UI_VAR):
         return None
     return variables.get(SESSION_ID_VAR) or _sibling_session_id(window.id, boss)
 
@@ -301,7 +301,7 @@ def _launch_autosave(
     except (TypeError, ValueError):
         return None
     project = Path(__file__).resolve().parents[1]
-    launcher = project / "bin" / "kitty-workbench"
+    launcher = project / "bin" / "kisesh"
     if not launcher.is_file():
         return None
     command = [str(launcher)]
@@ -390,7 +390,7 @@ def _session_location(
     boss: WatcherBoss | None,
     session_id: str,
 ) -> tuple[int, int]:
-    """Locate a pane within only the tabs owned by its Workbench session."""
+    """Locate a pane within only the tabs owned by its KiSesh session."""
     if boss is None:
         return -1, -1
     try:
@@ -608,7 +608,7 @@ def _refreshed_app_profiles() -> WatcherAppProfiles:
     project_root = str(Path(__file__).resolve().parents[1])
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    module = importlib.import_module("kitty_workbench.app_profiles")
+    module = importlib.import_module("kisesh.app_profiles")
     return cast(WatcherAppProfiles, module.refresh_app_profiles())
 
 

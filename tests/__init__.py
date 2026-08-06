@@ -1,1 +1,1 @@
-"""Tests for kitty-workbench."""
+"""Tests for kisesh."""

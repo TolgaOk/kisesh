@@ -34,12 +34,12 @@ from .session_file import clean_tab_title, rename_snapshot_tab, sanitize_session
 from .store import SessionStore, StoredSession, StoreError
 
 
-class WorkbenchError(RuntimeError):
+class KiSeshError(RuntimeError):
     """Raised when a requested session operation violates lifecycle rules."""
 
 
 class UnownedTabsAction(StrEnum):
-    """Explicit policy for tabs outside Workbench when opening a session."""
+    """Explicit policy for tabs outside KiSesh when opening a session."""
 
     ATTACH = "attach"
     SAVE_SEPARATELY = "save-separately"
@@ -157,7 +157,7 @@ def _last_focused_at(tab: LiveTab) -> float:
 
 
 def _inherited_session_id(source: LiveTab, tabs: list[LiveTab]) -> str | None:
-    """Infer ownership from Kitty's native session or the active Workbench scope."""
+    """Infer ownership from Kitty's native session or the active KiSesh scope."""
     owned = [
         tab
         for tab in tabs
@@ -183,7 +183,7 @@ def _inherited_session_id(source: LiveTab, tabs: list[LiveTab]) -> str | None:
     return max(scoped, key=_last_focused_at).session_id() if scoped else None
 
 
-class WorkbenchService:
+class KiSeshService:
     """Enforce session lifecycle rules across storage and live Kitty state."""
 
     def __init__(
@@ -241,7 +241,7 @@ class WorkbenchService:
         """Create a session, using an unowned source or opening fresh from an owned one."""
         clean_name = name.strip()
         if not clean_name:
-            raise WorkbenchError("session name cannot be empty")
+            raise KiSeshError("session name cannot be empty")
         client = self._kitty()
         tab = client.focused_tab(
             client.list_state(),
@@ -267,16 +267,16 @@ class WorkbenchService:
         """Create a session after explicitly resolving every unowned source tab."""
         clean_name = name.strip()
         if not clean_name:
-            raise WorkbenchError("session name cannot be empty")
+            raise KiSeshError("session name cannot be empty")
         if decision.action is not UnownedTabsAction.SAVE_SEPARATELY and decision.name is not None:
-            raise WorkbenchError("only save-separately accepts an unowned session name")
+            raise KiSeshError("only save-separately accepts an unowned session name")
 
         client = self._kitty()
         state = client.list_state()
         source = client.focused_tab(state, exclude_window_id=_environment_window_id())
         tabs = self._source_unowned_tabs(client, state)
         if not tabs:
-            raise WorkbenchError("the current Kitty window has no unowned tabs")
+            raise KiSeshError("the current Kitty window has no unowned tabs")
         root = project_root or source.suggested_root()
 
         if decision.action is UnownedTabsAction.ATTACH:
@@ -405,16 +405,16 @@ class WorkbenchService:
         """Attach the focused source tab to an already live selected session."""
         stored = self.store.get(slug_or_id)
         if stored.manifest.status == "archived":
-            raise WorkbenchError("unarchive the session before adding a tab")
+            raise KiSeshError("unarchive the session before adding a tab")
         client = self._kitty()
         state = client.list_state()
         tab = client.focused_tab(state, exclude_window_id=_environment_window_id())
         current_id = tab.session_id()
         if current_id and current_id != stored.manifest.id:
-            raise WorkbenchError("the current tab belongs to another session")
+            raise KiSeshError("the current tab belongs to another session")
         live_tabs = client.tabs_for_session(stored.manifest.id, state)
         if current_id != stored.manifest.id and stored.snapshot_path.is_file() and not live_tabs:
-            raise WorkbenchError("open the saved session before adding a live tab")
+            raise KiSeshError("open the saved session before adding a live tab")
         if current_id == stored.manifest.id:
             return self.save(stored.manifest.id)
         client.stamp_tab(tab, stored.manifest)
@@ -431,14 +431,14 @@ class WorkbenchService:
         state = client.list_state()
         tab = client.focused_tab(state, exclude_window_id=_environment_window_id())
         if tab.session_id() != stored.manifest.id:
-            raise WorkbenchError("the current tab does not belong to the selected session")
+            raise KiSeshError("the current tab does not belong to the selected session")
         remaining = [
             candidate
             for candidate in client.tabs_for_session(stored.manifest.id, state)
             if candidate.tab_id != tab.tab_id
         ]
         if not remaining:
-            raise WorkbenchError("cannot detach the session's only live tab")
+            raise KiSeshError("cannot detach the session's only live tab")
         client.clear_tab_session(tab)
         try:
             return self.save(stored.manifest.id)
@@ -458,16 +458,14 @@ class WorkbenchService:
         """Append a source tab's safe layout and context to an inactive target."""
         target = self.store.get(slug_or_id)
         if target.manifest.status == "archived":
-            raise WorkbenchError("unarchive the target session before copying a tab")
+            raise KiSeshError("unarchive the target session before copying a tab")
         client = self._kitty()
         state = client.list_state()
         source = client.focused_tab(state, exclude_window_id=_environment_window_id())
         if source.session_id() == target.manifest.id:
-            raise WorkbenchError("the current tab already belongs to the target session")
+            raise KiSeshError("the current tab already belongs to the target session")
         if client.tabs_for_session(target.manifest.id, state):
-            raise WorkbenchError(
-                "copy tab requires a saved target session; close its live tabs first"
-            )
+            raise KiSeshError("copy tab requires a saved target session; close its live tabs first")
         copied_snapshot = self._capture_copied_tab(client, source, target.manifest)
         existing = (
             target.snapshot_path.read_text(encoding="utf-8")
@@ -516,7 +514,7 @@ class WorkbenchService:
         )
         session_id = tab.session_id()
         if not session_id:
-            raise WorkbenchError("the current tab does not belong to a session")
+            raise KiSeshError("the current tab does not belong to a session")
         return self.store.get(session_id)
 
     def save_current(self) -> StoredSession:
@@ -534,7 +532,7 @@ class WorkbenchService:
         state = client.list_state()
         live_tabs = client.tabs_for_session(stored.manifest.id, state)
         if not live_tabs:
-            raise WorkbenchError(f"session is not live: {stored.manifest.name}")
+            raise KiSeshError(f"session is not live: {stored.manifest.name}")
         excluded_window_id = _environment_window_id()
         for tab in live_tabs:
             client.stamp_tab(
@@ -634,9 +632,9 @@ class WorkbenchService:
         if decision is not None and (
             decision.action is not UnownedTabsAction.SAVE_SEPARATELY and decision.name is not None
         ):
-            raise WorkbenchError("only save-separately accepts an unowned session name")
+            raise KiSeshError("only save-separately accepts an unowned session name")
         if tabs and decision is None:
-            raise WorkbenchError(
+            raise KiSeshError(
                 f"{len(tabs)} unowned tab(s) require attach, save-separately, or discard"
             )
         action = decision.action if decision is not None else None
@@ -644,7 +642,7 @@ class WorkbenchService:
             requested_name = decision.name if decision is not None else None
             separate_name = (requested_name or _random_session_name(self.store)).strip()
             if not separate_name:
-                raise WorkbenchError("the separate session name cannot be empty")
+                raise KiSeshError("the separate session name cannot be empty")
             self._create_tabs_session(
                 separate_name,
                 tabs[0].suggested_root(),
@@ -663,7 +661,7 @@ class WorkbenchService:
         state = client.list_state()
         live_tabs = client.tabs_for_session(stored.manifest.id, state)
         if not live_tabs and not stored.snapshot_path.is_file():
-            raise WorkbenchError(f"session has no snapshot: {stored.manifest.name}")
+            raise KiSeshError(f"session has no snapshot: {stored.manifest.name}")
         unowned_tabs = self._source_unowned_tabs(client, state)
         action = self._prepare_unowned_tabs(unowned_tabs, unowned_decision)
         if unowned_tabs and action is UnownedTabsAction.SAVE_SEPARATELY:
@@ -684,7 +682,7 @@ class WorkbenchService:
 
         if unowned_tabs and action is UnownedTabsAction.ATTACH:
             if not live_tabs:
-                raise WorkbenchError("opened session did not create any live tabs")
+                raise KiSeshError("opened session did not create any live tabs")
             for tab in unowned_tabs:
                 client.stamp_tab(tab, stored.manifest)
             try:
@@ -717,16 +715,17 @@ class WorkbenchService:
         context: SessionContext | None,
     ) -> None:
         """Open the stored snapshot directly or through a generated restore file."""
-        snapshot = stored.snapshot_path.read_text(encoding="utf-8")
+        stored_snapshot = stored.snapshot_path.read_text(encoding="utf-8")
+        snapshot = sanitize_session(stored_snapshot, stored.manifest)
         shell_restorer = (
-            str(Path(__file__).resolve().parents[1] / "bin" / "kitty-workbench"),
+            str(Path(__file__).resolve().parents[1] / "bin" / "kisesh"),
             "--data-dir",
             str(self.store.root),
             "restore-shell",
             stored.manifest.id,
         )
         resumable = restore_session(snapshot, context, shell_restore_argv=shell_restorer)
-        if resumable == snapshot:
+        if resumable == stored_snapshot:
             client.open_snapshot(stored.snapshot_path)
             return
         with temporary_path(
@@ -803,7 +802,7 @@ class WorkbenchService:
             live_tabs = []
         if live_tabs:
             if not 0 <= tab_index < len(live_tabs):
-                raise WorkbenchError("tab index is outside the live session")
+                raise KiSeshError("tab index is outside the live session")
             tab = live_tabs[tab_index]
             previous_title = tab.title
             client.rename_tab(tab.tab_id, title)
@@ -815,7 +814,7 @@ class WorkbenchService:
                 raise
 
         if not stored.snapshot_path.is_file():
-            raise WorkbenchError("session has no saved tab layout")
+            raise KiSeshError("session has no saved tab layout")
         original = stored.snapshot_path.read_text(encoding="utf-8")
         original_context = self.store.read_context(stored.manifest.id)
         try:
@@ -826,7 +825,7 @@ class WorkbenchService:
                 title,
             )
         except IndexError as error:
-            raise WorkbenchError(str(error)) from error
+            raise KiSeshError(str(error)) from error
         updated = self.store.write_snapshot(
             stored.manifest.id,
             renamed_snapshot,
@@ -857,7 +856,7 @@ class WorkbenchService:
         except KittyError:
             live = False
         if live:
-            raise WorkbenchError(f"live sessions cannot be {operation}")
+            raise KiSeshError(f"live sessions cannot be {operation}")
 
     def archive(self, slug_or_id: str) -> StoredSession:
         """Archive an inactive session so it leaves the primary list."""
@@ -869,7 +868,7 @@ class WorkbenchService:
         """Return an archived session to the primary saved-session list."""
         stored = self.store.get(slug_or_id)
         if stored.manifest.status != "archived":
-            raise WorkbenchError(f"session is not archived: {stored.manifest.name}")
+            raise KiSeshError(f"session is not archived: {stored.manifest.name}")
         return self.store.restore_archive(stored.manifest.id)
 
     def remove(self, slug_or_id: str) -> Path:
@@ -922,7 +921,7 @@ class WorkbenchService:
 
 def _environment_window_id() -> int | None:
     """Return the invoking overlay ID only when caller metadata confirms one."""
-    if os.environ.get("KITTY_WORKBENCH_CALLER") not in {"overlay", "manager"}:
+    if os.environ.get("KISESH_CALLER") not in {"overlay", "manager"}:
         return None
     value = os.environ.get("KITTY_WINDOW_ID")
     try:

@@ -6,15 +6,15 @@ import unittest
 from collections.abc import Iterable
 from pathlib import Path
 
-from kitty_workbench.domain import KittyWindow
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.service import (
+from kisesh.domain import KittyWindow
+from kisesh.kitty_client import LiveTab
+from kisesh.service import (
+    KiSeshService,
     UnownedTabsAction,
     UnownedTabsDecision,
-    WorkbenchService,
 )
-from kitty_workbench.store import SessionStore, StoredSession
-from kitty_workbench.tui import SessionManager
+from kisesh.store import SessionStore, StoredSession
+from kisesh.tui import SessionManager
 from tests.fakes import FakeKitty
 from tests.render_fixture import Canvas, StaticService, rendered_manager
 
@@ -313,7 +313,7 @@ class TuiRenderingTests(unittest.TestCase):
 
     def test_too_small_terminal_has_a_clear_fallback(self) -> None:
         rendered, _, _ = rendered_manager(47, 7)
-        self.assertEqual(rendered, "kitty-workbench needs at least 48x8 cells\n")
+        self.assertEqual(rendered, "KiSesh needs at least 48x8 cells\n")
 
     def test_vim_navigation_and_open_keys_drive_the_selected_session(self) -> None:
         service = RecordingService()
@@ -455,7 +455,7 @@ class TuiRenderingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             kitty = FakeKitty()
             store = SessionStore(Path(temporary) / "data")
-            service = WorkbenchService(store, kitty)
+            service = KiSeshService(store, kitty)
             current = service.create_from_active("Current Work")
             fresh_shell = LiveTab(
                 1,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import curses
 from pathlib import Path
 
-from kitty_workbench.domain import (
+from kisesh.domain import (
     KittyWindow,
     PaneContext,
     RestoreKind,
@@ -13,11 +13,11 @@ from kitty_workbench.domain import (
     SessionContext,
     TabContext,
 )
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.model import SessionManifest, SessionStatus, SnapshotSummary, slugify
-from kitty_workbench.service import SessionView, UnownedTabsDecision, UnownedTabsInfo
-from kitty_workbench.store import StoredSession
-from kitty_workbench.tui import CursesGlyph, Palette, SessionManager
+from kisesh.kitty_client import LiveTab
+from kisesh.model import SessionManifest, SessionStatus, SnapshotSummary, slugify
+from kisesh.service import SessionView, UnownedTabsDecision, UnownedTabsInfo
+from kisesh.store import StoredSession
+from kisesh.tui import CursesGlyph, Palette, SessionManager
 
 
 class Canvas:

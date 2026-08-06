@@ -56,12 +56,12 @@ def tab_bar_paths(kitty_config: Path, install_root: Path, data_root: Path) -> Ta
         live=kitty_config.parent / "tab_bar.py",
         source=install_root / "integration" / "tab_bar.py",
         state=recovery / "tab-bar.json",
-        backup=recovery / "tab_bar.py.before-workbench",
+        backup=recovery / "tab_bar.py.before-kisesh",
     )
 
 
 def _is_managed(paths: TabBarPaths) -> bool:
-    """Report whether the live entrypoint is exactly Workbench's source link."""
+    """Report whether the live entrypoint is exactly KiSesh's source link."""
     if not paths.live.is_symlink():
         return False
     try:
@@ -131,7 +131,7 @@ def _matches_original(paths: TabBarPaths, record: BackupRecord) -> bool:
 
 
 def _cleanup_recovery(paths: TabBarPaths) -> None:
-    """Remove only Workbench's consumed recovery files."""
+    """Remove only KiSesh's consumed recovery files."""
     paths.state.unlink(missing_ok=True)
     paths.backup.unlink(missing_ok=True)
 
@@ -158,7 +158,7 @@ def restore_tab_bar(paths: TabBarPaths) -> bool:
     if record.kind == "file":
         with temporary_path(
             paths.live.parent,
-            prefix=".kitty-workbench-tab-bar.",
+            prefix=".kisesh-tab-bar.",
             suffix=".py",
         ) as temporary:
             shutil.copy2(paths.backup, temporary)

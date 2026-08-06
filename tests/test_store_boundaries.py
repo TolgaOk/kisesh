@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kitty_workbench.context import build_context
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.model import SnapshotSummary
-from kitty_workbench.store import (
+from kisesh.context import build_context
+from kisesh.kitty_client import LiveTab
+from kisesh.model import SnapshotSummary
+from kisesh.store import (
     SessionConflict,
     SessionStore,
     StoreError,

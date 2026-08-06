@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
-from kitty_workbench.app_profiles import DEFAULT_APP_PROFILES
-from kitty_workbench.cli import (
+from kisesh.app_profiles import DEFAULT_APP_PROFILES
+from kisesh.cli import (
     INVALID_CLOSE_MESSAGE,
     INVALID_EVENTS_MESSAGE,
     INVALID_PAYLOAD_MESSAGE,
@@ -49,18 +49,18 @@ from kitty_workbench.cli import (
     main,
     parse_arguments,
 )
-from kitty_workbench.context import build_context
-from kitty_workbench.domain import ClosingPaneCapture
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.model import SessionManifest
-from kitty_workbench.service import (
+from kisesh.context import build_context
+from kisesh.domain import ClosingPaneCapture
+from kisesh.kitty_client import LiveTab
+from kisesh.model import SessionManifest
+from kisesh.service import (
+    KiSeshError,
+    KiSeshService,
     SessionView,
     UnownedTabsAction,
     UnownedTabsDecision,
-    WorkbenchError,
-    WorkbenchService,
 )
-from kitty_workbench.store import StoredSession
+from kisesh.store import StoredSession
 
 
 class ShellReplaced(RuntimeError):
@@ -99,13 +99,13 @@ def _context() -> object:
     )
 
 
-def _service_mock(stored: StoredSession | None = None) -> tuple[WorkbenchService, mock.MagicMock]:
+def _service_mock(stored: StoredSession | None = None) -> tuple[KiSeshService, mock.MagicMock]:
     """Return a typed service view and its configurable autospecced mock."""
-    raw = mock.create_autospec(WorkbenchService, instance=True)
+    raw = mock.create_autospec(KiSeshService, instance=True)
     raw.store = mock.MagicMock()
     raw.profiles = DEFAULT_APP_PROFILES
     raw.store.get.return_value = stored or _stored()
-    return cast(WorkbenchService, raw), raw
+    return cast(KiSeshService, raw), raw
 
 
 def _stdin_payload(payload: object) -> io.StringIO:
@@ -124,7 +124,7 @@ class CliTests(unittest.TestCase):
                 "add-tab",
                 "project",
                 "--data-dir",
-                "/tmp/workbench",
+                "/tmp/kisesh",
                 "--app-config",
                 "/tmp/apps.toml",
             ]
@@ -147,7 +147,7 @@ class CliTests(unittest.TestCase):
         self.assertIsInstance(before.command, AddTab)
         self.assertEqual(before.socket, "unix:/tmp/kitty")
         self.assertIsInstance(after.command, AddTab)
-        self.assertEqual(after.data_dir, Path("/tmp/workbench"))
+        self.assertEqual(after.data_dir, Path("/tmp/kisesh"))
         self.assertEqual(after.app_config, Path("/tmp/apps.toml"))
         self.assertIsInstance(remove_alias.command, RemoveSession)
         self.assertEqual(
@@ -184,7 +184,7 @@ class CliTests(unittest.TestCase):
                 socket="unix:/tmp/kitty",
             )
             live = CliConfig(Manager(), data_dir=root / "data")
-            with mock.patch("kitty_workbench.cli.KittyClient") as client:
+            with mock.patch("kisesh.cli.KittyClient") as client:
                 offline_service = _service(offline)
                 connected_service = _service(connected)
                 live_service = _service(live)
@@ -241,7 +241,7 @@ class CliTests(unittest.TestCase):
         raw.context.return_value = _context()
         with (
             mock.patch(
-                "kitty_workbench.cli.run_restored_shell",
+                "kisesh.cli.run_restored_shell",
                 side_effect=ShellReplaced,
             ) as restore,
             self.assertRaises(ShellReplaced),
@@ -290,7 +290,7 @@ class CliTests(unittest.TestCase):
 
         service, _ = _service_mock(stored)
         with self.assertRaisesRegex(
-            WorkbenchError,
+            KiSeshError,
             "--unowned-name requires --unowned-tabs save-separately",
         ):
             _run_membership(OpenSession("project", None, "invalid"), service)
@@ -402,7 +402,7 @@ class CliTests(unittest.TestCase):
             },
         )
         with mock.patch(
-            "kitty_workbench.cli._autosave_payload_from_stdin",
+            "kisesh.cli._autosave_payload_from_stdin",
             return_value=([], close),
         ):
             self.assertEqual(_run_maintenance(AutosaveSession("session-id", True), service), 0)
@@ -430,7 +430,7 @@ class CliTests(unittest.TestCase):
             with (
                 self.subTest(command=type(command).__name__),
                 mock.patch(
-                    f"kitty_workbench.cli.{function_name}",
+                    f"kisesh.cli.{function_name}",
                     return_value=result,
                 ) as runner,
             ):
@@ -446,8 +446,8 @@ class CliTests(unittest.TestCase):
         for is_panel, expects_dismissal in ((False, False), (True, True)):
             with (
                 self.subTest(is_panel=is_panel),
-                mock.patch("kitty_workbench.cli.is_panel_process", return_value=is_panel),
-                mock.patch("kitty_workbench.cli.SessionManager") as manager,
+                mock.patch("kisesh.cli.is_panel_process", return_value=is_panel),
+                mock.patch("kisesh.cli.SessionManager") as manager,
             ):
                 manager.return_value.run.return_value = 9
                 self.assertEqual(_run_manager(service), 9)
@@ -460,20 +460,20 @@ class CliTests(unittest.TestCase):
         config = CliConfig(ListSessions())
         service, _ = _service_mock()
         with (
-            mock.patch("kitty_workbench.cli.parse_arguments", return_value=config),
-            mock.patch("kitty_workbench.cli._service", return_value=service),
-            mock.patch("kitty_workbench.cli._dispatch", return_value=7),
+            mock.patch("kisesh.cli.parse_arguments", return_value=config),
+            mock.patch("kisesh.cli._service", return_value=service),
+            mock.patch("kisesh.cli._dispatch", return_value=7),
         ):
             self.assertEqual(main([]), 7)
 
         stderr = io.StringIO()
         with (
-            mock.patch("kitty_workbench.cli.parse_arguments", return_value=config),
-            mock.patch("kitty_workbench.cli._service", side_effect=WorkbenchError("not live")),
+            mock.patch("kisesh.cli.parse_arguments", return_value=config),
+            mock.patch("kisesh.cli._service", side_effect=KiSeshError("not live")),
             redirect_stderr(stderr),
         ):
             self.assertEqual(main([]), 1)
-        self.assertEqual(stderr.getvalue(), "kitty-workbench: not live\n")
+        self.assertEqual(stderr.getvalue(), "kisesh: not live\n")
 
 
 if __name__ == "__main__":

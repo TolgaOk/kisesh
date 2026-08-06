@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .model import SESSION_ID_VAR, SESSION_SLUG_VAR, WORKBENCH_UI_VAR
+from .model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SLUG_VAR
 
 
 class CloseGuardChild(Protocol):
@@ -86,7 +86,7 @@ class TabOwnership:
 
 @dataclass(frozen=True, slots=True)
 class CloseRequest:
-    """Durable close parameters passed from Kitty to the Workbench CLI."""
+    """Durable close parameters passed from Kitty to the KiSesh CLI."""
 
     session_id: str
     os_window_id: int
@@ -159,11 +159,11 @@ def _release_session(session_id: str) -> None:
 def _launch_close(request: CloseRequest) -> subprocess.Popen[str] | None:
     """Launch the shell-free save-close operation without blocking Kitty."""
     project = Path(__file__).resolve().parents[1]
-    launcher = project / "bin" / "kitty-workbench"
+    launcher = project / "bin" / "kisesh"
     if not launcher.is_file():
         return None
     command = [str(launcher)]
-    socket = request.environment.get("KITTY_WORKBENCH_TARGET_SOCKET") or request.environment.get(
+    socket = request.environment.get("KISESH_TARGET_SOCKET") or request.environment.get(
         "KITTY_LISTEN_ON"
     )
     if socket:
@@ -228,10 +228,10 @@ def _confirmed_close(confirmed: bool, request: CloseRequest) -> None:
 
 
 def _close_transient_window(boss: CloseGuardBoss, window: CloseGuardWindow) -> bool:
-    """Close a Workbench or Kitty overlay without touching its underlying tab."""
+    """Close a KiSesh or Kitty overlay without touching its underlying tab."""
     try:
         variables = _string_mapping(window.user_vars)
-        transient = window.overlay_parent is not None or bool(variables.get(WORKBENCH_UI_VAR))
+        transient = window.overlay_parent is not None or bool(variables.get(KISESH_UI_VAR))
     except Exception:
         return True
     if not transient:
@@ -296,13 +296,13 @@ def _request_tracked_close(
             window=window,
             confirm_on_cancel=False,
             confirm_on_accept=False,
-            title="Close Workbench session",
+            title="Close KiSesh session",
         )
     except Exception:
         _release_session(session_id)
         return
     with suppress(Exception):
-        prompt.set_user_var(WORKBENCH_UI_VAR, "yes")
+        prompt.set_user_var(KISESH_UI_VAR, "yes")
 
 
 def request_tab_close(target_window_id: int, boss: CloseGuardBoss) -> None:

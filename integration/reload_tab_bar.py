@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from importlib import import_module, reload
 from pathlib import Path
@@ -12,7 +13,7 @@ from kittens.tui.handler import result_handler
 if TYPE_CHECKING:
     from kitty.boss import Boss
 
-    from kitty_workbench.session_bar import SessionBarBoss
+    from kisesh.session_bar import SessionBarBoss
 
 
 class ReloadHandler(Protocol):
@@ -22,10 +23,10 @@ class ReloadHandler(Protocol):
         """Clear Kitty's cached renderer and redraw native tab bars."""
 
 
-PROJECT_ROOT = Path.home() / ".local" / "lib" / "kitty-workbench"
+PROJECT_ROOT = Path(os.environ.get("KISESH_INSTALL_ROOT", "~/.local/lib/kisesh")).expanduser()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-SESSION_BAR_MODULE = reload(import_module("kitty_workbench.session_bar"))
+SESSION_BAR_MODULE = reload(import_module("kisesh.session_bar"))
 reload_session_bar = cast(ReloadHandler, SESSION_BAR_MODULE.reload_session_bar)
 
 

@@ -1,7 +1,8 @@
-"""No-UI Kitty kitten that changes only Workbench's native tab filter."""
+"""No-UI Kitty kitten that changes only KiSesh's native tab filter."""
 
 from __future__ import annotations
 
+import os
 import sys
 from importlib import import_module, reload
 from pathlib import Path
@@ -13,7 +14,7 @@ from kitty.fast_data_types import get_options
 if TYPE_CHECKING:
     from kitty.boss import Boss
 
-    from kitty_workbench.session_filter import SessionFilterBoss, SessionFilterOptions
+    from kisesh.session_filter import SessionFilterBoss, SessionFilterOptions
 
 
 class SessionFilterHandler(Protocol):
@@ -28,10 +29,10 @@ class SessionFilterHandler(Protocol):
         """Apply one filter without reloading Kitty's other options."""
 
 
-PROJECT_ROOT = Path.home() / ".local" / "lib" / "kitty-workbench"
+PROJECT_ROOT = Path(os.environ.get("KISESH_INSTALL_ROOT", "~/.local/lib/kisesh")).expanduser()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-SESSION_FILTER_MODULE = reload(import_module("kitty_workbench.session_filter"))
+SESSION_FILTER_MODULE = reload(import_module("kisesh.session_filter"))
 set_session_filter = cast(SessionFilterHandler, SESSION_FILTER_MODULE.set_session_filter)
 
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import cast
 from unittest import mock
 
-from kitty_workbench.close_guard import (
+from kisesh.close_guard import (
     CloseGuardBoss,
     CloseGuardTab,
     CloseGuardWindow,
@@ -27,7 +27,7 @@ from kitty_workbench.close_guard import (
     _window_environment,
     request_tab_close,
 )
-from kitty_workbench.model import SESSION_ID_VAR, SESSION_SLUG_VAR, WORKBENCH_UI_VAR
+from kisesh.model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SLUG_VAR
 
 
 @dataclass(slots=True)
@@ -224,9 +224,7 @@ class CloseGuardTests(unittest.TestCase):
         self.assertEqual(_string_mapping("not a mapping"), {})
 
         without_child = FakeWindow(1)
-        with mock.patch.dict(
-            "kitty_workbench.close_guard.os.environ", {"BASE": "kitty"}, clear=True
-        ):
+        with mock.patch.dict("kisesh.close_guard.os.environ", {"BASE": "kitty"}, clear=True):
             self.assertEqual(
                 _window_environment(cast(CloseGuardWindow, without_child)),
                 {"BASE": "kitty"},
@@ -316,18 +314,18 @@ class CloseGuardTests(unittest.TestCase):
         self.assertEqual(confirmation.keyword_arguments["window"], tab.windows[0])
         self.assertFalse(confirmation.keyword_arguments["confirm_on_cancel"])
         self.assertFalse(confirmation.keyword_arguments["confirm_on_accept"])
-        self.assertEqual(confirmation.keyword_arguments["title"], "Close Workbench session")
-        self.assertEqual(boss.prompt.assigned_vars, [(WORKBENCH_UI_VAR, "yes")])
+        self.assertEqual(confirmation.keyword_arguments["title"], "Close KiSesh session")
+        self.assertEqual(boss.prompt.assigned_vars, [(KISESH_UI_VAR, "yes")])
         self.assertEqual(boss.closed_tabs, [])
 
         boss.answer(False)
         route_close(11, boss)
         self.assertEqual(len(boss.confirmations), 2)
 
-    def test_confirmation_overlay_and_workbench_ui_close_without_touching_a_tab(self) -> None:
+    def test_confirmation_overlay_and_kisesh_ui_close_without_touching_a_tab(self) -> None:
         for transient in (
             FakeWindow(11, overlay_parent=7),
-            FakeWindow(11, {WORKBENCH_UI_VAR: "yes"}),
+            FakeWindow(11, {KISESH_UI_VAR: "yes"}),
         ):
             tab = FakeTab(7, 1, [transient])
             boss = FakeBoss(tab)
@@ -356,8 +354,8 @@ class CloseGuardTests(unittest.TestCase):
             return thread
 
         with (
-            mock.patch("kitty_workbench.close_guard._launch_close", return_value=process) as launch,
-            mock.patch("kitty_workbench.close_guard.threading.Thread", side_effect=thread_factory),
+            mock.patch("kisesh.close_guard._launch_close", return_value=process) as launch,
+            mock.patch("kisesh.close_guard.threading.Thread", side_effect=thread_factory),
         ):
             route_close(11, boss)
             boss.answer(True)
@@ -377,14 +375,12 @@ class CloseGuardTests(unittest.TestCase):
     def test_close_process_uses_exact_shell_free_cli_arguments_and_socket_priority(self) -> None:
         process = cast(subprocess.Popen[str], mock.MagicMock())
         environment = {
-            "KITTY_WORKBENCH_TARGET_SOCKET": "unix:/tmp/preferred.sock",
+            "KISESH_TARGET_SOCKET": "unix:/tmp/preferred.sock",
             "KITTY_LISTEN_ON": "unix:/tmp/fallback.sock",
         }
         request = CloseRequest("session-a", 41, environment)
 
-        with mock.patch(
-            "kitty_workbench.close_guard.subprocess.Popen", return_value=process
-        ) as popen:
+        with mock.patch("kisesh.close_guard.subprocess.Popen", return_value=process) as popen:
             result = _launch_close(request)
 
         self.assertIs(result, process)
@@ -405,9 +401,7 @@ class CloseGuardTests(unittest.TestCase):
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
         without_socket = CloseRequest("session-b", 9, {})
-        with mock.patch(
-            "kitty_workbench.close_guard.subprocess.Popen", return_value=process
-        ) as popen:
+        with mock.patch("kisesh.close_guard.subprocess.Popen", return_value=process) as popen:
             _launch_close(without_socket)
         self.assertEqual(
             popen.call_args.args[0][-4:],
@@ -417,17 +411,17 @@ class CloseGuardTests(unittest.TestCase):
     def test_process_confirmation_and_wait_failures_release_the_guard(self) -> None:
         request = CloseRequest("session-a", 1, {})
         self.assertTrue(_reserve_session(request.session_id))
-        with mock.patch("kitty_workbench.close_guard._launch_close", return_value=None):
+        with mock.patch("kisesh.close_guard._launch_close", return_value=None):
             _run_close_request(request)
         self.assertTrue(_reserve_session(request.session_id))
         _release_session(request.session_id)
 
         with mock.patch(
-            "kitty_workbench.close_guard.subprocess.Popen",
+            "kisesh.close_guard.subprocess.Popen",
             side_effect=OSError("cannot fork"),
         ):
             self.assertIsNone(_launch_close(request))
-        with mock.patch("kitty_workbench.close_guard.Path.is_file", return_value=False):
+        with mock.patch("kisesh.close_guard.Path.is_file", return_value=False):
             self.assertIsNone(_launch_close(request))
 
         for failure in (OSError("lost child"), subprocess.SubprocessError("broken child")):
@@ -448,8 +442,8 @@ class CloseGuardTests(unittest.TestCase):
         thread.start.side_effect = RuntimeError("thread unavailable")
         self.assertTrue(_reserve_session(request.session_id))
         with (
-            mock.patch("kitty_workbench.close_guard._launch_close") as launch,
-            mock.patch("kitty_workbench.close_guard.threading.Thread", return_value=thread),
+            mock.patch("kisesh.close_guard._launch_close") as launch,
+            mock.patch("kisesh.close_guard.threading.Thread", return_value=thread),
         ):
             _confirmed_close(True, request)
         self.assertNotIn(request.session_id, _pending_sessions)

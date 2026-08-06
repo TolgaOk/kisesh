@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import os
 import shutil
 import subprocess
 import unittest
@@ -11,15 +12,15 @@ from types import SimpleNamespace
 from typing import NamedTuple, Protocol, cast
 from unittest import mock
 
-from kitty_workbench import session_bar
-from kitty_workbench.model import (
+from kisesh import session_bar
+from kisesh.model import (
     AGENT_VAR,
     APP_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SLUG_VAR,
 )
-from kitty_workbench.session_bar import SessionBarBoss, SessionBarTab, render_tab_label
+from kisesh.session_bar import SessionBarBoss, SessionBarTab, render_tab_label
 
 PROJECT = Path(__file__).parents[1]
 
@@ -356,7 +357,7 @@ class SessionBarAdapterTests(unittest.TestCase):
                 side_effect=lambda: drawer_holder[0],
             ),
             mock.patch(
-                "kitty_workbench.session_bar.importlib.import_module",
+                "kisesh.session_bar.importlib.import_module",
                 return_value=SimpleNamespace(as_rgb=lambda color: color),
             ),
         ):
@@ -504,7 +505,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             )
         )
         with mock.patch(
-            "kitty_workbench.session_bar.importlib.import_module",
+            "kisesh.session_bar.importlib.import_module",
             return_value=SimpleNamespace(
                 as_rgb=mock.Mock(side_effect=RuntimeError("theme changed"))
             ),
@@ -757,7 +758,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         }
         session_bar._drawer = None
         with mock.patch(
-            "kitty_workbench.session_bar.importlib.import_module",
+            "kisesh.session_bar.importlib.import_module",
             side_effect=lambda name: modules[name],
         ) as imported:
             self.assertIs(session_bar._kitty_boss(), boss)
@@ -781,7 +782,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         session_bar._drawer = RecordingDrawer()
 
         with mock.patch(
-            "kitty_workbench.session_bar.importlib.import_module",
+            "kisesh.session_bar.importlib.import_module",
             return_value=module,
         ):
             session_bar.reload_session_bar(cast(SessionBarBoss, boss))
@@ -801,6 +802,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         result = subprocess.run(
             ["kitty", "+runpy", script, str(PROJECT / "integration" / "tab_bar.py")],
             cwd=PROJECT,
+            env={**os.environ, "KISESH_INSTALL_ROOT": str(PROJECT)},
             check=False,
             capture_output=True,
             text=True,
@@ -808,7 +810,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "kitty_workbench.session_bar")
+        self.assertEqual(result.stdout.strip(), "kisesh.session_bar")
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_kitty_callback_uses_integer_before_and_neighbor_data(self) -> None:
@@ -817,7 +819,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             f"sys.path.insert(0,{str(PROJECT)!r}); "
             "from types import SimpleNamespace as N; "
             "from kitty.tab_bar import ExtraData,TabBarData; "
-            "import kitty_workbench.session_bar as s; "
+            "import kisesh.session_bar as s; "
             f"v={{'{SESSION_ID_VAR}':'id','{SESSION_NAME_VAR}':'Project'}}; "
             "w=N(user_vars=v,child=N(cmdline=('-zsh',)),title='Shell'); "
             "tabs={1:[w],2:[w]}; "
@@ -852,7 +854,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             "from collections import namedtuple; "
             "from types import SimpleNamespace as N; "
             "from kitty.tab_bar import ExtraData,TabBarData; "
-            "import kitty_workbench.session_bar as s; "
+            "import kisesh.session_bar as s; "
             f"v={{'{SESSION_ID_VAR}':'id','{SESSION_NAME_VAR}':'Silver Seal'}}; "
             "w=N(user_vars=v,child=N(cmdline=('-zsh',)),title='Shell'); "
             "boss=N(tab_for_id={1:[w],2:[w]}.get); "
@@ -898,9 +900,9 @@ class SessionBarAdapterTests(unittest.TestCase):
         script = (
             "import runpy,sys; "
             f"sys.path.insert(0,{str(PROJECT)!r}); "
-            "import kitty_workbench.model as model; "
+            "import kisesh.model as model; "
             "del model.AGENT_VAR; del model.SESSION_NAME_VAR; "
-            "sys.modules.pop('kitty_workbench.session_bar',None); "
+            "sys.modules.pop('kisesh.session_bar',None); "
             "loaded=runpy.run_path(sys.argv[1]); "
             "print(loaded['draw_tab'].__module__)"
         )
@@ -914,7 +916,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "kitty_workbench.session_bar")
+        self.assertEqual(result.stdout.strip(), "kisesh.session_bar")
 
 
 if __name__ == "__main__":

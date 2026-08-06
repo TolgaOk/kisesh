@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kitty_workbench.context import build_context
-from kitty_workbench.domain import SessionContext
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.model import SnapshotSummary
-from kitty_workbench.store import SessionConflict, SessionNotFound, SessionStore, StoreError
+from kisesh.context import build_context
+from kisesh.domain import SessionContext
+from kisesh.kitty_client import LiveTab
+from kisesh.model import SnapshotSummary
+from kisesh.store import SessionConflict, SessionNotFound, SessionStore, StoreError
 
 
 def _context() -> SessionContext:

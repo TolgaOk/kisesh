@@ -5,7 +5,7 @@ import unittest
 from collections.abc import Mapping
 from typing import cast
 
-from kitty_workbench.context import (
+from kisesh.context import (
     COMMAND_HISTORY_LIMIT,
     LAST_COMMAND_OUTPUT_LIMIT,
     TERMINAL_HISTORY_LINE_LIMIT,
@@ -20,8 +20,8 @@ from kitty_workbench.context import (
     restore_session,
     update_context_for_closing_pane,
 )
-from kitty_workbench.domain import ClosingPaneCapture, KittyWindow
-from kitty_workbench.kitty_client import LiveTab
+from kisesh.domain import ClosingPaneCapture, KittyWindow
+from kisesh.kitty_client import LiveTab
 
 
 def _tab(*windows: Mapping[str, object], title: str = "Work") -> LiveTab:
@@ -233,12 +233,12 @@ class ContextTests(unittest.TestCase):
         restored = restore_session(
             snapshot,
             context,
-            shell_restore_argv=["/workbench", "restore-shell", "session-id"],
+            shell_restore_argv=["/kisesh", "restore-shell", "session-id"],
         )
 
         launch_lines = [line for line in restored.splitlines() if line.startswith("launch")]
         self.assertEqual(len(launch_lines), 2)
-        self.assertIn("/workbench restore-shell session-id", launch_lines[0])
+        self.assertIn("/kisesh restore-shell session-id", launch_lines[0])
         self.assertIn("--tab-index 0 --pane-index 0", launch_lines[0])
         self.assertIn("--tab-index 0 --pane-index 1", launch_lines[1])
         self.assertNotIn("touch /tmp/must-not-run", restored)
@@ -506,9 +506,9 @@ class ContextTests(unittest.TestCase):
         restored_shells = restore_session(
             snapshot,
             context,
-            shell_restore_argv=["/workbench", "restore-shell", "session-id"],
+            shell_restore_argv=["/kisesh", "restore-shell", "session-id"],
         )
-        self.assertEqual(restored_shells.count("/workbench restore-shell"), len(commands))
+        self.assertEqual(restored_shells.count("/kisesh restore-shell"), len(commands))
         self.assertNotIn("nvim .", restored_shells)
         self.assertNotIn(" htop", restored_shells)
         self.assertNotIn(" top", restored_shells)

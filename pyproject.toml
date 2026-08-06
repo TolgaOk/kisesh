@@ -1,5 +1,5 @@
 [project]
-name = "kitty-workbench"
+name = "kisesh"
 version = "0.1.0"
 description = "Kitty-native, recoverable multi-tab session management"
 requires-python = ">=3.11"
@@ -7,7 +7,7 @@ license = { text = "MIT" }
 dependencies = ["tyro>=1.0.15,<2"]
 
 [tool.setuptools.package-data]
-kitty_workbench = ["default_apps.toml"]
+kisesh = ["default_apps.toml"]
 
 [dependency-groups]
 dev = [
@@ -56,13 +56,13 @@ max-statements = 60
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["kitty_workbench", "tests", "workbench.py"]
+files = ["kisesh", "tests"]
 
 [tool.coverage.run]
 branch = true
 parallel = true
 patch = ["subprocess"]
-source = ["kitty_workbench"]
+source = ["kisesh"]
 
 [tool.coverage.report]
 fail_under = 100

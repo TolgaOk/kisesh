@@ -17,10 +17,10 @@ from .kitty_client import KittyClient, KittyError
 from .panel import PanelError, hide_quick_access_panel, is_panel_process
 from .paths import data_root
 from .service import (
+    KiSeshError,
+    KiSeshService,
     UnownedTabsAction,
     UnownedTabsDecision,
-    WorkbenchError,
-    WorkbenchService,
 )
 from .shell_restore import run_restored_shell
 from .store import SessionStore, StoreError
@@ -270,7 +270,7 @@ def parse_arguments(argv: list[str] | None = None) -> CliConfig:
     """Parse arguments into a fully typed global configuration."""
     return tyro.cli(
         CliConfig,
-        prog="kitty-workbench",
+        prog="kisesh",
         description="Kitty-native recoverable session management.",
         args=argv,
         config=(
@@ -291,21 +291,21 @@ def _needs_kitty(command: Command) -> bool:
     return not isinstance(command, offline_types)
 
 
-def _service(config: CliConfig) -> WorkbenchService:
+def _service(config: CliConfig) -> KiSeshService:
     """Construct storage and optional live Kitty dependencies."""
     store = SessionStore(data_root(config.data_dir))
     connect = _needs_kitty(config.command) or bool(config.kitty or config.socket)
     kitty = KittyClient(executable=config.kitty, socket=config.socket) if connect else None
-    return WorkbenchService(store, kitty, profiles=load_app_profiles(config.app_config))
+    return KiSeshService(store, kitty, profiles=load_app_profiles(config.app_config))
 
 
-def _run_manager(service: WorkbenchService) -> int:
+def _run_manager(service: KiSeshService) -> int:
     """Run the interactive manager with optional resident-panel dismissal."""
     dismiss = hide_quick_access_panel if is_panel_process() else None
     return SessionManager(service, profiles=service.profiles, on_dismiss=dismiss).run()
 
 
-def _run_read(command: ReadCommand, service: WorkbenchService) -> int:
+def _run_read(command: ReadCommand, service: KiSeshService) -> int:
     """Execute a listing or persisted-context read without mutating sessions."""
     if isinstance(command, ListSessions):
         views = service.views()
@@ -346,7 +346,7 @@ def _run_read(command: ReadCommand, service: WorkbenchService) -> int:
     )
 
 
-def _run_membership(command: MembershipCommand, service: WorkbenchService) -> int:
+def _run_membership(command: MembershipCommand, service: KiSeshService) -> int:
     """Execute creation, tab membership, save, or open operations."""
     if isinstance(command, CreateSession):
         stored = service.create_from_active(command.name, command.root)
@@ -364,7 +364,7 @@ def _run_membership(command: MembershipCommand, service: WorkbenchService) -> in
         if command.unowned_name is not None and (
             command.unowned_tabs is not UnownedTabsAction.SAVE_SEPARATELY
         ):
-            raise WorkbenchError("--unowned-name requires --unowned-tabs save-separately")
+            raise KiSeshError("--unowned-name requires --unowned-tabs save-separately")
         decision = (
             UnownedTabsDecision(command.unowned_tabs, command.unowned_name)
             if command.unowned_tabs is not None
@@ -375,7 +375,7 @@ def _run_membership(command: MembershipCommand, service: WorkbenchService) -> in
     return 0
 
 
-def _run_lifecycle(command: LifecycleCommand, service: WorkbenchService) -> int:
+def _run_lifecycle(command: LifecycleCommand, service: KiSeshService) -> int:
     """Execute rename, archive, unarchive, and recoverable removal operations."""
     if isinstance(command, RenameSession):
         result = service.rename(command.session, command.name).manifest.slug
@@ -448,7 +448,7 @@ def _autosave_payload_from_stdin(
     )
 
 
-def _run_maintenance(command: MaintenanceCommand, service: WorkbenchService) -> int:
+def _run_maintenance(command: MaintenanceCommand, service: KiSeshService) -> int:
     """Execute watcher autosave or diagnostic maintenance."""
     if isinstance(command, AutosaveSession):
         events, closing_pane = _autosave_payload_from_stdin(command.payload_stdin)
@@ -462,7 +462,7 @@ def _run_maintenance(command: MaintenanceCommand, service: WorkbenchService) -> 
     return int(any(finding.startswith("ERROR") for finding in findings))
 
 
-def _dispatch(config: CliConfig, service: WorkbenchService) -> int:
+def _dispatch(config: CliConfig, service: KiSeshService) -> int:
     """Route one typed command to its cohesive operation family."""
     command = config.command
     if isinstance(command, Manager):
@@ -496,9 +496,9 @@ def main(argv: list[str] | None = None) -> int:
         KittyError,
         PanelError,
         StoreError,
-        WorkbenchError,
+        KiSeshError,
         OSError,
         ValueError,
     ) as error:
-        print(f"kitty-workbench: {error}", file=sys.stderr)
+        print(f"kisesh: {error}", file=sys.stderr)
         return 1

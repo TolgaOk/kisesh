@@ -11,8 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from kitty_workbench.domain import KittyOsWindowState
-from kitty_workbench.kitty_client import (
+from kisesh.domain import KittyOsWindowState
+from kisesh.kitty_client import (
     SESSION_FILTER_KITTEN,
     KittyClient,
     KittyError,
@@ -23,7 +23,7 @@ from kitty_workbench.kitty_client import (
     _require_snapshot,
     _run_command,
 )
-from kitty_workbench.model import (
+from kisesh.model import (
     CAPTURE_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
@@ -92,7 +92,7 @@ class KittyClientBoundaryTests(unittest.TestCase):
         runner = RecordingCommandRunner(stdout="done")
         with (
             mock.patch.dict("os.environ", {}, clear=True),
-            mock.patch("kitty_workbench.kitty_client._find_socket", return_value=None),
+            mock.patch("kisesh.kitty_client._find_socket", return_value=None),
         ):
             client = KittyClient(executable="/kitty", runner=runner)
         self.assertEqual(client.command("ls", check=False), "done")
@@ -167,13 +167,13 @@ class KittyClientBoundaryTests(unittest.TestCase):
                 "tabs": [
                     {
                         "id": 2,
-                        "windows": [{"id": 3, "user_vars": {"kitty_workbench_ui": "YES"}}],
+                        "windows": [{"id": 3, "user_vars": {"kisesh_ui": "YES"}}],
                     },
                     {
                         "id": 4,
                         "title": "",
                         "layout": "",
-                        "windows": [{"id": 5, "user_vars": {"kitty_workbench_ui": "false"}}],
+                        "windows": [{"id": 5, "user_vars": {"kisesh_ui": "false"}}],
                     },
                 ],
             }
@@ -198,7 +198,7 @@ class KittyClientBoundaryTests(unittest.TestCase):
                 "tabs": [
                     {
                         "id": 2,
-                        "windows": [{"id": 3, "user_vars": {"kitty_workbench_ui": "yes"}}],
+                        "windows": [{"id": 3, "user_vars": {"kisesh_ui": "yes"}}],
                     }
                 ],
             }
@@ -404,19 +404,19 @@ class KittyClientBoundaryTests(unittest.TestCase):
         with (
             mock.patch.object(Path, "glob", return_value=iter([second])),
             mock.patch.object(Path, "exists", return_value=True),
-            mock.patch("kitty_workbench.kitty_client._is_socket", return_value=True),
+            mock.patch("kisesh.kitty_client._is_socket", return_value=True),
         ):
             self.assertIsNone(_find_socket())
         with (
             mock.patch.object(Path, "glob", return_value=iter([])),
             mock.patch.object(Path, "exists", return_value=True),
-            mock.patch("kitty_workbench.kitty_client._is_socket", return_value=True),
+            mock.patch("kisesh.kitty_client._is_socket", return_value=True),
         ):
             self.assertEqual(_find_socket(), f"unix:{first}")
         with (
             mock.patch.object(Path, "glob", return_value=iter([second])),
             mock.patch.object(Path, "exists", side_effect=(OSError("unreadable"), False)),
-            mock.patch("kitty_workbench.kitty_client._is_socket", return_value=True),
+            mock.patch("kisesh.kitty_client._is_socket", return_value=True),
         ):
             self.assertIsNone(_find_socket())
 

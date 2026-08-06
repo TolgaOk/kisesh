@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from kitty_workbench.model import (
+from kisesh.model import (
     SCHEMA_VERSION,
     SessionManifest,
     SnapshotSummary,

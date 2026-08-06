@@ -20,7 +20,7 @@ from .model import SessionManifest, SessionStatus, SnapshotSummary, slugify, utc
 
 
 class StoreError(RuntimeError):
-    """Base error for invalid or inaccessible Workbench storage."""
+    """Base error for invalid or inaccessible KiSesh storage."""
 
 
 class SessionNotFound(StoreError):

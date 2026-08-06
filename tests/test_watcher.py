@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 from unittest import mock
 
-from kitty_workbench import watcher
+from kisesh import watcher
 
 
 class Child(watcher.WatcherChild):
@@ -375,9 +375,9 @@ class WatcherTests(unittest.TestCase):
         already_owned = Window(4)
         self.assertIsNone(watcher._tab_inheritance(4, Boss([[already_owned]])))
 
-        workbench_ui = Window(5, session_id=None)
-        workbench_ui.user_vars = {watcher.WORKBENCH_UI_VAR: "yes"}
-        self.assertIsNone(watcher._tab_inheritance(5, Boss([[workbench_ui]])))
+        kisesh_ui = Window(5, session_id=None)
+        kisesh_ui.user_vars = {watcher.KISESH_UI_VAR: "yes"}
+        self.assertIsNone(watcher._tab_inheritance(5, Boss([[kisesh_ui]])))
 
         broken_window = BrokenWindow(6, session_id=None)
         identity = watcher._window_identity(broken_window)
@@ -406,16 +406,16 @@ class WatcherTests(unittest.TestCase):
 
     def test_transient_ui_never_inherits_a_sibling_session_identity(self) -> None:
         """Exclude the overlay itself before any sibling ownership lookup."""
-        workbench_ui = Window(55, session_id=None)
-        workbench_ui.user_vars = {watcher.WORKBENCH_UI_VAR: "yes"}
-        boss = Boss([[workbench_ui, Window()]])
+        kisesh_ui = Window(55, session_id=None)
+        kisesh_ui.user_vars = {watcher.KISESH_UI_VAR: "yes"}
+        boss = Boss([[kisesh_ui, Window()]])
 
-        self.assertIsNone(watcher._session_id(workbench_ui, boss=boss))
+        self.assertIsNone(watcher._session_id(kisesh_ui, boss=boss))
         self.assertEqual(boss.expressions, [])
 
     def test_events_debounce_per_session(self) -> None:
         """Replace a pending timer instead of polling or writing twice."""
-        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
             watcher._schedule(Window())
             watcher._schedule(Window())
 
@@ -532,12 +532,12 @@ class WatcherTests(unittest.TestCase):
         """Invoke the installed launcher with global options in Tyro order."""
         environment = {"PATH": "/fresh", "KITTY_LISTEN_ON": "unix:/tmp/kitty"}
         watcher._timer_generations["session-id"] = 1
-        with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+        with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
             popen.return_value.wait.return_value = 0
             watcher._run_autosave("session-id", environment, 1)
 
         command = popen.call_args.args[0]
-        self.assertTrue(command[0].endswith("/bin/kitty-workbench"))
+        self.assertTrue(command[0].endswith("/bin/kisesh"))
         self.assertEqual(command[1:4], ["--socket", "unix:/tmp/kitty", "autosave"])
         self.assertEqual(command[4:], ["session-id", "--payload-stdin"])
         self.assertEqual(_written_payload(popen), {"command_events": []})
@@ -545,7 +545,7 @@ class WatcherTests(unittest.TestCase):
     def test_rapid_completed_commands_survive_debounce_and_reach_autosave(self) -> None:
         """Retain every completion when rapid events replace the timer."""
         boss = Boss()
-        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
             watcher.on_cmd_startstop(
                 boss,
                 Window(),
@@ -558,7 +558,7 @@ class WatcherTests(unittest.TestCase):
             )
 
         self.assertTrue(FakeTimer.instances[0].cancelled)
-        with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+        with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
             popen.return_value.wait.return_value = 0
             FakeTimer.instances[-1].fire()
 
@@ -570,7 +570,7 @@ class WatcherTests(unittest.TestCase):
     def test_expired_debounce_callback_cannot_drain_newer_commands(self) -> None:
         """Model a canceled timer that had already begun firing on Kitty's thread."""
         boss = Boss()
-        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
             watcher.on_cmd_startstop(
                 boss,
                 Window(),
@@ -584,7 +584,7 @@ class WatcherTests(unittest.TestCase):
             )
             current = FakeTimer.instances[-1]
 
-            with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+            with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
                 popen.return_value.wait.return_value = 0
                 stale.fire()
                 popen.assert_not_called()
@@ -622,7 +622,7 @@ class WatcherTests(unittest.TestCase):
     def test_cmd_w_can_drain_commands_while_an_autosave_process_is_in_flight(self) -> None:
         """Keep events queued until the isolated writer confirms persistence."""
         boss = Boss()
-        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
             watcher.on_cmd_startstop(
                 boss,
                 Window(),
@@ -636,7 +636,7 @@ class WatcherTests(unittest.TestCase):
             drained.extend(watcher._drain_closing_events("session-id"))
             return 0
 
-        with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+        with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
             popen.return_value.wait.side_effect = close_during_wait
             FakeTimer.instances[-1].fire()
 
@@ -646,7 +646,7 @@ class WatcherTests(unittest.TestCase):
     def test_command_arriving_during_autosave_remains_queued(self) -> None:
         """Remove only events handled by a successful in-flight writer."""
         boss = Boss()
-        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
             watcher.on_cmd_startstop(
                 boss,
                 Window(),
@@ -664,7 +664,7 @@ class WatcherTests(unittest.TestCase):
             )
             return 0
 
-        with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+        with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
             popen.return_value.wait.side_effect = append_new_event
             FakeTimer.instances[-1].fire()
 
@@ -687,7 +687,7 @@ class WatcherTests(unittest.TestCase):
                 watcher._timer_generations.clear()
                 watcher._pending_commands.clear()
                 FakeTimer.instances.clear()
-                with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+                with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
                     watcher.on_cmd_startstop(
                         Boss(),
                         Window(),
@@ -719,7 +719,7 @@ class WatcherTests(unittest.TestCase):
         sibling = Window(98)
         boss = Boss([[foreign], [sibling, closing]])
 
-        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
             watcher.on_cmd_startstop(
                 boss,
                 closing,
@@ -727,7 +727,7 @@ class WatcherTests(unittest.TestCase):
             )
         pending_timer = FakeTimer.instances[-1]
 
-        with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+        with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
             watcher.on_close(boss, closing, {})
 
         self.assertTrue(pending_timer.cancelled)
@@ -759,7 +759,7 @@ class WatcherTests(unittest.TestCase):
         process.wait.return_value = 0
 
         with (
-            mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer),
+            mock.patch("kisesh.watcher.threading.Timer", FakeTimer),
             mock.patch.object(
                 watcher,
                 "_launch_autosave",
@@ -817,10 +817,10 @@ class WatcherTests(unittest.TestCase):
 
     def test_triggered_autosave_timer_is_one_shot_not_a_polling_loop(self) -> None:
         """Complete one scheduled save without creating another timer."""
-        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
             watcher.on_title_change(Boss(), Window(), {"title": "settled"})
             self.assertEqual(len(FakeTimer.instances), 1)
-            with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+            with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
                 popen.return_value.wait.return_value = 0
                 FakeTimer.instances[0].fire()
 
@@ -865,12 +865,12 @@ class WatcherTests(unittest.TestCase):
 
         with (
             mock.patch.object(Path, "is_file", return_value=False),
-            mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen,
+            mock.patch("kisesh.watcher.subprocess.Popen") as popen,
         ):
             watcher._launch_autosave("session-id", {}, {"command_events": []})
         popen.assert_not_called()
 
-        with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+        with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
             popen.return_value.stdin = None
             watcher._launch_autosave("session-id", {}, {"command_events": []})
         command = popen.call_args.args[0]
@@ -879,13 +879,13 @@ class WatcherTests(unittest.TestCase):
         for error in (OSError("spawn failed"), BrokenPipeError("closed")):
             with (
                 self.subTest(error=type(error).__name__),
-                mock.patch("kitty_workbench.watcher.subprocess.Popen", side_effect=error),
+                mock.patch("kisesh.watcher.subprocess.Popen", side_effect=error),
             ):
                 self.assertIsNone(
                     watcher._launch_autosave("session-id", {}, {"command_events": []})
                 )
 
-        with mock.patch("kitty_workbench.watcher.subprocess.Popen") as popen:
+        with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
             popen.return_value.stdin.write.side_effect = BrokenPipeError("closed")
             self.assertIs(
                 watcher._launch_autosave("session-id", {}, {"command_events": []}),
@@ -927,7 +927,7 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(watcher._drain_closing_events("missing"), [])
 
         unstamped = Window(session_id=None)
-        with mock.patch("kitty_workbench.watcher.threading.Timer", FakeTimer):
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
             watcher._schedule(unstamped)
         self.assertEqual(FakeTimer.instances, [])
         with mock.patch.object(watcher, "_launch_autosave") as launch:
@@ -956,7 +956,7 @@ class WatcherTests(unittest.TestCase):
         window.child.foreground_cwd = lambda: "/tmp/callable"
         with (
             mock.patch.object(watcher, "_schedule") as schedule,
-            mock.patch("kitty_workbench.watcher.time.time", return_value=1785843999.0),
+            mock.patch("kisesh.watcher.time.time", return_value=1785843999.0),
         ):
             watcher.on_cmd_startstop(
                 boss,
@@ -982,7 +982,7 @@ class WatcherTests(unittest.TestCase):
             with (
                 self.subTest(reported=reported),
                 mock.patch.object(watcher, "_schedule") as schedule,
-                mock.patch("kitty_workbench.watcher.time.time", return_value=1785843999.0),
+                mock.patch("kisesh.watcher.time.time", return_value=1785843999.0),
             ):
                 watcher.on_cmd_startstop(
                     Boss(),

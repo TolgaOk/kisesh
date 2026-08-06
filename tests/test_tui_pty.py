@@ -60,15 +60,15 @@ class TuiPseudoTerminalTests(unittest.TestCase):
             {
                 "PYTHONPATH": os.pathsep.join(python_path),
                 "TERM": "xterm-256color",
-                "WORKBENCH_TEST_CONTROL_FD": str(control_write),
+                "KISESH_TEST_CONTROL_FD": str(control_write),
             }
         )
         program = """
 import os
-from kitty_workbench.tui import SessionManager
+from kisesh.tui import SessionManager
 from render_fixture import StaticService
 
-control = int(os.environ["WORKBENCH_TEST_CONTROL_FD"])
+control = int(os.environ["KISESH_TEST_CONTROL_FD"])
 
 class ProbeManager(SessionManager):
     def _prompt(self, *args, **kwargs):
@@ -96,7 +96,7 @@ raise SystemExit(ProbeManager(StaticService()).run())
         os.close(slave)
         os.close(control_write)
         try:
-            _read_until(master, b"kitty workbench", 2.0)
+            _read_until(master, b"KiSesh", 2.0)
             os.write(master, b"/")
             _read_until(control_read, b"prompt-started", 1.0)
 

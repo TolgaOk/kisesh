@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
-from kitty_workbench.tui import (
+from kisesh.tui import (
     Palette,
     Screen,
     SessionManager,
@@ -45,8 +45,8 @@ class TuiBoundaryTests(unittest.TestCase):
         screen = ScriptedCanvas(16, 100, ["x", "q"])
         palette = Palette(normal=1)
         with (
-            mock.patch("kitty_workbench.tui._set_cursor"),
-            mock.patch("kitty_workbench.tui._configure_palette", return_value=palette),
+            mock.patch("kisesh.tui._set_cursor"),
+            mock.patch("kisesh.tui._configure_palette", return_value=palette),
             mock.patch.object(manager, "_draw"),
             mock.patch.object(
                 manager,

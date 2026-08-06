@@ -6,8 +6,8 @@ from datetime import UTC, datetime
 from typing import cast
 from unittest import mock
 
-from kitty_workbench.app_profiles import DEFAULT_APP_PROFILES
-from kitty_workbench.context import (
+from kisesh.app_profiles import DEFAULT_APP_PROFILES
+from kisesh.context import (
     ARGUMENT_COUNT_LIMIT,
     ARGUMENT_LENGTH_LIMIT,
     TERMINAL_HISTORY_CHARACTER_LIMIT,
@@ -33,8 +33,8 @@ from kitty_workbench.context import (
     restore_session,
     update_context_for_closing_pane,
 )
-from kitty_workbench.domain import ClosingPaneCapture, CommandRecord, KittyWindow
-from kitty_workbench.kitty_client import LiveTab
+from kisesh.domain import ClosingPaneCapture, CommandRecord, KittyWindow
+from kisesh.kitty_client import LiveTab
 
 
 def _tab(*windows: Mapping[str, object], tab_id: int = 7) -> LiveTab:
@@ -83,7 +83,7 @@ class ContextBoundaryTests(unittest.TestCase):
             .isoformat(timespec="microseconds")
             .replace("+00:00", "Z")
         )
-        with mock.patch("kitty_workbench.context.utc_now", return_value="fallback"):
+        with mock.patch("kisesh.context.utc_now", return_value="fallback"):
             self.assertEqual(_event_time(epoch), expected_epoch)
             self.assertEqual(
                 _event_time("2026-08-04T14:30:00+03:00"),

@@ -5,17 +5,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kitty_workbench.model import (
+from kisesh.model import (
+    KISESH_UI_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
-    WORKBENCH_UI_VAR,
     SessionManifest,
 )
-from kitty_workbench.session_file import (
+from kisesh.session_file import (
     _cd_working_directory,
-    _is_workbench_ui_launch,
+    _is_kisesh_ui_launch,
     _launch_working_directories,
     _parse_launch,
     _sanitize_blob,
@@ -51,8 +51,8 @@ RAW_SESSION = (
 class SessionFileTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest = SessionManifest(
-            name="Workbench",
-            slug="workbench",
+            name="KiSesh",
+            slug="kisesh",
             project_root="/tmp/project",
             id="12345678-1234-4234-8234-123456789abc",
         )
@@ -77,8 +77,8 @@ class SessionFileTests(unittest.TestCase):
         for line in launch_lines:
             tokens = shlex.split(line)
             self.assertIn(f"--var={SESSION_ID_VAR}={self.manifest.id}", tokens)
-            self.assertIn(f"--var={SESSION_SLUG_VAR}=workbench", tokens)
-            self.assertIn(f"--var={SESSION_NAME_VAR}=Workbench", tokens)
+            self.assertIn(f"--var={SESSION_SLUG_VAR}=kisesh", tokens)
+            self.assertIn(f"--var={SESSION_NAME_VAR}=KiSesh", tokens)
         self.assertEqual(sanitize_session(safe, self.manifest), safe)
 
     def test_unreadable_serialization_blob_is_dropped(self) -> None:
@@ -119,42 +119,42 @@ class SessionFileTests(unittest.TestCase):
             f"launch 'kitty-unserialize-data={{\"id\":1}}' "
             f"--var={SESSION_SCOPE_VAR}=7\n"
             f"launch 'kitty-unserialize-data={{\"id\":2}}' "
-            f"--var={WORKBENCH_UI_VAR}=yes --title=Workbench\n"
+            f"--var={KISESH_UI_VAR}=yes --title=KiSesh\n"
             "focus\n"
             "new_tab Editor\n"
             "layout splits\n"
             'set_layout_state {"pairs":{"one":3}}\n'
             f"launch 'kitty-unserialize-data={{\"id\":3}}' "
-            f"--var {WORKBENCH_UI_VAR}=no --var={SESSION_SCOPE_VAR}=7\n"
-            "new_tab Workbench\n"
+            f"--var {KISESH_UI_VAR}=no --var={SESSION_SCOPE_VAR}=7\n"
+            "new_tab KiSesh\n"
             "layout splits\n"
             f"launch 'kitty-unserialize-data={{\"id\":4}}' "
-            f"--var={WORKBENCH_UI_VAR}=yes --title=Workbench\n"
+            f"--var={KISESH_UI_VAR}=yes --title=KiSesh\n"
             "focus_tab\n"
         )
 
         safe = sanitize_session(raw, self.manifest)
 
-        self.assertNotIn(WORKBENCH_UI_VAR, safe)
+        self.assertNotIn(KISESH_UI_VAR, safe)
         self.assertNotIn(SESSION_SCOPE_VAR, safe)
         self.assertNotIn('{"id":2}', safe)
         self.assertIn('{"id":1}', safe)
         self.assertIn('{"id":3}', safe)
         self.assertNotIn('{"id":4}', safe)
-        self.assertNotIn("new_tab Workbench", safe)
+        self.assertNotIn("new_tab KiSesh", safe)
         self.assertEqual(safe.count("set_layout_state"), 1)
         summary = snapshot_summary(safe)
         self.assertEqual(summary.tab_count, 2)
         self.assertEqual(summary.pane_count, 2)
         self.assertEqual(sanitize_session(safe, self.manifest), safe)
-        self.assertTrue(_is_workbench_ui_launch("launch --var kitty_workbench_ui=YES"))
-        self.assertFalse(_is_workbench_ui_launch("launch --var=kitty_workbench_ui=false"))
+        self.assertTrue(_is_kisesh_ui_launch("launch --var kisesh_ui=YES"))
+        self.assertFalse(_is_kisesh_ui_launch("launch --var=kisesh_ui=false"))
 
     def test_missing_structure_gets_a_shell_tab(self) -> None:
-        self.manifest.name = "Workbench Session"
+        self.manifest.name = "KiSesh Session"
         safe = sanitize_session("layout stack\n", self.manifest)
-        self.assertTrue(safe.startswith("new_tab Workbench Session\n"))
-        self.assertNotIn("'Workbench Session'", safe)
+        self.assertTrue(safe.startswith("new_tab KiSesh Session\n"))
+        self.assertNotIn("'KiSesh Session'", safe)
         self.assertIn("launch", safe)
 
     def test_summary_and_root_cover_multiple_tabs(self) -> None:
@@ -191,7 +191,7 @@ class SessionFileTests(unittest.TestCase):
     def test_launch_sanitizer_covers_inline_flags_values_and_missing_values(self) -> None:
         line = sanitize_launch_line(
             "launch --cwd=/tmp --copy-colors --env=SECRET=yes "
-            "--var=CUSTOM=ok --var=kitty_workbench_session=stale --var",
+            "--var=CUSTOM=ok --var=kisesh_session=stale --var",
             self.manifest,
         )
         tokens = shlex.split(line)
@@ -222,7 +222,7 @@ class SessionFileTests(unittest.TestCase):
     def test_launch_before_tab_and_blank_edges_normalize_to_one_complete_snapshot(self) -> None:
         safe = sanitize_session("\n\nlaunch --cwd /tmp/project\n\n", self.manifest)
 
-        self.assertTrue(safe.startswith("new_tab Workbench\n"))
+        self.assertTrue(safe.startswith("new_tab KiSesh\n"))
         self.assertEqual(safe.count("launch"), 1)
         self.assertTrue(safe.endswith("\n"))
         self.assertFalse(safe.startswith("\n"))

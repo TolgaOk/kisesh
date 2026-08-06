@@ -1,4 +1,4 @@
-"""Typed reusable fakes for Workbench integration tests."""
+"""Typed reusable fakes for KiSesh integration tests."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
-from kitty_workbench.domain import KittyOsWindowState, KittyWindow
-from kitty_workbench.kitty_client import LiveTab
-from kitty_workbench.model import (
+from kisesh.domain import KittyOsWindowState, KittyWindow
+from kisesh.kitty_client import LiveTab
+from kisesh.model import (
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
@@ -17,7 +17,7 @@ from kitty_workbench.model import (
     SessionManifest,
     session_marker_name,
 )
-from kitty_workbench.session_file import rename_snapshot_tab
+from kisesh.session_file import rename_snapshot_tab
 
 DEFAULT_CAPTURE = "new_tab Project\nlaunch --cwd=/tmp/project\n"
 
@@ -126,7 +126,7 @@ class FakeKitty:
         session_id: str,
         state: list[KittyOsWindowState] | None = None,
     ) -> list[LiveTab]:
-        """Filter visible tabs by their stable Workbench ownership marker."""
+        """Filter visible tabs by their stable KiSesh ownership marker."""
         return [tab for tab in self.tabs(state) if tab.session_id() == session_id]
 
     def stamp_tab(

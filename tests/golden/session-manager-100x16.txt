@@ -1,4 +1,4 @@
-   kitty workbench · sessions
+   KiSesh · sessions
  ──────────────────────────────────────────────────────────────────────────────────────────────────
   SESSIONS  ·  2 shown              TABS  PANES  CREATED     MODIFIED
     ● JAX Agents                       3      6  2026-07-18  2026-08-04 11:30
