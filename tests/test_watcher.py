@@ -185,6 +185,27 @@ class Boss(watcher.WatcherBoss):
         return None
 
 
+class LayoutTab(list[watcher.WatcherWindow]):
+    """Retain pane membership while recording native layout restoration."""
+
+    def __init__(
+        self,
+        windows: Iterable[watcher.WatcherWindow],
+        *,
+        fail_restore: bool = False,
+    ) -> None:
+        """Store member panes and an optional closing-layout failure."""
+        super().__init__(windows)
+        self.fail_restore = fail_restore
+        self.restored_layouts: list[str] = []
+
+    def goto_layout(self, layout: str) -> None:
+        """Record the exact layout requested by the closing manager."""
+        if self.fail_restore:
+            raise RuntimeError("layout unavailable")
+        self.restored_layouts.append(layout)
+
+
 class BrokenWindow(Window):
     """Represent pane metadata disappearing during Kitty shutdown."""
 
@@ -446,6 +467,102 @@ class WatcherTests(unittest.TestCase):
 
         self.assertIsNone(watcher._session_id(kisesh_ui, boss=boss))
         self.assertEqual(boss.expressions, [])
+
+    def test_full_tab_manager_pauses_autosave_then_restores_layout_on_any_close(self) -> None:
+        """Keep temporary stack geometry out of persistence without losing commands."""
+        content = Window()
+        manager = Window(55, session_id=None)
+        manager.user_vars = {
+            watcher.KISESH_UI_VAR: "yes",
+            watcher.RESTORE_LAYOUT_VAR: "splits",
+        }
+        tab = LayoutTab([content, manager])
+        boss = Boss()
+        boss.tabs = [tab]
+
+        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
+            watcher._schedule(
+                content,
+                boss=boss,
+                command_event={"command": "git status"},
+            )
+        pending_timer = FakeTimer.instances[-1]
+
+        watcher.on_set_user_var(
+            boss,
+            manager,
+            {"key": watcher.RESTORE_LAYOUT_VAR, "value": "splits"},
+        )
+
+        self.assertTrue(pending_timer.cancelled)
+        self.assertNotIn("session-id", watcher._timers)
+        self.assertEqual(
+            watcher._pending_commands["session-id"],
+            [{"command": "git status"}],
+        )
+        with mock.patch.object(watcher, "_schedule") as schedule:
+            watcher.on_resize(boss, content, {"size": "temporary stack"})
+            schedule.assert_not_called()
+            watcher.on_close(boss, manager, {})
+            schedule.assert_called_once_with(content, boss=boss)
+
+        self.assertEqual(tab.restored_layouts, ["splits"])
+
+        with mock.patch.object(watcher, "_schedule") as schedule:
+            watcher.on_set_user_var(
+                boss,
+                manager,
+                {"key": watcher.RESTORE_LAYOUT_VAR, "value": ""},
+            )
+        schedule.assert_called_once_with(content, boss=boss)
+
+    def test_manager_close_failures_never_capture_or_leave_the_watcher_broken(self) -> None:
+        """Treat transient UI close as inert when its tab or layout has disappeared."""
+        for boss, layout in (
+            (BrokenBoss(), "splits"),
+            (Boss([[Window(55, session_id=None)]]), "splits"),
+            (Boss(), ""),
+        ):
+            manager = Window(55, session_id=None)
+            manager.user_vars = {watcher.KISESH_UI_VAR: "yes"}
+            if layout:
+                manager.user_vars[watcher.RESTORE_LAYOUT_VAR] = layout
+            with (
+                self.subTest(boss=type(boss).__name__, layout=layout),
+                mock.patch.object(watcher, "_launch_autosave") as launch,
+            ):
+                watcher.on_close(boss, manager, {})
+                launch.assert_not_called()
+
+        content = Window()
+        manager = Window(55, session_id=None)
+        manager.user_vars = {
+            watcher.KISESH_UI_VAR: "yes",
+            watcher.RESTORE_LAYOUT_VAR: "splits",
+        }
+        failing_tab = LayoutTab([content, manager], fail_restore=True)
+        boss = Boss()
+        boss.tabs = [failing_tab]
+        with mock.patch.object(watcher, "_schedule") as schedule:
+            watcher.on_close(boss, manager, {})
+        schedule.assert_not_called()
+
+        first = Window(1, session_id="first")
+        second = Window(2, session_id="second")
+        manager = Window(55, session_id=None)
+        manager.user_vars = {watcher.KISESH_UI_VAR: "yes"}
+        boss = Boss([[first, second, manager]])
+        watcher._pause_manager_tab_autosaves(manager, boss)
+        self.assertEqual(
+            {name: watcher._timer_generations[name] for name in ("first", "second")},
+            {"first": 1, "second": 1},
+        )
+        with mock.patch.object(watcher, "_schedule") as schedule:
+            watcher._schedule_manager_tab_autosave(
+                manager,
+                Boss([[manager]]),
+            )
+        schedule.assert_not_called()
 
     def test_events_debounce_per_session(self) -> None:
         """Replace a pending timer instead of polling or writing twice."""

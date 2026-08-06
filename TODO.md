@@ -27,6 +27,10 @@
 
 ## Selected session contents
 
+- [x] Present the pane-scoped manager across its complete tab while retaining the
+  native tab bar; restore the exact layout on normal, forced, and failed exits,
+  and exclude the temporary stack transition from autosave.
+
 - [x] Expand the focused session row like a folder tree without expanding every
   session in the list.
 - [x] Show its tabs as child rows and each tab's panes or foreground programs on a

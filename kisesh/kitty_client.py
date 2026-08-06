@@ -183,6 +183,16 @@ class KittyController(Protocol):
     ) -> list[LiveTab]:
         """Return every live tab stamped with a session UUID."""
 
+    def set_user_vars(
+        self,
+        window_ids: Iterable[int],
+        variables: Mapping[str, str | None],
+    ) -> None:
+        """Set or clear user variables on exact Kitty panes."""
+
+    def set_tab_layout(self, tab_id: int, layout: str) -> None:
+        """Switch one exact tab to an enabled native layout."""
+
     def stamp_tab(
         self,
         tab: LiveTab,
@@ -415,6 +425,10 @@ class KittyClient:
         ]
         match = " or ".join(f"id:{window_id}" for window_id in unique_ids)
         self.command("set-user-vars", "--match", match, *encoded)
+
+    def set_tab_layout(self, tab_id: int, layout: str) -> None:
+        """Switch one exact tab without changing the active tab or pane."""
+        self.command("goto-layout", "--match", f"id:{tab_id}", layout)
 
     def stamp_tab(
         self,

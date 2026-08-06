@@ -7,6 +7,7 @@ from pathlib import Path
 
 from kisesh.model import (
     KISESH_UI_VAR,
+    RESTORE_LAYOUT_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
@@ -119,7 +120,8 @@ class SessionFileTests(unittest.TestCase):
             f"launch 'kitty-unserialize-data={{\"id\":1}}' "
             f"--var={SESSION_SCOPE_VAR}=7\n"
             f"launch 'kitty-unserialize-data={{\"id\":2}}' "
-            f"--var={KISESH_UI_VAR}=yes --title=KiSesh\n"
+            f"--var={KISESH_UI_VAR}=yes --var={RESTORE_LAYOUT_VAR}=splits "
+            "--title=KiSesh\n"
             "focus\n"
             "new_tab Editor\n"
             "layout splits\n"
@@ -136,12 +138,15 @@ class SessionFileTests(unittest.TestCase):
         safe = sanitize_session(raw, self.manifest)
 
         self.assertNotIn(KISESH_UI_VAR, safe)
+        self.assertNotIn(RESTORE_LAYOUT_VAR, safe)
         self.assertNotIn(SESSION_SCOPE_VAR, safe)
         self.assertNotIn('{"id":2}', safe)
         self.assertIn('{"id":1}', safe)
         self.assertIn('{"id":3}', safe)
         self.assertNotIn('{"id":4}', safe)
         self.assertNotIn("new_tab KiSesh", safe)
+        self.assertNotIn("layout stack", safe)
+        self.assertEqual(safe.count("layout splits"), 2)
         self.assertEqual(safe.count("set_layout_state"), 1)
         summary = snapshot_summary(safe)
         self.assertEqual(summary.tab_count, 2)

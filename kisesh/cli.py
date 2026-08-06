@@ -14,6 +14,7 @@ from .app_profiles import load_app_profiles
 from .context import normalize_command_event, pane_last_command_output
 from .domain import ClosingPaneCapture, CommandEvent, JsonObject, KittyWindow
 from .kitty_client import KittyClient, KittyError
+from .manager_surface import expand_manager_surface, restore_manager_surface
 from .panel import PanelError, hide_quick_access_panel, is_panel_process
 from .paths import data_root
 from .service import (
@@ -301,8 +302,12 @@ def _service(config: CliConfig) -> KiSeshService:
 
 def _run_manager(service: KiSeshService) -> int:
     """Run the interactive manager with optional resident-panel dismissal."""
+    surface = expand_manager_surface(service.kitty)
     dismiss = hide_quick_access_panel if is_panel_process() else None
-    return SessionManager(service, profiles=service.profiles, on_dismiss=dismiss).run()
+    try:
+        return SessionManager(service, profiles=service.profiles, on_dismiss=dismiss).run()
+    finally:
+        restore_manager_surface(surface)
 
 
 def _run_read(command: ReadCommand, service: KiSeshService) -> int:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
 from kisesh.domain import KittyOsWindowState, KittyWindow
@@ -86,6 +86,8 @@ class FakeKitty:
         self.opened_contents: list[str] = []
         self.focused: list[int] = []
         self.renamed_tabs: list[tuple[int, str]] = []
+        self.changed_layouts: list[tuple[int, str]] = []
+        self.user_var_updates: list[tuple[tuple[int, ...], dict[str, str | None]]] = []
         self.activated_sessions: list[tuple[str, int]] = []
         self.closed_sessions: list[str] = []
         self.closed_tabs: list[int] = []
@@ -129,6 +131,33 @@ class FakeKitty:
     ) -> list[LiveTab]:
         """Filter visible tabs by their stable KiSesh ownership marker."""
         return [tab for tab in self.tabs(state) if tab.session_id() == session_id]
+
+    def set_tab_layout(self, tab_id: int, layout: str) -> None:
+        """Record one native layout transition and update the matching fake tab."""
+        self.changed_layouts.append((tab_id, layout))
+        for tab in self.tabs():
+            if tab.tab_id == tab_id:
+                tab.layout = layout
+                return
+
+    def set_user_vars(
+        self,
+        window_ids: Iterable[int],
+        variables: Mapping[str, str | None],
+    ) -> None:
+        """Apply exact user-variable updates while recording their requested scope."""
+        selected = tuple(dict.fromkeys(window_ids))
+        self.user_var_updates.append((selected, dict(variables)))
+        for tab in self.tabs():
+            for window in tab.windows:
+                if window["id"] not in selected:
+                    continue
+                stored = window.setdefault("user_vars", {})
+                for name, value in variables.items():
+                    if value is None:
+                        stored.pop(name, None)
+                    else:
+                        stored[name] = value
 
     def stamp_tab(
         self,

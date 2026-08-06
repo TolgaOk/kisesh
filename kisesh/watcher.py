@@ -23,6 +23,7 @@ SESSION_SCOPE_VAR = "kisesh_scope"
 AGENT_VAR = "kisesh_agent"
 APP_VAR = "kisesh_app"
 KISESH_UI_VAR = "kisesh_ui"
+RESTORE_LAYOUT_VAR = "kisesh_restore_layout"
 DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
 COMMAND_HISTORY_LIMIT = 2000
@@ -319,6 +320,92 @@ def _session_id(
     return _variable(variables, SESSION_ID_VAR) or _sibling_session_id(window.id, boss)
 
 
+def _matching_tab(
+    window: WatcherWindow,
+    boss: WatcherBoss,
+) -> tuple[object, tuple[WatcherWindow, ...]] | None:
+    """Return the exact native tab object and a stable view of its windows."""
+    try:
+        tab = next(iter(boss.match_tabs(f"window_id:{window.id}")), None)
+        return (tab, tuple(tab)) if tab is not None else None
+    except Exception:
+        return None
+
+
+def _tab_has_kisesh_ui(window: WatcherWindow, boss: WatcherBoss) -> bool:
+    """Report whether a temporary manager currently covers the pane's tab."""
+    matched = _matching_tab(window, boss)
+    return matched is not None and any(
+        _variable(_string_mapping(sibling.user_vars), KISESH_UI_VAR) for sibling in matched[1]
+    )
+
+
+def _pause_manager_tab_autosaves(window: WatcherWindow, boss: WatcherBoss) -> None:
+    """Cancel layout timers while retaining pending command events for the next save."""
+    matched = _matching_tab(window, boss)
+    session_ids = (
+        {
+            session_id
+            for sibling in matched[1]
+            if (
+                session_id := _variable(
+                    _string_mapping(sibling.user_vars),
+                    SESSION_ID_VAR,
+                )
+            )
+        }
+        if matched is not None
+        else set()
+    )
+    with _timer_lock:
+        for session_id in session_ids:
+            timer = _timers.pop(session_id, None)
+            _timer_generations[session_id] = _timer_generations.get(session_id, 0) + 1
+            if timer is not None:
+                timer.cancel()
+
+
+def _schedule_manager_tab_autosave(window: WatcherWindow, boss: WatcherBoss) -> None:
+    """Resume persistence from one owned content pane after temporary UI state ends."""
+    matched = _matching_tab(window, boss)
+    content = (
+        next(
+            (
+                sibling
+                for sibling in matched[1]
+                if not _variable(_string_mapping(sibling.user_vars), KISESH_UI_VAR)
+                and _variable(_string_mapping(sibling.user_vars), SESSION_ID_VAR)
+            ),
+            None,
+        )
+        if matched is not None
+        else None
+    )
+    if content is not None:
+        _schedule(content, boss=boss)
+
+
+def _restore_manager_layout(window: WatcherWindow, boss: WatcherBoss) -> bool:
+    """Restore a closing manager's tab before allowing ordinary close capture."""
+    variables = _string_mapping(window.user_vars)
+    if not _variable(variables, KISESH_UI_VAR):
+        return False
+    layout = variables.get(RESTORE_LAYOUT_VAR, "").strip()
+    matched = _matching_tab(window, boss)
+    if not layout or matched is None:
+        return True
+    tab, _ = matched
+    restore = cast(Callable[[str], object] | None, getattr(tab, "goto_layout", None))
+    if not callable(restore):
+        return True
+    try:
+        restore(layout)
+    except Exception:
+        return True
+    _schedule_manager_tab_autosave(window, boss)
+    return True
+
+
 def _launch_autosave(
     session_id: str,
     environment: dict[str, str],
@@ -569,7 +656,8 @@ def _schedule(
 
 def on_resize(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
     """Schedule a snapshot after a pane-size or layout change."""
-    _schedule(window, data, boss)
+    if not _tab_has_kisesh_ui(window, boss):
+        _schedule(window, data, boss)
 
 
 def on_focus_change(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
@@ -579,6 +667,8 @@ def on_focus_change(boss: WatcherBoss, window: WatcherWindow, data: WatcherData)
 
 def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
     """Persist closing text, then resave layouts that retain other session tabs."""
+    if _restore_manager_layout(window, boss):
+        return
     session_id = _session_id(window, data, boss)
     if not session_id:
         return
@@ -599,6 +689,12 @@ def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> Non
 
 def on_set_user_var(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
     """Schedule only ownership-variable changes and ignore unrelated metadata."""
+    if data.get("key") == RESTORE_LAYOUT_VAR:
+        if data.get("value"):
+            _pause_manager_tab_autosaves(window, boss)
+        else:
+            _schedule_manager_tab_autosave(window, boss)
+        return
     if any(
         _variable_name_matches(data.get("key"), name)
         for name in (SESSION_ID_VAR, SESSION_SLUG_VAR, SESSION_NAME_VAR)

@@ -103,6 +103,7 @@ def _service_mock(stored: StoredSession | None = None) -> tuple[KiSeshService, m
     """Return a typed service view and its configurable autospecced mock."""
     raw = mock.create_autospec(KiSeshService, instance=True)
     raw.store = mock.MagicMock()
+    raw.kitty = mock.MagicMock()
     raw.profiles = DEFAULT_APP_PROFILES
     raw.store.get.return_value = stored or _stored()
     return cast(KiSeshService, raw), raw
@@ -447,13 +448,35 @@ class CliTests(unittest.TestCase):
             with (
                 self.subTest(is_panel=is_panel),
                 mock.patch("kisesh.cli.is_panel_process", return_value=is_panel),
+                mock.patch("kisesh.cli.expand_manager_surface") as expand,
+                mock.patch("kisesh.cli.restore_manager_surface") as restore,
                 mock.patch("kisesh.cli.SessionManager") as manager,
             ):
+                surface = object()
+                expand.return_value = surface
                 manager.return_value.run.return_value = 9
                 self.assertEqual(_run_manager(service), 9)
 
+            expand.assert_called_once_with(service.kitty)
+            restore.assert_called_once_with(surface)
             dismiss = manager.call_args.kwargs["on_dismiss"]
             self.assertEqual(dismiss is not None, expects_dismissal)
+
+    def test_manager_restores_its_tab_when_curses_raises(self) -> None:
+        """Guarantee normal process cleanup even when rendering aborts unexpectedly."""
+        service, _ = _service_mock()
+        surface = object()
+        with (
+            mock.patch("kisesh.cli.expand_manager_surface", return_value=surface),
+            mock.patch("kisesh.cli.restore_manager_surface") as restore,
+            mock.patch("kisesh.cli.is_panel_process", return_value=False),
+            mock.patch("kisesh.cli.SessionManager") as manager,
+            self.assertRaisesRegex(RuntimeError, "curses failed"),
+        ):
+            manager.return_value.run.side_effect = RuntimeError("curses failed")
+            _run_manager(service)
+
+        restore.assert_called_once_with(surface)
 
     def test_main_returns_dispatch_status_and_formats_expected_errors(self) -> None:
         """Translate operational failures to one concise stderr line without traceback."""

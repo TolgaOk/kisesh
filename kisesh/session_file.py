@@ -17,6 +17,7 @@ from .model import (
     APP_VAR,
     CAPTURE_VAR,
     KISESH_UI_VAR,
+    RESTORE_LAYOUT_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
@@ -43,6 +44,7 @@ class _TransientUiLocations:
     launch_lines: frozenset[int]
     contaminated_tabs: frozenset[int]
     transient_only_tabs: frozenset[int]
+    restore_layouts: dict[int, str]
 
 
 _OPTION_POLICIES = {
@@ -86,6 +88,7 @@ _MANAGED_VARIABLES = {
     SESSION_SLUG_VAR,
     CAPTURE_VAR,
     KISESH_UI_VAR,
+    RESTORE_LAYOUT_VAR,
 } | LEGACY_MANAGED_VARIABLES
 
 
@@ -171,10 +174,10 @@ def _parse_launch(line: str) -> list[str]:
     return tokens
 
 
-def _is_kisesh_ui_launch(line: str) -> bool:
-    """Identify a serialized transient manager window from its user variable."""
+def _launch_variables(line: str) -> dict[str, str]:
+    """Extract literal user-variable assignments from serialized launch grammar."""
     tokens = _parse_launch(line)
-    marker: str | None = None
+    variables: dict[str, str] = {}
     index = 1
     while index < len(tokens):
         token = tokens[index]
@@ -188,8 +191,15 @@ def _is_kisesh_ui_launch(line: str) -> bool:
         else:
             index += 1
         name, separator, value = assignment.partition("=")
-        if name in {KISESH_UI_VAR, LEGACY_UI_VARIABLE}:
-            marker = value if separator else ""
+        if name:
+            variables[name] = value if separator else ""
+    return variables
+
+
+def _is_kisesh_ui_launch(line: str) -> bool:
+    """Identify a serialized transient manager window from its user variable."""
+    variables = _launch_variables(line)
+    marker = variables.get(KISESH_UI_VAR, variables.get(LEGACY_UI_VARIABLE))
     return marker is not None and marker.casefold() not in {"", "0", "false", "no"}
 
 
@@ -198,6 +208,7 @@ def _transient_ui_locations(lines: Sequence[str]) -> _TransientUiLocations:
     launch_lines: set[int] = set()
     launch_counts: dict[int, int] = {}
     transient_counts: dict[int, int] = {}
+    restore_layouts: dict[int, str] = {}
     tab_index = -1
     for line_index, raw_line in enumerate(lines):
         stripped = raw_line.strip()
@@ -210,6 +221,11 @@ def _transient_ui_locations(lines: Sequence[str]) -> _TransientUiLocations:
         if _is_kisesh_ui_launch(stripped):
             launch_lines.add(line_index)
             transient_counts[tab_index] = transient_counts.get(tab_index, 0) + 1
+            layout = _launch_variables(stripped).get(RESTORE_LAYOUT_VAR, "").strip()
+            if layout and all(
+                character.isalnum() or character in {"_", "-"} for character in layout
+            ):
+                restore_layouts[tab_index] = layout
     contaminated_tabs = frozenset(transient_counts)
     return _TransientUiLocations(
         launch_lines=frozenset(launch_lines),
@@ -217,6 +233,7 @@ def _transient_ui_locations(lines: Sequence[str]) -> _TransientUiLocations:
         transient_only_tabs=frozenset(
             index for index in contaminated_tabs if transient_counts[index] == launch_counts[index]
         ),
+        restore_layouts=restore_layouts,
     )
 
 
@@ -306,6 +323,10 @@ def sanitize_session(
         if tab_index in transient.transient_only_tabs or _is_os_window_directive(stripped):
             continue
         if line_index in transient.launch_lines:
+            continue
+        if stripped.startswith("layout ") and tab_index in transient.restore_layouts:
+            indentation = raw_line[: len(raw_line) - len(raw_line.lstrip())]
+            output.append(f"{indentation}layout {transient.restore_layouts[tab_index]}")
             continue
         if stripped.startswith("set_layout_state") and tab_index in transient.contaminated_tabs:
             continue

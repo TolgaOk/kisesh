@@ -89,6 +89,17 @@ class KittyClientTests(unittest.TestCase):
             ["set-tab-title", "--match", "id:42", "Editor and tests"],
         )
 
+    def test_tab_layout_targets_one_stable_id_without_changing_focus(self) -> None:
+        runner = RecordingCommandRunner()
+        client = KittyClient(executable="/kitty", socket="/tmp/test.sock", runner=runner)
+
+        client.set_tab_layout(42, "stack")
+
+        self.assertEqual(
+            runner.commands[0][-4:],
+            ["goto-layout", "--match", "id:42", "stack"],
+        )
+
     def test_popup_targets_main_kitty_instead_of_its_own_panel_socket(self) -> None:
         runner = RecordingCommandRunner(stdout="[]")
 

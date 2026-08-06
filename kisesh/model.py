@@ -21,6 +21,7 @@ CAPTURE_VAR = "kisesh_capture"
 AGENT_VAR = "kisesh_agent"
 APP_VAR = "kisesh_app"
 KISESH_UI_VAR = "kisesh_ui"
+RESTORE_LAYOUT_VAR = "kisesh_restore_layout"
 
 SessionStatus = Literal["active", "archived"]
 
