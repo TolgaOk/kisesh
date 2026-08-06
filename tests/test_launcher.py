@@ -72,18 +72,24 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(
             toggle_mappings,
             [
-                "map --when-focus-on var:kisesh_ui alt+s close_window",
-                "map --when-focus-on var:kisesh_ui cmd+w close_window",
+                "map --when-focus-on var:kisesh_ui alt+s combine : last_used_layout : close_window",
+                "map --when-focus-on var:kisesh_ui cmd+w combine : last_used_layout : close_window",
             ],
         )
         launch_index = mappings.index(manager_mappings[0])
-        close_index = mappings.index("map --when-focus-on var:kisesh_ui alt+s close_window")
+        manager_close = (
+            "map --when-focus-on var:kisesh_ui alt+s combine : last_used_layout : close_window"
+        )
+        close_index = mappings.index(manager_close)
         self.assertLess(launch_index, close_index)
         close_mapping = "map cmd+w kitten ~/.local/lib/kisesh/integration/safe_close.py"
         self.assertIn(close_mapping, mappings)
+        overlay_close = (
+            "map --when-focus-on var:kisesh_ui cmd+w combine : last_used_layout : close_window"
+        )
         self.assertLess(
             mappings.index(close_mapping),
-            mappings.index("map --when-focus-on var:kisesh_ui cmd+w close_window"),
+            mappings.index(overlay_close),
         )
         self.assertTrue((project / "integration/safe_close.py").is_file())
         layout_mapping = (

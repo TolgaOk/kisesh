@@ -195,6 +195,17 @@ def _mapped_close_action() -> list[str]:
     return shlex.split(definition)
 
 
+def _mapped_manager_close_action() -> list[str]:
+    """Read the conditional action that dismisses a focused manager overlay."""
+    integration = (PROJECT / "integration/kisesh.conf").read_text(encoding="utf-8")
+    definition = next(
+        line.split(maxsplit=4)[4]
+        for line in integration.splitlines()
+        if line.startswith("map --when-focus-on var:kisesh_ui alt+s ")
+    )
+    return shlex.split(definition)
+
+
 def _focus_session(server: IsolatedKitty, session_id: str) -> int:
     """Focus one session tab and return its active pane identifier."""
     server.remote("focus-tab", "--match", f"var:{SESSION_ID_VAR}={session_id}")
@@ -211,6 +222,52 @@ def _focus_session(server: IsolatedKitty, session_id: str) -> int:
 @unittest.skipUnless(shutil.which("kitty") and shutil.which("kitten"), "Kitty is required")
 class LiveKittyCloseTests(unittest.TestCase):
     """Exercise the resolved close action through a disposable real Kitty boss."""
+
+    def test_manager_close_restores_split_layout_before_removing_overlay(self) -> None:
+        """Reproduce Alt-S dismissal against a real, isolated two-pane Kitty tab."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            server = IsolatedKitty(Path(temporary))
+            try:
+                server.start()
+                child = ["/bin/sh", "-c", "while :; do sleep 1; done"]
+                server.remote("launch", "--type=window", "--title=Second", *child)
+                split_state = server.wait_for(
+                    lambda state: len(_tabs(state)[0].get("windows", [])) == 2
+                )
+                tab_id = _tabs(split_state)[0]["id"]
+                server.remote("goto-layout", "--match", f"id:{tab_id}", "splits")
+                server.wait_for(lambda state: _tabs(state)[0].get("layout") == "splits")
+
+                server.remote(
+                    "launch",
+                    "--type=overlay",
+                    f"--var={KISESH_UI_VAR}=yes",
+                    "--title=KiSesh",
+                    *child,
+                )
+                overlay_state = server.wait_for(lambda state: len(_ui_windows(state)) == 1)
+                overlay_id = _ui_windows(overlay_state)[0]["id"]
+                server.remote("goto-layout", "--match", f"id:{tab_id}", "stack")
+                server.wait_for(lambda state: _tabs(state)[0].get("layout") == "stack")
+
+                server.remote(
+                    "action",
+                    "--match",
+                    f"id:{overlay_id}",
+                    *_mapped_manager_close_action(),
+                )
+                restored = server.wait_for(
+                    lambda state: (
+                        not _ui_windows(state)
+                        and _tabs(state)[0].get("layout") == "splits"
+                        and len(_tabs(state)[0].get("windows", [])) == 2
+                    )
+                )
+
+                self.assertEqual(_tabs(restored)[0].get("layout"), "splits")
+                self.assertEqual(len(_tabs(restored)[0].get("windows", [])), 2)
+            finally:
+                server.stop()
 
     def test_command_w_action_closes_one_tab_then_guards_saves_and_promotes(self) -> None:
         """Run the complete multi-tab and final-tab lifecycle in hidden Kitty."""

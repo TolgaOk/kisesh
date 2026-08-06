@@ -221,10 +221,13 @@ print(json.dumps(resolved))
         resolved = json.loads(result.stdout)
         self.assertEqual(len(resolved["source"]), 1)
         self.assertIn("launch --type=overlay", resolved["source"][0])
-        self.assertEqual(resolved["kisesh"], ["close_window"])
+        self.assertEqual(
+            resolved["kisesh"],
+            ["combine : last_used_layout : close_window"],
+        )
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
-    def test_command_w_resolves_to_safe_close_or_overlay_close_in_real_kitty(self) -> None:
+    def test_command_w_resolves_to_safe_close_or_layout_restoring_close(self) -> None:
         """Resolve the real Command-W chord through Kitty's conditional key engine."""
 
         integration = Path(__file__).parents[1] / "integration" / "kisesh.conf"
@@ -277,7 +280,10 @@ print(json.dumps({"mods": key.mods, "key": key.key, "resolved": resolved}))
             parsed["resolved"]["source"],
             ["kitten ~/.local/lib/kisesh/integration/safe_close.py"],
         )
-        self.assertEqual(parsed["resolved"]["kisesh"], ["close_window"])
+        self.assertEqual(
+            parsed["resolved"]["kisesh"],
+            ["combine : last_used_layout : close_window"],
+        )
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_layout_fallback_is_scoped_to_tracked_sessions_by_real_kitty(self) -> None:
