@@ -626,7 +626,10 @@ def _report_enabled(
             "warning: KiSesh takes precedence over existing mappings for " + ", ".join(conflicts),
             file=sys.stderr,
         )
-    print("restart Kitty once, then press Alt+S and n to create your first session")
+    print(
+        "Kitty was left running; reload its configuration when convenient, "
+        "then press Alt+S and n to create your first session"
+    )
 
 
 def _enable(paths: InstallPaths) -> None:
@@ -763,7 +766,7 @@ def _uninstall(paths: InstallPaths, *, purge: bool) -> None:
     else:
         print(f"sessions preserved: {paths.data}")
         print("use kisesh uninstall --purge only when you intentionally want to delete them")
-    print("restart Kitty once to finish disabling KiSesh")
+    print("Kitty was left running; reload its configuration when convenient")
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> InstallArguments:
@@ -786,7 +789,7 @@ def run(arguments: InstallArguments) -> int:
             _enable(paths)
         elif action == "disable":
             _disable(paths)
-            print("restart Kitty once to unload the KiSesh watcher and mappings")
+            print("Kitty was left running; reload its configuration when convenient")
         else:
             _uninstall(paths, purge=action == "purge")
     except (InstallError, RuntimeInstallError, TabBarInstallError) as error:

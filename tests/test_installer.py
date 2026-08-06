@@ -44,6 +44,9 @@ class InstallerTests(unittest.TestCase):
         self.kitty.write_text(
             f"#!{sys.executable}\n"
             "import json, os, pathlib, sys\n"
+            "if log_path := os.environ.get('KISESH_FAKE_KITTY_LOG'):\n"
+            "    with pathlib.Path(log_path).open('a', encoding='utf-8') as stream:\n"
+            "        stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
             "text = pathlib.Path(sys.argv[-1]).read_text(encoding='utf-8')\n"
             "bad = []\n"
             "if 'FAKE_INVALID_KITTY_SETTING' in text:\n"
@@ -223,6 +226,23 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("already enabled", second.stdout)
         backup = self.config.with_name("kitty.conf.kisesh.bak")
         self.assertEqual(backup.read_text(encoding="utf-8"), original)
+
+    def test_enable_leaves_running_kitty_untouched(self) -> None:
+        invocation_log = self.root / "kitty-invocations.jsonl"
+        environment = dict(self.environment)
+        environment["KISESH_FAKE_KITTY_LOG"] = str(invocation_log)
+
+        result = self.run_installer(environment=environment)
+        invocations = [
+            json.loads(line) for line in invocation_log.read_text(encoding="utf-8").splitlines()
+        ]
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(invocations), 2)
+        self.assertTrue(all(arguments[0] == "+runpy" for arguments in invocations))
+        self.assertTrue(all("load-config" not in arguments for arguments in invocations))
+        self.assertIn("Kitty was left running", result.stdout)
+        self.assertNotIn("restart", result.stdout.casefold())
 
     def test_enable_upgrades_previous_code_config_sessions_profiles_and_tab_bar(self) -> None:
         original_bar = "def draw_tab(*args):\n    return 23\n"

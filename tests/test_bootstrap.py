@@ -116,7 +116,8 @@ class BootstrapTests(unittest.TestCase):
             commands[1],
             {"program": "kisesh", "args": ["install"], "cli": str(cli)},
         )
-        self.assertIn("Restart Kitty once", result.stdout)
+        self.assertIn("Kitty was left running", result.stdout)
+        self.assertNotIn("restart", result.stdout.casefold())
 
     def test_curl_path_uses_a_temporary_pinned_uv_without_persisting_it(self) -> None:
         curl = self.bin / "curl"

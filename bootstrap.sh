@@ -61,4 +61,4 @@ if [ ! -x "$kisesh_cli" ]; then
 fi
 KISESH_CLI="$kisesh_cli" "$kisesh_cli" install
 
-printf '%s\n' "KiSesh installed. Restart Kitty once, then press Alt+S."
+printf '%s\n' "KiSesh installed. Kitty was left running; reload its configuration when convenient."
