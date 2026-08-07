@@ -171,6 +171,9 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertIn("└─ monitor · 1 pane · stack", rendered)
         self.assertIn("󰍛 top !", rendered)
         self.assertNotIn("↻", rendered)
+        navigation = next(line for line in lines if "j/k" in line)
+        self.assertIn(" n  new", navigation)
+        self.assertIn(" x  save+close", navigation)
         agent_row = next(index for index, line in enumerate(lines) if "󰋙 Codex" in line)
         codex_x = lines[agent_row].index("󰋙")
         self.assertEqual(

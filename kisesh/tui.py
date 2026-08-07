@@ -481,6 +481,7 @@ class SessionManager:
                 ("g/G", "ends"),
                 ("l/↵/Space", "focus"),
                 ("/", "search"),
+                ("n", "new"),
                 ("x", "save+close"),
             )
         else:
