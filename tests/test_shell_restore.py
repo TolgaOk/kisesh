@@ -197,6 +197,76 @@ class ShellRestoreTests(unittest.TestCase):
     @unittest.skipUnless(
         shutil.which("kitten") and shutil.which("zsh"), "kitten and zsh are required"
     )
+    def test_short_scrollback_places_prompt_immediately_after_visible_content(self) -> None:
+        """Restore a half-filled legacy screen without replaying its empty lower rows."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store, session_id = self._session(root, "pwd", "short output")
+            context = store.read_context(session_id)
+            self.assertIsNotNone(context)
+            assert context is not None
+            pane = context["tabs"][0]["panes"][0]
+            pane["terminal_history"] = (
+                "\x1b[36mRESTORED HISTORY\x1b[0m\nVISIBLE END\n" + "\n" * 12 + "\x1b[0m   "
+            )
+            store.write_context(session_id, context)
+
+            user_zdotdir = root / "user-zsh"
+            user_zdotdir.mkdir()
+            (user_zdotdir / ".zshrc").write_text(
+                "PS1='RESTORED> '\nRPS1=''\n",
+                encoding="utf-8",
+            )
+            command = [
+                str(LAUNCHER),
+                "--data-dir",
+                str(store.root),
+                "restore-shell",
+                session_id,
+                "--tab-index",
+                "0",
+                "--pane-index",
+                "0",
+            ]
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HOME": str(root),
+                    "SHELL": shutil.which("zsh") or "/bin/zsh",
+                    "TERM": "xterm-kitty",
+                    "ZDOTDIR": str(user_zdotdir),
+                    "KISESH_KITTEN": shutil.which("kitten") or "kitten",
+                }
+            )
+            pid, master = pty.fork()
+            if pid == 0:
+                os.execvpe(command[0], command, environment)
+
+            try:
+                startup = _read_until(master, b"RESTORED> ", timeout=12)
+                visible_end = startup.index(b"VISIBLE END")
+                prompt = startup.index(b"RESTORED> ", visible_end)
+                rendered_gap = startup[visible_end:prompt]
+
+                self.assertIn(b"RESTORED HISTORY", startup)
+                self.assertEqual(rendered_gap.count(b"\n"), 1)
+            finally:
+                with suppress(OSError):
+                    os.write(master, b"\x03exit\r")
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    waited, _ = os.waitpid(pid, os.WNOHANG)
+                    if waited == pid:
+                        break
+                    time.sleep(0.05)
+                else:
+                    os.killpg(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                os.close(master)
+
+    @unittest.skipUnless(
+        shutil.which("kitten") and shutil.which("zsh"), "kitten and zsh are required"
+    )
     def test_approved_app_uses_user_zsh_path_before_prompt(self) -> None:
         """Run a restored app found only through the user's zsh configuration."""
 

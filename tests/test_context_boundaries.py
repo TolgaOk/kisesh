@@ -227,6 +227,21 @@ class ContextBoundaryTests(unittest.TestCase):
         self.assertNotIn("must-not-reach-the-clipboard", bounded.text)
         self.assertNotIn("\x1b[2J", bounded.text)
 
+    def test_terminal_capture_drops_only_unused_trailing_screen_rows(self) -> None:
+        """Keep meaningful spacing while removing blank rows below the final content."""
+        green = "\x1b[32m"
+        reset = "\x1b[0m"
+        captured = f"{green}prompt{reset}\n\ncommand output\n" + "\n" * 12 + f"{reset}   \t"
+
+        bounded = _bounded_terminal_history(captured)
+
+        self.assertEqual(
+            bounded.text,
+            f"{green}prompt{reset}\n\ncommand output\n",
+        )
+        self.assertFalse(bounded.truncated)
+        self.assertEqual(_bounded_terminal_history(f"{reset}\n\n").text, "")
+
     def test_corrupt_prior_panes_are_ignored_while_valid_position_state_survives(self) -> None:
         prior: dict[str, object] = {
             "tabs": [

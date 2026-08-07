@@ -146,6 +146,10 @@ def _bounded_terminal_history(value: object) -> BoundedText:
     if not styled.strip():
         return BoundedText("")
     lines = styled.splitlines(keepends=True)
+    while lines and not _SGR_SEQUENCE.sub("", lines[-1]).strip():
+        lines.pop()
+    if not lines:
+        return BoundedText("")
     truncated = len(lines) > TERMINAL_HISTORY_LINE_LIMIT
     bounded = "".join(lines[-TERMINAL_HISTORY_LINE_LIMIT:] if truncated else lines)
     if len(bounded) <= TERMINAL_HISTORY_CHARACTER_LIMIT:
