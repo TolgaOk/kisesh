@@ -7,7 +7,7 @@
 
 Kitty-native, recoverable sessions **without** a terminal multiplexer.
 
-![](docs/kisesh.png)
+<img src="docs/kisesh.png" alt="KiSesh session manager" width="650">
 
 KiSesh groups native Kitty tabs and panes into named sessions.
 
