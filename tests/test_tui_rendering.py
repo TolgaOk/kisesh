@@ -7,8 +7,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from unittest import mock
 
-from kisesh.domain import KittyWindow
 from kisesh.kitty_client import LiveTab
+from kisesh.model import KittyWindow
 from kisesh.service import (
     KiSeshService,
     UnownedTabsAction,

@@ -27,6 +27,7 @@ from kisesh.runtime_install import (
 
 PROJECT = Path(__file__).parents[1]
 PROJECT_LAUNCHER = PROJECT / ".venv" / "bin" / "kisesh"
+PROJECT_PANEL_LAUNCHER = PROJECT / ".venv" / "bin" / "kisesh-panel"
 
 
 class RuntimeInstallTests(unittest.TestCase):
@@ -45,10 +46,11 @@ class RuntimeInstallTests(unittest.TestCase):
         *,
         source: Path = PROJECT,
         launcher: Path = PROJECT_LAUNCHER,
+        panel_launcher: Path = PROJECT_PANEL_LAUNCHER,
         target: Path | None = None,
     ) -> RuntimePaths:
         """Build a runtime contract around real packaged resources and disposable targets."""
-        return runtime_paths(source, launcher, target or self.target)
+        return runtime_paths(source, launcher, panel_launcher, target or self.target)
 
     def launcher(self, name: str) -> Path:
         """Create an executable replacement launcher for upgrade scenarios."""
@@ -90,7 +92,7 @@ class RuntimeInstallTests(unittest.TestCase):
         self.assertFalse(paths.target.exists())
         self.assertFalse(remove_runtime(paths))
 
-    def test_previous_source_link_can_roll_back_or_finish_migration(self) -> None:
+    def test_source_checkout_link_can_roll_back_or_finish_transition(self) -> None:
         paths = self.paths()
         paths.target.parent.mkdir(parents=True)
         paths.target.symlink_to(PROJECT, target_is_directory=True)
@@ -348,7 +350,7 @@ class RuntimeInstallTests(unittest.TestCase):
 
         self.assertEqual(check_runtime_target(paths), previous)
 
-    def test_concurrent_target_creation_is_preserved_when_migration_fails(self) -> None:
+    def test_concurrent_target_creation_is_preserved_when_transition_fails(self) -> None:
         paths = self.paths()
         paths.target.parent.mkdir(parents=True)
         paths.target.symlink_to(PROJECT, target_is_directory=True)
@@ -369,7 +371,7 @@ class RuntimeInstallTests(unittest.TestCase):
         self.assertTrue(paths.target.is_dir())
         self.assertFalse(paths.target.is_symlink())
 
-    def test_previous_source_link_can_be_removed_without_claiming_its_checkout(self) -> None:
+    def test_source_checkout_link_can_be_removed_without_claiming_its_checkout(self) -> None:
         paths = self.paths()
         paths.target.parent.mkdir(parents=True)
         paths.target.symlink_to(PROJECT, target_is_directory=True)

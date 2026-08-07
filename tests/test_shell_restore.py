@@ -19,7 +19,7 @@ from kisesh.kitty_client import LiveTab
 from kisesh.store import SessionStore
 
 PROJECT = Path(__file__).parents[1]
-LAUNCHER = PROJECT / "bin" / "kisesh"
+LAUNCHER = Path(sys.executable).with_name("kisesh")
 
 
 def _read_until(fd: int, needle: bytes, timeout: float = 8.0) -> bytes:
@@ -198,7 +198,7 @@ class ShellRestoreTests(unittest.TestCase):
         shutil.which("kitten") and shutil.which("zsh"), "kitten and zsh are required"
     )
     def test_short_scrollback_places_prompt_immediately_after_visible_content(self) -> None:
-        """Restore a half-filled legacy screen without replaying its empty lower rows."""
+        """Restore a half-filled screen without replaying its empty lower rows."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             store, session_id = self._session(root, "pwd", "short output")

@@ -5,16 +5,19 @@ from __future__ import annotations
 import curses
 from pathlib import Path
 
-from kisesh.domain import (
+from kisesh.kitty_client import LiveTab
+from kisesh.model import (
     KittyWindow,
     PaneContext,
     RestoreKind,
     RestoreSpec,
     SessionContext,
+    SessionManifest,
+    SessionStatus,
+    SnapshotSummary,
     TabContext,
+    slugify,
 )
-from kisesh.kitty_client import LiveTab
-from kisesh.model import SessionManifest, SessionStatus, SnapshotSummary, slugify
 from kisesh.service import SessionView, UnownedTabsDecision, UnownedTabsInfo
 from kisesh.store import StoredSession
 from kisesh.tui import CursesGlyph, Palette, SessionManager

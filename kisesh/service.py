@@ -28,10 +28,9 @@ from .context import (
     restore_session,
     update_context_for_closing_pane,
 )
-from .domain import ClosingPaneCapture, KittyOsWindowState, SessionContext
 from .filesystem import temporary_path
 from .kitty_client import KittyClient, KittyController, KittyError, LiveTab
-from .model import SessionManifest, slugify
+from .model import ClosingPaneCapture, KittyOsWindowState, SessionContext, SessionManifest, slugify
 from .paths import runtime_root
 from .session_file import clean_tab_title, rename_snapshot_tab, sanitize_session, snapshot_summary
 from .store import SessionStore, StoredSession, StoreError

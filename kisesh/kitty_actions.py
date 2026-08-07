@@ -1,17 +1,88 @@
-"""Close one live session without exposing unrelated native Kitty tabs."""
+"""Apply KiSesh layout, filter, and close transitions inside Kitty."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from typing import Protocol
 
-from .legacy import VARIABLE_ALIASES as LEGACY_VARIABLE_ALIASES
 from .model import SESSION_ID_VAR, SESSION_SCOPE_VAR
-from .session_filter import (
-    SessionFilterBoss,
-    SessionFilterOptions,
-    set_session_filter,
-)
+
+
+class CurrentLayout(Protocol):
+    """Layout identity exposed by a live Kitty tab."""
+
+    name: str
+
+
+class LayoutTab(Protocol):
+    """Live Kitty tab operations needed to toggle its zoom layout."""
+
+    @property
+    def current_layout(self) -> CurrentLayout:
+        """Return the tab's current layout."""
+
+    def goto_layout(self, layout_name: str) -> None:
+        """Switch the tab to a named enabled layout."""
+
+    def last_used_layout(self) -> None:
+        """Return to the previous layout when Kitty has recorded one."""
+
+
+class LayoutBoss(Protocol):
+    """Subset of Kitty's controller needed by the layout action."""
+
+    @property
+    def active_tab(self) -> LayoutTab | None:
+        """Return the active native tab, if one still exists."""
+
+
+def toggle_session_layout(boss: LayoutBoss) -> None:
+    """Toggle stack zoom and fall back to splits after a direct stack restore."""
+    tab = boss.active_tab
+    if tab is None:
+        return
+    if tab.current_layout.name != "stack":
+        tab.goto_layout("stack")
+        return
+    tab.last_used_layout()
+    if tab.current_layout.name == "stack":
+        tab.goto_layout("splits")
+
+
+class SessionFilterOptions(Protocol):
+    """Mutable Kitty option required by the native session filter."""
+
+    tab_bar_filter: str
+
+
+class SessionFilterManager(Protocol):
+    """Native tab-manager operations required after a filter change."""
+
+    def mark_tab_bar_dirty(self) -> None:
+        """Request a native tab-bar repaint."""
+
+    def update_tab_bar_data(self) -> None:
+        """Rebuild visible native tab data with the current filter."""
+
+
+class SessionFilterBoss(Protocol):
+    """Kitty controller state required to refresh every native tab bar."""
+
+    @property
+    def all_tab_managers(self) -> Iterable[SessionFilterManager]:
+        """Return every native tab manager controlled by this Kitty process."""
+
+
+def set_session_filter(
+    expression: str,
+    boss: SessionFilterBoss,
+    options: SessionFilterOptions,
+) -> None:
+    """Apply one tab filter without resetting runtime font or theme state."""
+    options.tab_bar_filter = expression
+    for manager in boss.all_tab_managers:
+        manager.mark_tab_bar_dirty()
+        manager.update_tab_bar_data()
 
 
 class SessionCloseWindow(Protocol):
@@ -53,12 +124,8 @@ class SessionCloseBoss(SessionFilterBoss, Protocol):
 
 
 def _tab_session_id(tab: SessionCloseTab) -> str | None:
-    """Read one tab's current or compatibility session marker."""
-    names = (SESSION_ID_VAR, LEGACY_VARIABLE_ALIASES[SESSION_ID_VAR])
-    return next(
-        (value for window in tab for name in names if (value := window.user_vars.get(name))),
-        None,
-    )
+    """Read one tab's session marker."""
+    return next((value for window in tab if (value := window.user_vars.get(SESSION_ID_VAR))), None)
 
 
 def close_live_session(
@@ -87,21 +154,16 @@ def close_live_session(
     )
     successor_os_window_id = successor.os_window_id if successor is not None else None
     scope = str(successor_os_window_id) if successor_os_window_id is not None else None
-    legacy_scope = LEGACY_VARIABLE_ALIASES[SESSION_SCOPE_VAR]
     for tab in tabs:
         tab_scope = scope if tab.os_window_id == successor_os_window_id else None
         for window in tab:
             window.set_user_var(SESSION_SCOPE_VAR, tab_scope)
-            window.set_user_var(legacy_scope, None)
     if successor is not None and successor.active_window is not None:
         boss.set_active_window(successor.active_window, switch_os_window_if_needed=True)
     expression = "all"
     if successor is not None and scope is not None:
-        legacy_session = LEGACY_VARIABLE_ALIASES[SESSION_ID_VAR]
         expression = (
-            f"var:{SESSION_ID_VAR}={successor_session_id} or "
-            f"var:{legacy_session}={successor_session_id} or "
-            f"not var:{SESSION_SCOPE_VAR}={scope}"
+            f"var:{SESSION_ID_VAR}={successor_session_id} or not var:{SESSION_SCOPE_VAR}={scope}"
         )
     set_session_filter(expression, boss, options)
     for tab in closing_tabs:

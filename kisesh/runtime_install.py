@@ -80,7 +80,12 @@ class RuntimeTransaction:
         return self.deployment is not None
 
 
-def runtime_paths(source: Path, launcher: Path, target: Path) -> RuntimePaths:
+def runtime_paths(
+    source: Path,
+    launcher: Path,
+    panel_launcher: Path,
+    target: Path,
+) -> RuntimePaths:
     """Resolve the packaged resources used to construct the stable runtime."""
     package = source / "kisesh"
     integration = package / "integration"
@@ -88,7 +93,7 @@ def runtime_paths(source: Path, launcher: Path, target: Path) -> RuntimePaths:
         source=source,
         package=package,
         integration=integration,
-        panel=integration / "kisesh-panel",
+        panel=panel_launcher,
         launcher=launcher,
         target=target,
     )
@@ -102,10 +107,7 @@ def validate_runtime_source(paths: RuntimePaths) -> None:
         paths.package / "close_guard.py",
         paths.package / "session_bar.py",
         paths.integration / "kisesh.conf",
-        paths.integration / "layout_toggle.py",
-        paths.integration / "reload_tab_bar.py",
-        paths.integration / "safe_close.py",
-        paths.integration / "session_filter.py",
+        paths.integration / "actions.py",
         paths.integration / "tab_bar.py",
         paths.integration / "quick-access-terminal.conf",
         paths.panel,
@@ -114,8 +116,9 @@ def validate_runtime_source(paths: RuntimePaths) -> None:
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise RuntimeInstallError(f"package is incomplete; missing: {', '.join(missing)}")
-    if not os.access(paths.launcher, os.X_OK):
-        raise RuntimeInstallError(f"CLI launcher is not executable: {paths.launcher}")
+    for launcher in (paths.launcher, paths.panel):
+        if not os.access(launcher, os.X_OK):
+            raise RuntimeInstallError(f"launcher is not executable: {launcher}")
 
 
 def _manifest_from_payload(payload: object, path: Path) -> RuntimeManifest:

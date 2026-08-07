@@ -18,9 +18,8 @@ from kisesh.app_profiles import (
     refresh_app_profiles,
 )
 from kisesh.context import build_context
-from kisesh.domain import KittyWindow
 from kisesh.kitty_client import LiveTab
-from kisesh.model import SessionManifest
+from kisesh.model import KittyWindow, SessionManifest
 from kisesh.preview import build_session_preview
 from kisesh.service import SessionView
 from kisesh.session_bar import SessionBarTab, render_tab_label

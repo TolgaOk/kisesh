@@ -27,13 +27,12 @@ class PathTests(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(data_root(), Path("~/.local/share/kisesh").expanduser())
 
-    def test_runtime_root_prefers_explicit_then_source_then_stable_install(self) -> None:
-        project = Path(__file__).parents[1]
+    def test_runtime_root_prefers_explicit_then_stable_install(self) -> None:
         with patch.dict("os.environ", {"KISESH_INSTALL_ROOT": "/configured"}, clear=True):
             self.assertEqual(runtime_root(), Path("/configured"))
 
         with patch.dict("os.environ", {}, clear=True):
-            self.assertEqual(runtime_root(), project)
+            self.assertEqual(runtime_root(), Path("~/.local/lib/kisesh").expanduser())
 
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary) / "home"

@@ -18,11 +18,8 @@ def data_root(override: str | os.PathLike[str] | None = None) -> Path:
 
 
 def runtime_root() -> Path:
-    """Resolve the development source or stable installed runtime root."""
+    """Resolve an explicit or stable installed runtime root."""
     configured = os.environ.get("KISESH_INSTALL_ROOT")
     if configured:
         return Path(configured).expanduser()
-    source = Path(__file__).absolute().parents[1]
-    if (source / "bin" / "kisesh").is_file() and (source / "integration" / "kisesh.conf").is_file():
-        return source
     return Path("~/.local/lib/kisesh").expanduser()

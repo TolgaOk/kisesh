@@ -12,7 +12,6 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -142,13 +141,10 @@ _timer_lock = threading.Lock()
 
 
 def _runtime_root() -> Path:
-    """Resolve a direct Kitty import or packaged command to its stable runtime."""
+    """Resolve an explicit or stable installed runtime root."""
     configured = os.environ.get("KISESH_INSTALL_ROOT")
     if configured:
         return Path(configured).expanduser()
-    source = Path(__file__).absolute().parents[1]
-    if (source / "bin" / "kisesh").is_file():
-        return source
     return Path("~/.local/lib/kisesh").expanduser()
 
 
@@ -164,27 +160,14 @@ def _string_mapping(value: object) -> dict[str, str]:
     return {str(key): str(item) for key, item in value.items() if item is not None}
 
 
-@cache
-def _legacy_variable_aliases() -> Mapping[str, str]:
-    """Load previous user-variable names without requiring a package import at startup."""
-    project_root = str(_runtime_root())
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-    module = importlib.import_module("kisesh.legacy")
-    return cast(Mapping[str, str], module.VARIABLE_ALIASES)
-
-
 def _variable(variables: Mapping[str, str], name: str) -> str | None:
-    """Resolve a current watcher variable with its previous-name fallback."""
-    value = variables.get(name)
-    if value:
-        return value
-    return variables.get(_legacy_variable_aliases()[name])
+    """Resolve one current nonempty watcher variable."""
+    return variables.get(name) or None
 
 
 def _variable_name_matches(value: object, name: str) -> bool:
-    """Report whether an event key uses a current or previous variable name."""
-    return value == name or value == _legacy_variable_aliases()[name]
+    """Report whether an event key uses the requested variable name."""
+    return value == name
 
 
 def _window_environment(window: WatcherWindow) -> dict[str, str]:
@@ -781,11 +764,7 @@ def _update_app_markers(
     current = _string_mapping(window.user_vars)
     application = profile.name if profile is not None else None
     agent = profile.name if profile is not None and profile.agent else None
-    current_desired = ((APP_VAR, application), (AGENT_VAR, agent))
-    desired = (
-        *current_desired,
-        *((_legacy_variable_aliases()[name], None) for name, _value in current_desired),
-    )
+    desired = ((APP_VAR, application), (AGENT_VAR, agent))
     assignments = tuple(
         f"{name}={value}" if value is not None else name
         for name, value in desired

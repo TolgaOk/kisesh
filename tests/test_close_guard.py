@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -10,7 +11,6 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
-from kisesh import legacy
 from kisesh.close_guard import (
     CloseGuardBoss,
     CloseGuardTab,
@@ -278,34 +278,6 @@ class CloseGuardTests(unittest.TestCase):
             TabOwnership("session-a", "session-a", True),
         )
 
-    def test_previous_live_markers_still_guard_final_tabs_and_transient_ui(self) -> None:
-        tracked = FakeWindow(
-            11,
-            {
-                legacy.SESSION_ID_VARIABLE: "session-a",
-                legacy.SESSION_SLUG_VARIABLE: "silver-seal",
-            },
-        )
-        tab = FakeTab(7, 1, [tracked])
-        boss = FakeBoss(tab)
-
-        route_close(tracked.id, boss)
-
-        self.assertEqual(boss.closed_tabs, [])
-        self.assertEqual(len(boss.confirmations), 1)
-        self.assertEqual(
-            boss.confirmations[0].message,
-            'Save and close the final tab of "silver-seal"?',
-        )
-        boss.answer(False)
-
-        overlay = FakeWindow(12, {legacy.UI_VARIABLE: "yes"})
-        overlay_boss = FakeBoss(FakeTab(8, 1, [overlay]))
-        route_close(overlay.id, overlay_boss)
-
-        self.assertEqual(overlay_boss.closed_windows, 1)
-        self.assertEqual(overlay_boss.closed_tabs, [])
-
     def test_unowned_and_multitab_requests_close_the_exact_active_tab_immediately(self) -> None:
         unowned_tab = FakeTab(7, 1, [FakeWindow(11)])
         unowned = FakeBoss(unowned_tab)
@@ -410,33 +382,44 @@ class CloseGuardTests(unittest.TestCase):
         }
         request = CloseRequest("session-a", 41, environment)
 
-        with mock.patch("kisesh.close_guard.subprocess.Popen", return_value=process) as popen:
-            result = _launch_close(request)
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            launcher = runtime / "bin" / "kisesh"
+            launcher.parent.mkdir()
+            launcher.touch()
+            with (
+                mock.patch("kisesh.close_guard.runtime_root", return_value=runtime),
+                mock.patch("kisesh.close_guard.subprocess.Popen", return_value=process) as popen,
+            ):
+                result = _launch_close(request)
 
-        self.assertIs(result, process)
-        command = popen.call_args.args[0]
-        self.assertEqual(
-            command[-6:],
-            [
-                "--socket",
-                "unix:/tmp/preferred.sock",
-                "close",
-                "session-a",
-                "--promote-os-window",
-                "41",
-            ],
-        )
-        self.assertNotIn("shell", popen.call_args.kwargs)
-        self.assertEqual(popen.call_args.kwargs["env"], environment)
-        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+            self.assertIs(result, process)
+            command = popen.call_args.args[0]
+            self.assertEqual(
+                command[-6:],
+                [
+                    "--socket",
+                    "unix:/tmp/preferred.sock",
+                    "close",
+                    "session-a",
+                    "--promote-os-window",
+                    "41",
+                ],
+            )
+            self.assertNotIn("shell", popen.call_args.kwargs)
+            self.assertEqual(popen.call_args.kwargs["env"], environment)
+            self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
-        without_socket = CloseRequest("session-b", 9, {})
-        with mock.patch("kisesh.close_guard.subprocess.Popen", return_value=process) as popen:
-            _launch_close(without_socket)
-        self.assertEqual(
-            popen.call_args.args[0][-4:],
-            ["close", "session-b", "--promote-os-window", "9"],
-        )
+            without_socket = CloseRequest("session-b", 9, {})
+            with (
+                mock.patch("kisesh.close_guard.runtime_root", return_value=runtime),
+                mock.patch("kisesh.close_guard.subprocess.Popen", return_value=process) as popen,
+            ):
+                _launch_close(without_socket)
+            self.assertEqual(
+                popen.call_args.args[0][-4:],
+                ["close", "session-b", "--promote-os-window", "9"],
+            )
 
     def test_process_confirmation_and_wait_failures_release_the_guard(self) -> None:
         request = CloseRequest("session-a", 1, {})
@@ -446,11 +429,19 @@ class CloseGuardTests(unittest.TestCase):
         self.assertTrue(_reserve_session(request.session_id))
         _release_session(request.session_id)
 
-        with mock.patch(
-            "kisesh.close_guard.subprocess.Popen",
-            side_effect=OSError("cannot fork"),
-        ):
-            self.assertIsNone(_launch_close(request))
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            launcher = runtime / "bin" / "kisesh"
+            launcher.parent.mkdir()
+            launcher.touch()
+            with (
+                mock.patch("kisesh.close_guard.runtime_root", return_value=runtime),
+                mock.patch(
+                    "kisesh.close_guard.subprocess.Popen",
+                    side_effect=OSError("cannot fork"),
+                ),
+            ):
+                self.assertIsNone(_launch_close(request))
         with mock.patch(
             "kisesh.close_guard.runtime_root",
             return_value=Path("/definitely/missing/kisesh"),

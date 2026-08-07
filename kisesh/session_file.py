@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from .legacy import MANAGED_VARIABLES as LEGACY_MANAGED_VARIABLES
-from .legacy import UI_VARIABLE as LEGACY_UI_VARIABLE
 from .model import (
     AGENT_VAR,
     APP_VAR,
@@ -89,7 +87,7 @@ _MANAGED_VARIABLES = {
     CAPTURE_VAR,
     KISESH_UI_VAR,
     RESTORE_LAYOUT_VAR,
-} | LEGACY_MANAGED_VARIABLES
+}
 
 
 def _variable_name(value: str) -> str:
@@ -199,7 +197,7 @@ def _launch_variables(line: str) -> dict[str, str]:
 def _is_kisesh_ui_launch(line: str) -> bool:
     """Identify a serialized transient manager window from its user variable."""
     variables = _launch_variables(line)
-    marker = variables.get(KISESH_UI_VAR, variables.get(LEGACY_UI_VARIABLE))
+    marker = variables.get(KISESH_UI_VAR)
     return marker is not None and marker.casefold() not in {"", "0", "false", "no"}
 
 
@@ -304,7 +302,7 @@ def sanitize_session(
     *,
     stamp_ownership: bool = True,
 ) -> str:
-    """Normalize generated or legacy grammar into a safe multi-tab snapshot."""
+    """Normalize Kitty session grammar into a safe multi-tab snapshot."""
     lines = text.splitlines()
     transient = _transient_ui_locations(lines)
     output: list[str] = []

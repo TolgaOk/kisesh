@@ -133,8 +133,6 @@ class TuiBoundaryTests(unittest.TestCase):
         self.assertIsNone(manager._handle_key(screen, "x"))
         self.assertIn("only a live session", manager.message)
 
-        manager._handle_key(screen, "s")
-        self.assertIn("saved Dotfiles", manager.message)
         manager._handle_key(screen, "e")
         self.assertIn("archived Dotfiles", manager.message)
 

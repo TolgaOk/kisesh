@@ -10,7 +10,6 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 
-from .legacy import VARIABLE_ALIASES as LEGACY_VARIABLE_ALIASES
 from .model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SLUG_VAR
 from .paths import runtime_root
 
@@ -110,14 +109,6 @@ def _string_mapping(value: object) -> dict[str, str]:
     return {str(key): str(item) for key, item in value.items() if item is not None}
 
 
-def _compatible_variable(variables: Mapping[str, str], name: str) -> str | None:
-    """Resolve a current Kitty user variable with its previous-name fallback."""
-    value = variables.get(name)
-    if value:
-        return value
-    return variables.get(LEGACY_VARIABLE_ALIASES[name])
-
-
 def _window_environment(window: CloseGuardWindow) -> dict[str, str]:
     """Merge child and foreground environments over Kitty's own environment."""
     environment = os.environ.copy()
@@ -130,15 +121,11 @@ def _window_environment(window: CloseGuardWindow) -> dict[str, str]:
 def _tab_ownership(tab: CloseGuardTab) -> TabOwnership:
     """Resolve one unambiguous session identity from every pane in a tab."""
     variables = [_string_mapping(window.user_vars) for window in tab]
-    session_ids = {
-        value for item in variables if (value := _compatible_variable(item, SESSION_ID_VAR))
-    }
+    session_ids = {value for item in variables if (value := item.get(SESSION_ID_VAR))}
     if len(session_ids) > 1:
         return TabOwnership(None, None, False)
     session_id = next(iter(session_ids), None)
-    labels = {
-        value for item in variables if (value := _compatible_variable(item, SESSION_SLUG_VAR))
-    }
+    labels = {value for item in variables if (value := item.get(SESSION_SLUG_VAR))}
     label = next(iter(labels)) if len(labels) == 1 else session_id
     return TabOwnership(session_id, label, True)
 
@@ -244,9 +231,7 @@ def _close_transient_window(boss: CloseGuardBoss, window: CloseGuardWindow) -> b
     """Close a KiSesh or Kitty overlay without touching its underlying tab."""
     try:
         variables = _string_mapping(window.user_vars)
-        transient = window.overlay_parent is not None or bool(
-            _compatible_variable(variables, KISESH_UI_VAR)
-        )
+        transient = window.overlay_parent is not None or bool(variables.get(KISESH_UI_VAR))
     except Exception:
         return True
     if not transient:

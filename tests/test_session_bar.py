@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import NamedTuple, Protocol, cast
 from unittest import mock
 
-from kisesh import legacy, session_bar
+from kisesh import session_bar
 from kisesh.model import (
     AGENT_VAR,
     APP_VAR,
@@ -32,7 +32,7 @@ class Datum(NamedTuple):
     needs_attention: bool = False
 
 
-class LegacyDatum(NamedTuple):
+class MinimalDatum(NamedTuple):
     title: str
     tab_id: int
 
@@ -415,42 +415,6 @@ class SessionBarRenderingTests(unittest.TestCase):
 
 
 class SessionBarAdapterTests(unittest.TestCase):
-    def test_previous_live_markers_render_the_session_segment(self) -> None:
-        datum = Datum("Shell", 1, is_active=True)
-        variables = {
-            legacy.SESSION_ID_VARIABLE: "session-id",
-            legacy.SESSION_SLUG_VARIABLE: "silver-seal",
-            legacy.SESSION_NAME_VARIABLE: "Silver Seal",
-        }
-        boss = Boss({1: NativeTab(Window(variables, title="Shell"))})
-        drawer = RecordingDrawer()
-        screen = Screen(Cursor(x=4))
-
-        with (
-            mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
-            mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
-            mock.patch(
-                "kisesh.session_bar.importlib.import_module",
-                return_value=SimpleNamespace(as_rgb=lambda color: color),
-            ),
-        ):
-            session_bar.draw_tab(
-                DrawData("top"),
-                screen,
-                datum,
-                4,
-                40,
-                1,
-                True,
-                ExtraData(None),
-            )
-
-        self.assertEqual(
-            [cast(Datum, call[2]).title for call in drawer.calls],
-            [" Silver Seal", " Shell"],
-        )
-        self.assertEqual("".join(text for text, _, _ in screen.drawn), "")
-
     def test_pane_position_tracks_focus_close_and_manager_overlay(self) -> None:
         datum = Datum("Codex", 1, is_active=True)
         following = Datum("Editor", 2)
@@ -670,7 +634,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             result = session_bar.draw_tab(
                 DrawData("top"),
                 screen,
-                LegacyDatum("Shell", 1),
+                MinimalDatum("Shell", 1),
                 3,
                 30,
                 1,
@@ -680,7 +644,7 @@ class SessionBarAdapterTests(unittest.TestCase):
 
         self.assertEqual(result, 33)
         self.assertEqual(len(drawer.calls), 1)
-        self.assertIn(" Project", cast(LegacyDatum, drawer.calls[0][2]).title)
+        self.assertIn(" Project", cast(MinimalDatum, drawer.calls[0][2]).title)
 
         incomplete_drawer = RecordingDrawer()
         with (
@@ -1025,7 +989,12 @@ class SessionBarAdapterTests(unittest.TestCase):
             "print(loaded['draw_tab'].__module__)"
         )
         result = subprocess.run(
-            ["kitty", "+runpy", script, str(PROJECT / "integration" / "tab_bar.py")],
+            [
+                "kitty",
+                "+runpy",
+                script,
+                str(PROJECT / "kisesh" / "integration" / "tab_bar.py"),
+            ],
             cwd=PROJECT,
             env={**os.environ, "KISESH_INSTALL_ROOT": str(PROJECT)},
             check=False,
@@ -1126,7 +1095,7 @@ class SessionBarAdapterTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_entrypoint_loads_with_pre_feature_model_cached_in_kitty(self) -> None:
-        entrypoint = PROJECT / "integration" / "tab_bar.py"
+        entrypoint = PROJECT / "kisesh" / "integration" / "tab_bar.py"
         script = (
             "import runpy,sys; "
             f"sys.path.insert(0,{str(PROJECT)!r}); "

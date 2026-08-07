@@ -34,7 +34,6 @@ from kisesh.cli import (
     RemoveSession,
     RenameSession,
     RestoreShell,
-    SaveSession,
     ShowContext,
     UnarchiveSession,
     UninstallIntegration,
@@ -54,9 +53,8 @@ from kisesh.cli import (
     parse_arguments,
 )
 from kisesh.context import build_context
-from kisesh.domain import ClosingPaneCapture
 from kisesh.kitty_client import LiveTab
-from kisesh.model import SessionManifest
+from kisesh.model import ClosingPaneCapture, SessionManifest
 from kisesh.service import (
     KiSeshError,
     KiSeshService,
@@ -260,15 +258,13 @@ class CliTests(unittest.TestCase):
         restore.assert_called_once_with(stored, raw.context.return_value, 0, 0)
 
     def test_membership_commands_route_arguments_and_print_the_result_slug(self) -> None:
-        """Route create, membership, save, close, and open operations exactly once."""
+        """Route create, membership, close, and open operations exactly once."""
         stored = _stored()
         cases = (
             (CreateSession("Project", "/tmp/root"), "create_from_active", ("Project", "/tmp/root")),
             (AddTab("project"), "add_current_tab", ("project",)),
             (DetachTab("project"), "detach_current_tab", ("project",)),
             (CopyTab("project"), "copy_current_tab", ("project",)),
-            (SaveSession("project"), "save", ("project",)),
-            (SaveSession(), "save_current", ()),
             (CloseSession("project"), "save_and_close", ("project", None)),
             (CloseSession("project", 41), "save_and_close", ("project", 41)),
             (OpenSession("project"), "open", ("project", None)),
@@ -326,8 +322,8 @@ class CliTests(unittest.TestCase):
             operation.assert_called_once_with(*arguments)
             self.assertEqual(output.getvalue(), f"{expected}\n")
 
-    def test_watcher_payload_validation_accepts_legacy_and_close_formats(self) -> None:
-        """Normalize legacy event lists and complete synchronous close captures."""
+    def test_watcher_payload_validation_accepts_current_close_format(self) -> None:
+        """Normalize event objects and complete synchronous close captures."""
         event = {
             "window_id": 99,
             "command": ["pwd"],
@@ -348,7 +344,7 @@ class CliTests(unittest.TestCase):
         self.assertIsNone(_closing_capture(None))
         self.assertEqual(_closing_capture(close), cast(ClosingPaneCapture, _closing_capture(close)))
 
-        with mock.patch("sys.stdin", _stdin_payload([event])):
+        with mock.patch("sys.stdin", _stdin_payload({"command_events": [event]})):
             events, closing = _autosave_payload_from_stdin(True)
         self.assertEqual([item["command"] for item in events], ["pwd"])
         self.assertIsNone(closing)

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from .app_profiles import DEFAULT_APP_PROFILES, AppProfiles
-from .domain import KittyWindow, PaneContext, TabContext
+from .model import KittyWindow, PaneContext, TabContext
 from .service import SessionView
 
 PreviewSource = Literal["live", "saved", "summary"]

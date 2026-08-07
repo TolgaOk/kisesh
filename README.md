@@ -1,85 +1,67 @@
 # KiSesh
 
-Kitty-native, recoverable sessions without a terminal multiplexer.
+[![Kitty 0.47.2+](https://img.shields.io/badge/Kitty-0.47.2%2B-7F52FF)](https://sw.kovidgoyal.net/kitty/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![macOS](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-`experimental` · `Kitty 0.47.2+` · `tested 0.48.2` · `macOS` · `Vim keys`
+Kitty-native, recoverable sessions **without** a terminal multiplexer.
 
-A session can contain many Kitty tabs and panes. KiSesh saves their layout,
-working directories, bounded terminal context, and safe foreground-app restore
-instructions while Kitty continues to own every PTY directly.
+![](docs/kisesh.png)
+
+KiSesh groups native Kitty tabs and panes into named sessions.
+
+> [!NOTE]
+> KiSesh does **not** preserve the in-memory state of running processes.
+
+
+### Features
+
+- Provide `live`, `saved`, `archived` session states
+- Autosave: layout, terminal context, and commands
+- Session recovery (see `apps.toml` for configuring)
+  - auto resume `codex`, `claude` sessions
+  - bring history up to 2000 lines
+  - rerun **recognized** last running command
+  - prefill **unrecognized** commands and arguments without executing them
+
 
 ## Install
 
-With uv:
+**requirements**
+
+- [Kitty](https://sw.kovidgoyal.net/kitty/) >= 0.47.2
+- Nerd Font
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/main/install.sh | sh
+```
+
+Using `uv`:
 
 ```sh
 uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/archive/refs/heads/main.tar.gz
 kisesh install
 ```
 
-Or with curl:
+Restart Kitty after either installation method, then press `Alt+S` to open the KiSesh session manager.
 
-```sh
-curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/main/bootstrap.sh | sh
+## Configuration
+
+Session data is stored locally in `~/.local/share/kisesh/` by default.
+
+`kisesh install` creates `~/.config/kisesh/apps.toml` from the
+[bundled defaults](kisesh/default_apps.toml). Existing configuration is kept.
+
+```toml
+[defaults]
+restore = "prefill"
+label = "App"
+icon = ""
+
+[apps.nvim]
+match = ["nvim", "nvim-*", "vim", "vi"]
+restore = "captured"
+label = "Vim"
+icon = ""
 ```
-
-The installer leaves Kitty running. Reload its configuration when convenient,
-then press `Alt+S`. Configured icons require a Nerd Font or another font that
-contains their glyphs.
-
-## Example
-
-Name the current project with `Alt+S`, then `n`. If several unattached tabs are
-already open, use them all as one session, preserve them under the suggested
-editable name and start fresh, or discard them after confirmation. A session
-may contain many tabs and panes. Pressing `n` inside an existing session opens a
-fresh tab for the new session without reassigning or closing the current one.
-Opening another session shows only that session's tabs in the current Kitty
-window while every other session keeps running. Runtime font zoom and theme
-state remain unchanged. Other Kitty OS windows retain their normal tab bars.
-
-Moving with `j/k` expands only the selected session: each tab is followed by a
-comma-separated pane row. Configured icons such as `✻ Claude`, `󰋙 Codex`, and
-` Vim` appear there. Each native top-bar tab shows only its focused pane's icon
-and name. `•` marks the focused pane,
-and `↻` marks restorable or prefilled state. ` Session   󰋙 Codex` keeps
-session identity inactive and separate. Unattached tabs show only pane identity.
-
-If the current window contains unowned tabs, opening a session asks whether to
-attach them, edit a random unused name and save them separately, discard them
-after confirmation, or cancel unchanged. Session names are unique across the
-active and archived lists. A tab opened with Kitty's `new_tab_with_cwd` while a
-session is active joins and autosaves with that session, so this choice appears
-only for unrelated tabs. Use `x` to save all commands, scrollback, layout, and
-tabs before closing the live session. Each save resolves the current TOML rules
-into its snapshot. Restore recreates tabs, panes, layout, directories, up to
-2,000 shell-history and scrollback lines, and only the last command's output. It
-then applies the saved mode: `resume` safely normalizes Claude/Codex, `captured`
-runs captured arguments, `configured` runs exact `argv`, `prefill` types a
-reminder without Enter, and `ignore` starts only the normal shell. Unmatched
-apps use the safe default, `prefill`.
-
-`Cmd+W` closes one tab and autosaves the remaining session. On the final tab it
-defaults to a native **No** confirmation, saves before closing, then shows the
-next live session in that Kitty window. Repeated presses cannot close through
-the confirmation into the next session.
-
-Archive (`e`) moves an inactive session to the lower list. Remove (`D`) sends
-one to recoverable KiSesh trash.
-
-## Keys
-
-`j/k` move · `g/G` ends · `Ctrl-d/u` half-page · `/` search ·
-`l/Enter/Space` open · `n` new · `a/d/c` add/detach/copy tab · `s` save ·
-`x` save+close · `r` rename session · `Shift+R` rename tab ·
-`e/u` archive/unarchive · `Shift+D` remove · `?` help · `q/Esc/h` close
-
-## Verify
-
-```sh
-just check
-```
-
-The suite exercises real lifecycle scenarios, PTY history recall when Kitty and
-zsh are available, strict Kitty parsing when installed, reviewed golden
-rendering, practical terminal sizes, and 100% statement and branch coverage.

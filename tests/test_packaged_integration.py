@@ -37,12 +37,12 @@ def assert_session_close_handler(module: ModuleType, options: object) -> None:
         ValueError,
         "target and one optional successor",
     ):
-        call(module, "handle_result", ["kitten"], None, 10, "boss")
+        call(module, "handle_result", ["kitten", "session-close"], None, 10, "boss")
     with unittest.TestCase().assertRaisesRegex(ValueError, "successor identity is incomplete"):
         call(
             module,
             "handle_result",
-            ["kitten", "closing", "remaining", "-"],
+            ["kitten", "session-close", "closing", "remaining", "-"],
             None,
             10,
             "boss",
@@ -51,7 +51,7 @@ def assert_session_close_handler(module: ModuleType, options: object) -> None:
         call(
             module,
             "handle_result",
-            ["kitten", "closing", "remaining", "not-an-id"],
+            ["kitten", "session-close", "closing", "remaining", "not-an-id"],
             None,
             10,
             "boss",
@@ -60,7 +60,7 @@ def assert_session_close_handler(module: ModuleType, options: object) -> None:
         call(
             module,
             "handle_result",
-            ["kitten", "closing", "remaining", "12"],
+            ["kitten", "session-close", "closing", "remaining", "12"],
             None,
             10,
             "boss",
@@ -70,7 +70,7 @@ def assert_session_close_handler(module: ModuleType, options: object) -> None:
         call(
             module,
             "handle_result",
-            ["kitten", "closing", "-", "-"],
+            ["kitten", "session-close", "closing", "-", "-"],
             None,
             10,
             "boss",
@@ -95,11 +95,7 @@ class PackagedIntegrationTests(unittest.TestCase):
             "kitty.fast_data_types": fast_data_types,
         }
         names = (
-            "kisesh.integration.layout_toggle",
-            "kisesh.integration.reload_tab_bar",
-            "kisesh.integration.safe_close",
-            "kisesh.integration.session_close",
-            "kisesh.integration.session_filter",
+            "kisesh.integration.actions",
             "kisesh.integration.tab_bar",
         )
         original_path = list(sys.path)
@@ -125,47 +121,47 @@ class PackagedIntegrationTests(unittest.TestCase):
             for name in names:
                 sys.modules.pop(name, None)
 
-        layout = loaded["kisesh.integration.layout_toggle"]
-        with mock.patch.object(layout, "toggle_session_layout") as toggle:
-            self.assertIsNone(call(layout, "main", ["ignored"]))
-            self.assertIsNone(call(layout, "handle_result", ["kitten"], None, 7, "boss"))
+        actions = loaded["kisesh.integration.actions"]
+        self.assertIsNone(call(actions, "main", ["ignored"]))
+        with mock.patch.object(actions, "toggle_session_layout") as toggle:
+            self.assertIsNone(
+                call(actions, "handle_result", ["kitten", "layout-toggle"], None, 7, "boss")
+            )
             toggle.assert_called_once_with("boss")
 
-        reload_bar = loaded["kisesh.integration.reload_tab_bar"]
-        with mock.patch.object(reload_bar, "reload_session_bar") as reload_call:
-            self.assertIsNone(call(reload_bar, "main", []))
-            self.assertEqual(
-                call(reload_bar, "handle_result", ["kitten"], None, 8, "boss"),
-                "native session bar reloaded",
+        with mock.patch.object(actions, "request_tab_close") as close:
+            self.assertIsNone(
+                call(actions, "handle_result", ["kitten", "safe-close"], None, 9, "boss")
             )
-            reload_call.assert_called_once_with("boss")
-
-        safe_close = loaded["kisesh.integration.safe_close"]
-        with mock.patch.object(safe_close, "request_tab_close") as close:
-            self.assertIsNone(call(safe_close, "main", []))
-            self.assertIsNone(call(safe_close, "handle_result", [], None, 9, "boss"))
             close.assert_called_once_with(9, "boss")
 
-        session_close = loaded["kisesh.integration.session_close"]
-        self.assertIsNone(call(session_close, "main", []))
-        assert_session_close_handler(session_close, options)
+        with mock.patch.dict(sys.modules, fake_modules):
+            assert_session_close_handler(actions, options)
 
-        session_filter = loaded["kisesh.integration.session_filter"]
-        self.assertIsNone(call(session_filter, "main", []))
         with self.assertRaisesRegex(ValueError, "exactly one expression"):
-            call(session_filter, "handle_result", ["kitten"], None, 10, "boss")
-        with mock.patch.object(session_filter, "set_session_filter") as set_filter:
+            call(actions, "handle_result", ["kitten", "session-filter"], None, 10, "boss")
+        with (
+            mock.patch.dict(sys.modules, fake_modules),
+            mock.patch.object(actions, "set_session_filter") as set_filter,
+        ):
             self.assertIsNone(
                 call(
-                    session_filter,
+                    actions,
                     "handle_result",
-                    ["kitten", "var:kisesh_session=one"],
+                    ["kitten", "session-filter", "var:kisesh_session=one"],
                     None,
                     10,
                     "boss",
                 )
             )
             set_filter.assert_called_once_with("var:kisesh_session=one", "boss", options)
+
+        for arguments in (["kitten"], ["kitten", "unknown"], ["kitten", "safe-close", "extra"]):
+            with (
+                self.subTest(arguments=arguments),
+                self.assertRaisesRegex(ValueError, "unknown KiSesh action"),
+            ):
+                call(actions, "handle_result", arguments, None, 10, "boss")
 
         tab_bar = loaded["kisesh.integration.tab_bar"]
         self.assertEqual(tab_bar.draw_tab.__module__, "kisesh.session_bar")

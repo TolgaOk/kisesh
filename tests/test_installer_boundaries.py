@@ -18,39 +18,29 @@ from kisesh.installer import (
     INTEGRATION_INCLUDE,
     MANAGED_BEGIN,
     MANAGED_END,
-    AppConfigPlan,
     ConfigProbe,
     InstallArguments,
     InstallError,
     InstallPaths,
-    LegacyUpgradeState,
-    _app_config_plan,
+    _app_config_content,
     _backup_once,
     _check_install_target,
-    _cli_launcher,
+    _console_launcher,
     _disable,
     _editable_config,
     _enable,
     _expand_home,
     _find_executable,
-    _finish_legacy_upgrade,
     _home,
     _kitty_config,
-    _legacy_paths,
-    _legacy_tab_bar_paths,
-    _prepare_legacy_upgrade,
     _probe_config,
     _read_config,
-    _remove_legacy_link,
     _remove_product_data,
-    _rollback_legacy_upgrade,
-    _same_target,
     _strip_kisesh_config,
     _uninstall,
     _validate_source,
     main,
 )
-from kisesh.legacy import INTEGRATION_INCLUDE as LEGACY_INTEGRATION_INCLUDE
 from kisesh.tab_bar_install import install_tab_bar, tab_bar_paths
 
 PROJECT = Path(__file__).parents[1]
@@ -71,6 +61,7 @@ class InstallerBoundaryTests(unittest.TestCase):
             home=self.home,
             source=source,
             launcher=PROJECT / ".venv" / "bin" / "kisesh",
+            panel_launcher=PROJECT / ".venv" / "bin" / "kisesh-panel",
             target=self.home / ".local" / "lib" / "kisesh",
             kitty_config=self.home / ".config" / "kitty" / "kitty.conf",
             app_config=self.home / ".config" / "kisesh" / "apps.toml",
@@ -136,14 +127,12 @@ class InstallerBoundaryTests(unittest.TestCase):
         ):
             _validate_source(self.paths(source=incomplete))
 
-        with mock.patch.object(Path, "resolve", side_effect=OSError("unreadable")):
-            self.assertFalse(_same_target(self.root / "link", PROJECT))
-
         in_place = self.paths(source=PROJECT)
         in_place = InstallPaths(
             home=in_place.home,
             source=PROJECT,
             launcher=in_place.launcher,
+            panel_launcher=in_place.panel_launcher,
             target=PROJECT,
             kitty_config=in_place.kitty_config,
             app_config=in_place.app_config,
@@ -155,29 +144,37 @@ class InstallerBoundaryTests(unittest.TestCase):
         app_directory.mkdir(parents=True)
         with self.assertRaisesRegex(InstallError, "app config is not a file"):
             paths = self.paths()
-            _app_config_plan(paths, _legacy_paths(paths))
+            _app_config_content(paths)
 
-    def test_cli_launcher_resolves_each_install_style_and_rejects_missing_commands(self) -> None:
+    def test_console_launcher_resolves_each_install_style_and_rejects_missing_commands(
+        self,
+    ) -> None:
         executable = self.root / "valid" / "kisesh"
         executable.parent.mkdir()
         executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         executable.chmod(0o755)
 
         with mock.patch.dict("os.environ", {"KISESH_CLI": str(executable)}, clear=True):
-            self.assertEqual(_cli_launcher(self.root / "source"), executable)
+            self.assertEqual(
+                _console_launcher(self.root / "source", "kisesh", "KISESH_CLI"), executable
+            )
 
         with (
             mock.patch.dict("os.environ", {}, clear=True),
             mock.patch.object(sys, "argv", [str(executable)]),
         ):
-            self.assertEqual(_cli_launcher(self.root / "source"), executable)
+            self.assertEqual(
+                _console_launcher(self.root / "source", "kisesh", "KISESH_CLI"), executable
+            )
 
         with (
             mock.patch.dict("os.environ", {}, clear=True),
             mock.patch.object(sys, "argv", ["kisesh"]),
             mock.patch.object(shutil, "which", return_value=str(executable)),
         ):
-            self.assertEqual(_cli_launcher(self.root / "source"), executable)
+            self.assertEqual(
+                _console_launcher(self.root / "source", "kisesh", "KISESH_CLI"), executable
+            )
 
         unavailable = self.root / "unavailable"
         unavailable.write_text("not executable", encoding="utf-8")
@@ -187,15 +184,7 @@ class InstallerBoundaryTests(unittest.TestCase):
             mock.patch.object(sys, "executable", str(self.root / "missing-python")),
             self.assertRaisesRegex(InstallError, "launcher was not found"),
         ):
-            _cli_launcher(self.root / "missing-source")
-
-    def test_previous_app_config_must_also_be_a_regular_file(self) -> None:
-        paths = self.paths()
-        legacy = _legacy_paths(paths)
-        legacy.app_config.mkdir(parents=True)
-
-        with self.assertRaisesRegex(InstallError, "previous app config is not a file"):
-            _app_config_plan(paths, legacy)
+            _console_launcher(self.root / "missing-source", "kisesh", "KISESH_CLI")
 
     def test_config_stripping_rejects_nested_and_unmatched_markers(self) -> None:
         paths = self.paths()
@@ -213,97 +202,11 @@ class InstallerBoundaryTests(unittest.TestCase):
         self.assertEqual(stripped, "font_size 14\n")
 
         stripped, changed = _strip_kisesh_config(
-            f"font_size 15\n{LEGACY_INTEGRATION_INCLUDE}\n",
-            paths,
-        )
-        self.assertTrue(changed)
-        self.assertEqual(stripped, "font_size 15\n")
-
-        stripped, changed = _strip_kisesh_config(
             f"font_size 16\n{COMPAT_MANAGED_BEGIN}\n{INTEGRATION_INCLUDE}\n{COMPAT_MANAGED_END}\n",
             paths,
         )
         self.assertTrue(changed)
         self.assertEqual(stripped, "font_size 16\n")
-
-    def test_previous_upgrade_rolls_back_each_changed_resource_after_failures(self) -> None:
-        paths = self.paths()
-        legacy = _legacy_paths(paths)
-        legacy.data.mkdir(parents=True)
-        config = paths.kitty_config
-
-        for restored_bar in (False, True):
-            with (
-                self.subTest(restored_bar=restored_bar),
-                mock.patch(
-                    "kisesh.installer.restore_tab_bar",
-                    return_value=restored_bar,
-                ),
-                mock.patch.object(Path, "rename", side_effect=OSError("rename failed")),
-                mock.patch("kisesh.installer.install_tab_bar") as reinstall,
-                self.assertRaisesRegex(OSError, "rename failed"),
-            ):
-                _prepare_legacy_upgrade(paths, legacy, config)
-            self.assertEqual(reinstall.called, restored_bar)
-
-        legacy.data.rmdir()
-        payload = paths.data / "sessions" / "saved"
-        payload.mkdir(parents=True)
-        bar_paths = _legacy_tab_bar_paths(config, legacy)
-        with mock.patch("kisesh.installer.install_tab_bar") as reinstall:
-            _rollback_legacy_upgrade(
-                paths,
-                legacy,
-                LegacyUpgradeState(data_moved=True, restored_tab_bar=bar_paths),
-            )
-
-        self.assertTrue((legacy.data / "sessions" / "saved").is_dir())
-        reinstall.assert_called_once_with(bar_paths)
-
-    def test_previous_link_and_cleanup_failures_never_remove_foreign_resources(self) -> None:
-        paths = self.paths()
-        legacy = _legacy_paths(paths)
-        legacy.target.parent.mkdir(parents=True)
-        foreign = self.root / "foreign-previous-code"
-        foreign.mkdir()
-        legacy.target.symlink_to(foreign, target_is_directory=True)
-
-        self.assertFalse(_remove_legacy_link(paths, legacy))
-        self.assertTrue(legacy.target.is_symlink())
-        legacy.target.unlink()
-        source_alias = legacy.target.parent / "current-source"
-        source_alias.symlink_to(paths.source, target_is_directory=True)
-        legacy.target.symlink_to(source_alias.name, target_is_directory=True)
-        self.assertTrue(_remove_legacy_link(paths, legacy))
-        self.assertFalse(legacy.target.exists())
-
-        legacy.app_config.parent.mkdir(parents=True)
-        legacy.app_config.write_text("profiles", encoding="utf-8")
-        stderr = io.StringIO()
-        with (
-            mock.patch.object(Path, "unlink", side_effect=OSError("profiles denied")),
-            redirect_stderr(stderr),
-        ):
-            removed = _finish_legacy_upgrade(
-                paths,
-                legacy,
-                AppConfigPlan("profiles", legacy.app_config),
-                True,
-            )
-        self.assertFalse(removed)
-        self.assertIn("previous app config remains", stderr.getvalue())
-
-        stderr = io.StringIO()
-        with (
-            mock.patch(
-                "kisesh.installer._remove_legacy_link",
-                side_effect=OSError("link denied"),
-            ),
-            redirect_stderr(stderr),
-        ):
-            removed = _finish_legacy_upgrade(paths, legacy, AppConfigPlan(None), False)
-        self.assertFalse(removed)
-        self.assertIn("previous code link remains", stderr.getvalue())
 
     def test_config_symlinks_preserve_targets_and_report_resolution_or_read_errors(self) -> None:
         target = self.root / "real-kitty.conf"
@@ -516,8 +419,10 @@ class InstallerBoundaryTests(unittest.TestCase):
 
     def test_disable_reinstalls_the_native_bar_when_config_write_fails(self) -> None:
         paths = self.paths()
-        paths.target.parent.mkdir(parents=True)
-        paths.target.symlink_to(PROJECT, target_is_directory=True)
+        paths.target.mkdir(parents=True)
+        (paths.target / "integration").symlink_to(
+            PROJECT / "kisesh" / "integration", target_is_directory=True
+        )
         paths.kitty_config.parent.mkdir(parents=True)
         paths.kitty_config.write_text(
             f"{MANAGED_BEGIN}\n{INTEGRATION_INCLUDE}\n{MANAGED_END}\n",
@@ -536,7 +441,7 @@ class InstallerBoundaryTests(unittest.TestCase):
 
         self.assertTrue(bar_paths.live.is_symlink())
         self.assertEqual(
-            bar_paths.live.resolve(), (PROJECT / "integration" / "tab_bar.py").resolve()
+            bar_paths.live.resolve(), (PROJECT / "kisesh" / "integration" / "tab_bar.py").resolve()
         )
         self.assertTrue(bar_paths.state.exists())
 

@@ -5,9 +5,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import cast
 
-from kisesh import legacy
+from kisesh.kitty_actions import SessionCloseBoss, close_live_session
 from kisesh.model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SCOPE_VAR
-from kisesh.session_close import SessionCloseBoss, close_live_session
 
 Event = tuple[str, object]
 
@@ -92,11 +91,9 @@ def session_tab(
     session_id: str,
     events: list[Event],
     *,
-    legacy_marker: bool = False,
     overlay: bool = False,
 ) -> Tab:
-    marker = legacy.SESSION_ID_VARIABLE if legacy_marker else SESSION_ID_VAR
-    windows = [Window(tab_id * 10, {marker: session_id}, events)]
+    windows = [Window(tab_id * 10, {SESSION_ID_VAR: session_id}, events)]
     if overlay:
         windows.append(Window(tab_id * 10 + 1, {KISESH_UI_VAR: "yes"}, events))
     return Tab(tab_id, os_window_id, windows, windows[-1])
@@ -106,15 +103,10 @@ class SessionCloseTests(unittest.TestCase):
     def test_filter_and_focus_finish_before_closing_the_manager_host_session(self) -> None:
         events: list[Event] = []
         closing = session_tab(1, 7, "closing", events, overlay=True)
-        successor = session_tab(2, 7, "successor", events, legacy_marker=True)
+        successor = session_tab(2, 7, "successor", events)
         hidden = session_tab(3, 7, "hidden", events)
         other_window = session_tab(4, 8, "other", events)
-        other_window.windows[0].user_vars.update(
-            {
-                SESSION_SCOPE_VAR: "stale",
-                legacy.SESSION_SCOPE_VARIABLE: "older",
-            }
-        )
+        other_window.windows[0].user_vars[SESSION_SCOPE_VAR] = "stale"
         managers = [Manager(events), Manager(events)]
         boss = Boss([closing, successor, hidden, other_window], events, managers)
         options = Options("all", 21.5, "runtime-theme")
@@ -127,18 +119,14 @@ class SessionCloseTests(unittest.TestCase):
         self.assertLess(events.index(("bar", "update")), events.index(("close", 1)))
         self.assertEqual(
             options.tab_bar_filter,
-            f"var:{SESSION_ID_VAR}=successor or "
-            f"var:{legacy.SESSION_ID_VARIABLE}=successor or "
-            f"not var:{SESSION_SCOPE_VAR}=7",
+            f"var:{SESSION_ID_VAR}=successor or not var:{SESSION_SCOPE_VAR}=7",
         )
         self.assertEqual(options.font_size, 21.5)
         self.assertEqual(options.theme, "runtime-theme")
         for tab in (successor, hidden):
             for window in tab:
                 self.assertEqual(window.user_vars[SESSION_SCOPE_VAR], "7")
-                self.assertNotIn(legacy.SESSION_SCOPE_VARIABLE, window.user_vars)
         self.assertNotIn(SESSION_SCOPE_VAR, other_window.windows[0].user_vars)
-        self.assertNotIn(legacy.SESSION_SCOPE_VARIABLE, other_window.windows[0].user_vars)
         self.assertEqual(
             [event for event in events if event[0] == "bar"],
             [("bar", "dirty"), ("bar", "update")] * 2,
@@ -153,10 +141,7 @@ class SessionCloseTests(unittest.TestCase):
             [
                 Window(
                     20,
-                    {
-                        SESSION_SCOPE_VAR: "7",
-                        legacy.SESSION_SCOPE_VARIABLE: "7",
-                    },
+                    {SESSION_SCOPE_VAR: "7"},
                     events,
                 )
             ],
@@ -170,7 +155,6 @@ class SessionCloseTests(unittest.TestCase):
         self.assertEqual(options.tab_bar_filter, "all")
         self.assertFalse(any(event[0] == "focus" for event in events))
         self.assertNotIn(SESSION_SCOPE_VAR, unowned.windows[0].user_vars)
-        self.assertNotIn(legacy.SESSION_SCOPE_VARIABLE, unowned.windows[0].user_vars)
 
     def test_missing_target_is_a_complete_no_op(self) -> None:
         events: list[Event] = []

@@ -156,7 +156,7 @@ print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_opt_in_integration_is_accepted_by_installed_kitty(self) -> None:
-        integration = Path(__file__).parents[1] / "integration" / "kisesh.conf"
+        integration = Path(__file__).parents[1] / "kisesh" / "integration" / "kisesh.conf"
         program = (
             "import json,sys; "
             "from kitty.config import load_config; "
@@ -177,7 +177,7 @@ print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
     def test_manager_shortcut_resolves_to_open_or_close_from_real_focus_state(self) -> None:
         """Exercise Kitty's conditional-key resolver, not only config parsing."""
 
-        integration = Path(__file__).parents[1] / "integration" / "kisesh.conf"
+        integration = Path(__file__).parents[1] / "kisesh" / "integration" / "kisesh.conf"
         program = """
 import json
 import sys
@@ -230,7 +230,7 @@ print(json.dumps(resolved))
     def test_command_w_resolves_to_safe_close_or_layout_restoring_close(self) -> None:
         """Resolve the real Command-W chord through Kitty's conditional key engine."""
 
-        integration = Path(__file__).parents[1] / "integration" / "kisesh.conf"
+        integration = Path(__file__).parents[1] / "kisesh" / "integration" / "kisesh.conf"
         program = """
 import json
 import sys
@@ -241,7 +241,7 @@ options = load_config(sys.argv[1])
 key, candidates = next(
     (key, definitions)
     for key, definitions in options.keyboard_modes[""].keymap.items()
-    if any("safe_close.py" in definition.definition for definition in definitions)
+    if any("actions.py safe-close" in definition.definition for definition in definitions)
 )
 
 class FocusScenario(Mappings):
@@ -278,7 +278,7 @@ print(json.dumps({"mods": key.mods, "key": key.key, "resolved": resolved}))
         self.assertEqual(parsed["key"], ord("w"))
         self.assertEqual(
             parsed["resolved"]["source"],
-            ["kitten ~/.local/lib/kisesh/integration/safe_close.py"],
+            ["kitten ~/.local/lib/kisesh/integration/actions.py safe-close"],
         )
         self.assertEqual(
             parsed["resolved"]["kisesh"],
@@ -289,7 +289,7 @@ print(json.dumps({"mods": key.mods, "key": key.key, "resolved": resolved}))
     def test_layout_fallback_is_scoped_to_tracked_sessions_by_real_kitty(self) -> None:
         """Resolve the Alt-Z condition through Kitty's real key engine."""
 
-        integration = Path(__file__).parents[1] / "integration" / "kisesh.conf"
+        integration = Path(__file__).parents[1] / "kisesh" / "integration" / "kisesh.conf"
         program = """
 import json
 import sys
@@ -300,7 +300,7 @@ options = load_config(sys.argv[1], sys.argv[2])
 candidates = next(
     definitions
     for definitions in options.keyboard_modes[""].keymap.values()
-    if any("layout_toggle.py" in definition.definition for definition in definitions)
+    if any("actions.py layout-toggle" in definition.definition for definition in definitions)
 )
 
 class FocusScenario(Mappings):
@@ -345,7 +345,7 @@ print(json.dumps(resolved))
         self.assertEqual(
             json.loads(result.stdout),
             {
-                "tracked": ["kitten ~/.local/lib/kisesh/integration/layout_toggle.py"],
+                "tracked": ["kitten ~/.local/lib/kisesh/integration/actions.py layout-toggle"],
                 "untracked": ["toggle_layout stack"],
             },
         )

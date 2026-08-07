@@ -5,14 +5,13 @@ from collections.abc import Iterable, Mapping
 from typing import ClassVar
 from unittest.mock import patch
 
-from kisesh.domain import KittyOsWindowState, KittyWindow
 from kisesh.kitty_client import KittyError
-from kisesh.manager_surface import (
+from kisesh.model import KISESH_UI_VAR, RESTORE_LAYOUT_VAR, KittyOsWindowState, KittyWindow
+from kisesh.panel import (
     _overlay_window_id,
     expand_manager_surface,
     restore_manager_surface,
 )
-from kisesh.model import KISESH_UI_VAR, RESTORE_LAYOUT_VAR
 from tests.fakes import FakeKitty
 
 

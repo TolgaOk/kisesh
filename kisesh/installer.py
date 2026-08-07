@@ -17,24 +17,6 @@ import tyro
 
 from .app_profiles import AppProfileError, parse_app_profiles
 from .filesystem import atomic_write_text, temporary_path
-from .legacy import (
-    INTEGRATION_FILE as LEGACY_INTEGRATION_FILE,
-)
-from .legacy import (
-    INTEGRATION_INCLUDE as LEGACY_INTEGRATION_INCLUDE,
-)
-from .legacy import (
-    MANAGED_BEGIN as LEGACY_MANAGED_BEGIN,
-)
-from .legacy import (
-    MANAGED_END as LEGACY_MANAGED_END,
-)
-from .legacy import (
-    PRODUCT_DIRECTORY as LEGACY_PRODUCT_DIRECTORY,
-)
-from .legacy import (
-    TAB_BAR_BACKUP as LEGACY_TAB_BAR_BACKUP,
-)
 from .runtime_install import (
     RuntimeInstallError,
     RuntimePaths,
@@ -62,7 +44,7 @@ COMPAT_MANAGED_BEGIN = "# BEGIN kisesh (managed by ./install)"
 COMPAT_MANAGED_END = "# END kisesh (managed by ./install)"
 INTEGRATION_INCLUDE = "include ~/.local/lib/kisesh/integration/kisesh.conf"
 DEFAULT_LISTEN_ON = "unix:/tmp/kisesh-main"
-MANAGED_KEYS = ("alt+s", "alt+shift+s", "cmd+w")
+MANAGED_KEYS = ("alt+s", "cmd+w")
 
 InstallAction = Literal["enable", "disable", "uninstall", "purge"]
 
@@ -78,35 +60,11 @@ class InstallPaths:
     home: Path
     source: Path
     launcher: Path
+    panel_launcher: Path
     target: Path
     kitty_config: Path
     app_config: Path
     data: Path
-
-
-@dataclass(frozen=True, slots=True)
-class LegacyInstallPaths:
-    """Locations owned by the product identity that preceded KiSesh."""
-
-    target: Path
-    app_config: Path
-    data: Path
-
-
-@dataclass(frozen=True, slots=True)
-class AppConfigPlan:
-    """Validated app-profile content and its optional previous source."""
-
-    content: str | None
-    legacy_source: Path | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class LegacyUpgradeState:
-    """Reversible filesystem changes made while enabling a renamed checkout."""
-
-    data_moved: bool = False
-    restored_tab_bar: TabBarPaths | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,28 +144,29 @@ def _kitty_config(home: Path, override: Path | None = None) -> Path:
     return conventional
 
 
-def _cli_launcher(source: Path) -> Path:
-    """Resolve the persistent console command used by Kitty launch actions."""
-    configured = os.environ.get("KISESH_CLI")
+def _console_launcher(source: Path, name: str, environment_name: str) -> Path:
+    """Resolve one generated console command used by Kitty launch actions."""
+    configured = os.environ.get(environment_name)
     candidates: list[Path] = []
     if configured:
         candidates.append(Path(configured).expanduser())
     invoked = Path(sys.argv[0]).expanduser()
-    if invoked.name == "kisesh":
-        invoked_path = invoked if invoked.is_absolute() else Path(shutil.which("kisesh") or invoked)
-        candidates.append(invoked_path)
+    if invoked.name in {"kisesh", "kisesh-panel"}:
+        invoked_path = (
+            invoked if invoked.is_absolute() else Path(shutil.which(invoked.name) or invoked)
+        )
+        candidates.append(invoked_path.with_name(name))
     candidates.extend(
         (
-            Path(sys.executable).with_name("kisesh"),
-            source / ".venv" / "bin" / "kisesh",
-            source / "bin" / "kisesh",
+            Path(sys.executable).with_name(name),
+            source / ".venv" / "bin" / name,
         )
     )
     for candidate in candidates:
         absolute = candidate.absolute()
         if absolute.is_file() and os.access(absolute, os.X_OK):
             return absolute
-    raise InstallError("the kisesh CLI launcher was not found")
+    raise InstallError(f"the {name} launcher was not found")
 
 
 def install_paths(*, kitty_config: Path | None = None) -> InstallPaths:
@@ -219,31 +178,12 @@ def install_paths(*, kitty_config: Path | None = None) -> InstallPaths:
     return InstallPaths(
         home=home,
         source=source,
-        launcher=_cli_launcher(source),
+        launcher=_console_launcher(source, "kisesh", "KISESH_CLI"),
+        panel_launcher=_console_launcher(source, "kisesh-panel", "KISESH_PANEL_CLI"),
         target=home / ".local" / "lib" / "kisesh",
         kitty_config=_kitty_config(home, kitty_config),
         app_config=config_base / "kisesh" / "apps.toml",
         data=data_base / "kisesh",
-    )
-
-
-def _legacy_paths(paths: InstallPaths) -> LegacyInstallPaths:
-    """Resolve previous product locations beside their KiSesh replacements."""
-    return LegacyInstallPaths(
-        target=paths.target.with_name(LEGACY_PRODUCT_DIRECTORY),
-        app_config=paths.app_config.parent.with_name(LEGACY_PRODUCT_DIRECTORY) / "apps.toml",
-        data=paths.data.with_name(LEGACY_PRODUCT_DIRECTORY),
-    )
-
-
-def _legacy_tab_bar_paths(config: Path, legacy: LegacyInstallPaths) -> TabBarPaths:
-    """Resolve previous tab-bar recovery files without changing their names."""
-    recovery = legacy.data / ".integration"
-    return TabBarPaths(
-        live=config.parent / "tab_bar.py",
-        source=legacy.target / "integration" / "tab_bar.py",
-        state=recovery / "tab-bar.json",
-        backup=recovery / LEGACY_TAB_BAR_BACKUP,
     )
 
 
@@ -258,17 +198,9 @@ def _validate_source(paths: InstallPaths) -> None:
         raise InstallError(f"package is incomplete; missing: {profile}")
 
 
-def _same_target(link: Path, source: Path) -> bool:
-    """Compare a symlink and source while treating resolution failures as unequal."""
-    try:
-        return link.resolve(strict=False) == source.resolve(strict=True)
-    except OSError:
-        return False
-
-
 def _runtime_paths(paths: InstallPaths) -> RuntimePaths:
     """Translate installer locations into one runtime deployment contract."""
-    return runtime_paths(paths.source, paths.launcher, paths.target)
+    return runtime_paths(paths.source, paths.launcher, paths.panel_launcher, paths.target)
 
 
 def _check_install_target(paths: InstallPaths, *, removing: bool = False) -> None:
@@ -281,24 +213,19 @@ def _check_install_target(paths: InstallPaths, *, removing: bool = False) -> Non
 
 
 def _strip_kisesh_config(text: str, paths: InstallPaths) -> tuple[str, bool]:
-    """Remove current or previous managed blocks and manual includes."""
+    """Remove managed blocks and direct KiSesh includes."""
     lines = text.splitlines(keepends=True)
     output: list[str] = []
     active_end: str | None = None
     changed = False
-    legacy = _legacy_paths(paths)
     absolute_include = f"include {paths.target / 'integration' / 'kisesh.conf'}"
-    legacy_absolute_include = f"include {legacy.target / 'integration' / LEGACY_INTEGRATION_FILE}"
     manual_includes = {
         INTEGRATION_INCLUDE,
         absolute_include,
-        LEGACY_INTEGRATION_INCLUDE,
-        legacy_absolute_include,
     }
     managed_blocks = {
         MANAGED_BEGIN: MANAGED_END,
         COMPAT_MANAGED_BEGIN: COMPAT_MANAGED_END,
-        LEGACY_MANAGED_BEGIN: LEGACY_MANAGED_END,
     }
     managed_ends = frozenset(managed_blocks.values())
     for line in lines:
@@ -367,8 +294,8 @@ def _atomic_write(path: Path, content: str) -> None:
     atomic_write_text(path, content, mode=mode, prefix=".kisesh-config.")
 
 
-def _app_config_plan(paths: InstallPaths, legacy: LegacyInstallPaths) -> AppConfigPlan:
-    """Validate current, previous, or bundled profiles in precedence order."""
+def _app_config_content(paths: InstallPaths) -> str | None:
+    """Validate an existing profile file or return bundled first-use content."""
     bundled = paths.source / "kisesh" / "default_apps.toml"
     try:
         bundled_content = bundled.read_text(encoding="utf-8")
@@ -378,69 +305,10 @@ def _app_config_plan(paths: InstallPaths, legacy: LegacyInstallPaths) -> AppConf
                 raise InstallError(f"app config is not a file: {paths.app_config}")
             existing = paths.app_config.read_text(encoding="utf-8")
             parse_app_profiles(existing, source=str(paths.app_config))
-            return AppConfigPlan(None)
-        if legacy.app_config.exists() or legacy.app_config.is_symlink():
-            if not legacy.app_config.is_file():
-                raise InstallError(f"previous app config is not a file: {legacy.app_config}")
-            previous = legacy.app_config.read_text(encoding="utf-8")
-            parse_app_profiles(previous, source=str(legacy.app_config))
-            return AppConfigPlan(previous, legacy.app_config)
+            return None
     except (AppProfileError, OSError) as error:
         raise InstallError(f"cannot use app config: {error}") from error
-    return AppConfigPlan(bundled_content)
-
-
-def _prepare_legacy_upgrade(
-    paths: InstallPaths,
-    legacy: LegacyInstallPaths,
-    config: Path,
-) -> LegacyUpgradeState:
-    """Restore previous integration state and move session data as one step."""
-    legacy_data_exists = legacy.data.exists() or legacy.data.is_symlink()
-    current_data_exists = paths.data.exists() or paths.data.is_symlink()
-    if legacy_data_exists and current_data_exists:
-        raise InstallError(
-            "both KiSesh and previous session-data directories exist; move one aside and retry"
-        )
-    legacy_bar = _legacy_tab_bar_paths(config, legacy)
-    restored_bar = restore_tab_bar(legacy_bar)
-    try:
-        if legacy_data_exists:
-            paths.data.parent.mkdir(parents=True, exist_ok=True)
-            legacy.data.rename(paths.data)
-    except OSError:
-        if restored_bar:
-            install_tab_bar(legacy_bar)
-        raise
-    return LegacyUpgradeState(
-        data_moved=legacy_data_exists,
-        restored_tab_bar=legacy_bar if restored_bar else None,
-    )
-
-
-def _rollback_legacy_upgrade(
-    paths: InstallPaths,
-    legacy: LegacyInstallPaths,
-    state: LegacyUpgradeState,
-) -> None:
-    """Return previous data and tab-bar state after a failed KiSesh enable."""
-    if state.data_moved:
-        paths.data.rename(legacy.data)
-    if state.restored_tab_bar is not None:
-        install_tab_bar(state.restored_tab_bar)
-
-
-def _remove_legacy_link(paths: InstallPaths, legacy: LegacyInstallPaths) -> bool:
-    """Remove only a previous code symlink that resolves to this checkout."""
-    if not legacy.target.is_symlink():
-        return False
-    raw_target = Path(os.readlink(legacy.target))
-    linked_path = raw_target if raw_target.is_absolute() else legacy.target.parent / raw_target
-    previous_source = paths.source.with_name(LEGACY_PRODUCT_DIRECTORY)
-    if linked_path != previous_source and not _same_target(legacy.target, paths.source):
-        return False
-    legacy.target.unlink()
-    return True
+    return bundled_content
 
 
 def _write_app_config(path: Path, content: str) -> None:
@@ -576,53 +444,17 @@ def _validated_enabled_config(kitty: str, config: Path, base: str) -> str:
     return desired
 
 
-def _finish_legacy_upgrade(
-    paths: InstallPaths,
-    legacy: LegacyInstallPaths,
-    app_config_plan: AppConfigPlan,
-    app_config_created: bool,
-) -> bool:
-    """Retire verified previous paths after the KiSesh transaction succeeds."""
-    if app_config_created and app_config_plan.legacy_source is not None:
-        try:
-            app_config_plan.legacy_source.unlink()
-        except OSError as error:
-            print(f"warning: previous app config remains: {error}", file=sys.stderr)
-        else:
-            with suppress(OSError):
-                app_config_plan.legacy_source.parent.rmdir()
-    try:
-        return _remove_legacy_link(paths, legacy)
-    except OSError as error:
-        print(f"warning: previous code link remains: {error}", file=sys.stderr)
-        return False
-
-
 def _report_enabled(
     paths: InstallPaths,
-    legacy: LegacyInstallPaths,
-    app_config_plan: AppConfigPlan,
     app_config_created: bool,
-    legacy_state: LegacyUpgradeState,
-    legacy_link_removed: bool,
     bar_paths: TabBarPaths,
     base: str,
 ) -> None:
     """Report the installed resources, preserved state, and mapping conflicts."""
     print(f"runtime: {paths.target}")
     print(f"command: {paths.home / '.local' / 'bin' / 'kisesh'}")
-    if legacy_link_removed:
-        print(f"removed previous code link: {legacy.target}")
-    state = (
-        "upgraded"
-        if app_config_plan.legacy_source is not None
-        else "created"
-        if app_config_created
-        else "preserved"
-    )
+    state = "created" if app_config_created else "preserved"
     print(f"apps:    {paths.app_config} ({state})")
-    if legacy_state.data_moved:
-        print(f"sessions: {paths.data} (upgraded)")
     print(f"tab bar: {bar_paths.live} -> {bar_paths.source}")
     if conflicts := _mapping_conflicts(base):
         print(
@@ -643,10 +475,9 @@ def _enable(paths: InstallPaths) -> None:
         "KISESH_KITTY", "kitty", "/Applications/kitty.app/Contents/MacOS/kitty"
     )
     config = _editable_config(paths.kitty_config)
-    legacy = _legacy_paths(paths)
     original = _read_config(config)
     base, _ = _strip_kisesh_config(original, paths)
-    app_config_plan = _app_config_plan(paths, legacy)
+    app_config_content = _app_config_content(paths)
     runtime = _runtime_paths(paths)
     transaction = deploy_runtime(runtime)
     command_link = paths.home / ".local" / "bin" / "kisesh"
@@ -654,15 +485,13 @@ def _enable(paths: InstallPaths) -> None:
     bar_paths = tab_bar_paths(config, paths.target, paths.data)
     tab_bar_changed = False
     app_config_created = False
-    legacy_state = LegacyUpgradeState()
     app_config_parent_existed = paths.app_config.parent.exists()
     try:
         command_link_created = ensure_command_link(command_link, paths.launcher)
         desired = _validated_enabled_config(kitty, config, base)
-        legacy_state = _prepare_legacy_upgrade(paths, legacy, config)
         tab_bar_changed = install_tab_bar(bar_paths)
-        if app_config_plan.content is not None:
-            _write_app_config(paths.app_config, app_config_plan.content)
+        if app_config_content is not None:
+            _write_app_config(paths.app_config, app_config_content)
             app_config_created = True
         if desired != original:
             backup = _backup_once(config)
@@ -680,7 +509,6 @@ def _enable(paths: InstallPaths) -> None:
                     paths.app_config.parent.rmdir()
         if tab_bar_changed:
             restore_tab_bar(bar_paths)
-        _rollback_legacy_upgrade(paths, legacy, legacy_state)
         if command_link_created:
             remove_command_link(command_link, paths.launcher)
         rollback_runtime(transaction)
@@ -691,19 +519,9 @@ def _enable(paths: InstallPaths) -> None:
     except (OSError, RuntimeInstallError) as error:
         print(f"warning: previous runtime remains: {error}", file=sys.stderr)
 
-    legacy_link_removed = _finish_legacy_upgrade(
-        paths,
-        legacy,
-        app_config_plan,
-        app_config_created,
-    )
     _report_enabled(
         paths,
-        legacy,
-        app_config_plan,
         app_config_created,
-        legacy_state,
-        legacy_link_removed,
         bar_paths,
         base,
     )

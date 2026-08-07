@@ -7,6 +7,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from kisesh import panel_launcher
 
 
 def kitty_runtime_environment(project: Path) -> dict[str, str]:
@@ -19,13 +22,10 @@ class LauncherTests(unittest.TestCase):
     def test_gui_style_reduced_path_runs_installed_console_command(self) -> None:
         """Run the installed entry point without relying on an interactive PATH."""
 
-        project = Path(__file__).parents[1]
-        launcher = project / "bin/kisesh"
+        launcher = Path(sys.executable).with_name("kisesh")
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary) / "home"
-            homebrew_bin = home / "homebrew/bin"
-            homebrew_bin.mkdir(parents=True)
-            (homebrew_bin / "python3").symlink_to(Path(sys.executable).resolve())
+            home.mkdir()
             environment = os.environ.copy()
             environment.update({"HOME": str(home), "PATH": "/usr/bin:/bin"})
             result = subprocess.run(
@@ -46,43 +46,24 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("copy-tab", result.stdout)
         self.assertIn("context", result.stdout)
 
-    def test_wrapper_prefers_the_installed_console_command_without_python_discovery(self) -> None:
+    def test_package_exposes_paired_console_commands_without_source_wrappers(self) -> None:
         project = Path(__file__).parents[1]
-        with tempfile.TemporaryDirectory() as temporary:
-            checkout = Path(temporary) / "checkout"
-            launcher = checkout / "bin" / "kisesh"
-            runtime_cli = checkout / ".venv" / "bin" / "kisesh"
-            launcher.parent.mkdir(parents=True)
-            runtime_cli.parent.mkdir(parents=True)
-            shutil.copy2(project / "bin" / "kisesh", launcher)
-            runtime_cli.write_text(
-                "#!/bin/sh\nprintf '<%s>\\n' \"$@\"\n",
-                encoding="utf-8",
-            )
-            runtime_cli.chmod(0o755)
-            environment = os.environ.copy()
-            environment.update({"HOME": str(Path(temporary) / "home"), "PATH": "/usr/bin:/bin"})
+        commands = (
+            Path(sys.executable).with_name("kisesh"),
+            Path(sys.executable).with_name("kisesh-panel"),
+        )
 
-            result = subprocess.run(
-                [str(launcher), "manager", "--sample"],
-                cwd=temporary,
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "<manager>\n<--sample>\n")
+        self.assertTrue(all(os.access(command, os.X_OK) for command in commands))
+        self.assertFalse((project / "bin").exists())
 
     def test_kitty_mappings_use_launcher_instead_of_ambient_python(self) -> None:
         project = Path(__file__).parents[1]
-        integration = (project / "integration/kisesh.conf").read_text(encoding="utf-8")
+        packaged = project / "kisesh" / "integration"
+        integration = (packaged / "kisesh.conf").read_text(encoding="utf-8")
         mappings = [line for line in integration.splitlines() if line.startswith("map ")]
 
         launch_mappings = [line for line in mappings if " launch " in line]
-        self.assertEqual(len(mappings), 6)
+        self.assertEqual(len(mappings), 5)
         for mapping in launch_mappings:
             self.assertIn("~/.local/lib/kisesh/bin/kisesh", mapping)
             self.assertNotIn(" python3 ", mapping)
@@ -112,7 +93,7 @@ class LauncherTests(unittest.TestCase):
         )
         close_index = mappings.index(manager_close)
         self.assertLess(launch_index, close_index)
-        close_mapping = "map cmd+w kitten ~/.local/lib/kisesh/integration/safe_close.py"
+        close_mapping = "map cmd+w kitten ~/.local/lib/kisesh/integration/actions.py safe-close"
         self.assertIn(close_mapping, mappings)
         overlay_close = (
             "map --when-focus-on var:kisesh_ui cmd+w combine : last_used_layout : close_window"
@@ -121,101 +102,28 @@ class LauncherTests(unittest.TestCase):
             mappings.index(close_mapping),
             mappings.index(overlay_close),
         )
-        self.assertTrue((project / "integration/safe_close.py").is_file())
+        self.assertTrue((packaged / "actions.py").is_file())
         layout_mapping = (
             "map --when-focus-on var:kisesh_session alt+z kitten "
-            "~/.local/lib/kisesh/integration/layout_toggle.py"
+            "~/.local/lib/kisesh/integration/actions.py layout-toggle"
         )
         self.assertIn(layout_mapping, mappings)
-        self.assertTrue((project / "integration/layout_toggle.py").is_file())
         self.assertNotIn(" undo", integration)
         self.assertNotIn(" park", integration)
 
-    def test_source_compatibility_configs_match_packaged_runtime_resources(self) -> None:
+    def test_kitty_resources_have_one_packaged_source_of_truth(self) -> None:
         project = Path(__file__).parents[1]
         packaged = project / "kisesh" / "integration"
 
-        for name in ("kisesh.conf", "quick-access-terminal.conf"):
-            with self.subTest(name=name):
-                self.assertEqual(
-                    (project / "integration" / name).read_bytes(),
-                    (packaged / name).read_bytes(),
-                )
-        self.assertTrue(os.access(packaged / "kisesh-panel", os.X_OK))
+        self.assertTrue((packaged / "kisesh.conf").is_file())
+        self.assertTrue((packaged / "quick-access-terminal.conf").is_file())
+        self.assertFalse((project / "integration").exists())
+        self.assertFalse((project / "typings").exists())
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
-    def test_no_ui_close_kitten_loads_without_file_inside_kitty_runtime(self) -> None:
+    def test_no_ui_actions_kitten_loads_without_file_inside_kitty_runtime(self) -> None:
         project = Path(__file__).parents[1]
-        script = project / "integration/safe_close.py"
-        expression = (
-            "from kittens.runner import import_kitten_main_module; "
-            f"loaded = import_kitten_main_module('', {str(script)!r}); "
-            "print(callable(loaded['end']))"
-        )
-
-        result = subprocess.run(
-            [shutil.which("kitty") or "kitty", "+runpy", expression],
-            cwd=project,
-            env=kitty_runtime_environment(project),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "True")
-
-    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
-    def test_no_ui_tab_bar_reload_kitten_loads_inside_kitty_runtime(self) -> None:
-        project = Path(__file__).parents[1]
-        script = project / "integration/reload_tab_bar.py"
-        expression = (
-            "from kittens.runner import import_kitten_main_module; "
-            f"loaded = import_kitten_main_module('', {str(script)!r}); "
-            "print(callable(loaded['end']))"
-        )
-
-        result = subprocess.run(
-            [shutil.which("kitty") or "kitty", "+runpy", expression],
-            cwd=project,
-            env=kitty_runtime_environment(project),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "True")
-
-    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
-    def test_no_ui_session_filter_kitten_loads_inside_kitty_runtime(self) -> None:
-        project = Path(__file__).parents[1]
-        script = project / "integration/session_filter.py"
-        expression = (
-            "from kittens.runner import import_kitten_main_module; "
-            f"loaded = import_kitten_main_module('', {str(script)!r}); "
-            "print(callable(loaded['end']))"
-        )
-
-        result = subprocess.run(
-            [shutil.which("kitty") or "kitty", "+runpy", expression],
-            cwd=project,
-            env=kitty_runtime_environment(project),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "True")
-
-    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
-    def test_no_ui_layout_toggle_kitten_loads_inside_kitty_runtime(self) -> None:
-        project = Path(__file__).parents[1]
-        script = project / "integration/layout_toggle.py"
+        script = project / "kisesh/integration/actions.py"
         expression = (
             "from kittens.runner import import_kitten_main_module; "
             f"loaded = import_kitten_main_module('', {str(script)!r}); "
@@ -237,7 +145,7 @@ class LauncherTests(unittest.TestCase):
 
     def test_panel_launcher_builds_cold_and_prewarmed_toggle_commands(self) -> None:
         project = Path(__file__).parents[1]
-        launcher = project / "bin/kisesh-panel"
+        launcher = Path(sys.executable).with_name("kisesh-panel")
         self.assertTrue(os.access(launcher, os.X_OK))
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -291,9 +199,146 @@ class LauncherTests(unittest.TestCase):
                     self.assertIn("<unix:/tmp/test-panel.sock>", logged)
                     self.assertIn("<ctrl+g>", logged)
 
+    def test_panel_launcher_resolves_installed_inputs_and_rejects_unsafe_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / "runtime"
+            invoked = runtime / "bin" / "kisesh-panel"
+            (runtime / "integration").mkdir(parents=True)
+            (runtime / "kisesh").mkdir()
+            invoked.parent.mkdir(exist_ok=True)
+            invoked.touch()
+            kitten = root / "kitten"
+            cli = root / "kisesh"
+            invalid = root / "not-executable"
+            for executable in (kitten, cli):
+                executable.touch()
+                executable.chmod(0o755)
+            invalid.touch()
+
+            self.assertEqual(
+                panel_launcher._kitten_executable({"KISESH_KITTEN": str(kitten)}),
+                kitten,
+            )
+            self.assertEqual(
+                panel_launcher._cli_executable({"KISESH_CLI": str(cli)}, invoked),
+                cli,
+            )
+            self.assertEqual(
+                panel_launcher._runtime_root({"KISESH_INSTALL_ROOT": str(root)}, invoked),
+                root,
+            )
+            self.assertEqual(panel_launcher._runtime_root({}, invoked), runtime)
+            self.assertEqual(
+                panel_launcher._target_socket({"KITTY_LISTEN_ON": "unix:/tmp/main"}),
+                "unix:/tmp/main",
+            )
+
+            with self.assertRaisesRegex(panel_launcher.PanelLaunchError, "not executable"):
+                panel_launcher._configured_executable(
+                    {"KISESH_KITTEN": str(invalid)}, "KISESH_KITTEN"
+                )
+            for environment, message in (
+                ({}, "unavailable"),
+                ({"KISESH_TARGET_SOCKET": "fd:3"}, "persistent unix"),
+            ):
+                with (
+                    self.subTest(message=message),
+                    self.assertRaisesRegex(panel_launcher.PanelLaunchError, message),
+                ):
+                    panel_launcher._target_socket(environment)
+
+            fallback_kitten = root / "path" / "kitten"
+            fallback_kitten.parent.mkdir()
+            fallback_kitten.touch()
+            fallback_kitten.chmod(0o755)
+            with (
+                mock.patch("kisesh.panel_launcher.shutil.which", return_value=str(fallback_kitten)),
+                mock.patch(
+                    "kisesh.panel_launcher._is_executable",
+                    side_effect=lambda path: path == fallback_kitten,
+                ),
+            ):
+                self.assertEqual(
+                    panel_launcher._kitten_executable({"PATH": str(fallback_kitten.parent)}),
+                    fallback_kitten,
+                )
+
+            with (
+                mock.patch("kisesh.panel_launcher.shutil.which", return_value=None),
+                mock.patch("kisesh.panel_launcher._is_executable", return_value=False),
+            ):
+                with self.assertRaisesRegex(
+                    panel_launcher.PanelLaunchError, "kitten was not found"
+                ):
+                    panel_launcher._kitten_executable({})
+                with self.assertRaisesRegex(
+                    panel_launcher.PanelLaunchError, "command was not found"
+                ):
+                    panel_launcher._cli_executable({}, root / "missing" / "kisesh-panel")
+
+    def test_panel_launcher_discovers_socket_and_propagates_toggle_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary) / "panel"
+            with mock.patch.object(panel_launcher, "DEFAULT_PANEL_SOCKET", f"unix:{prefix}"):
+                self.assertIsNone(panel_launcher._panel_socket({}))
+                ordinary_path = prefix.with_name("panel-0")
+                socket_path = prefix.with_name("panel-7")
+                with (
+                    mock.patch.object(
+                        Path,
+                        "glob",
+                        return_value=[ordinary_path, socket_path],
+                    ),
+                    mock.patch.object(Path, "is_socket", side_effect=(False, True)),
+                ):
+                    self.assertEqual(panel_launcher._panel_socket({}), f"unix:{socket_path}")
+
+        command = ["/kitten", "quick-access-terminal"]
+        child_environment = {"KISESH_CALLER": "panel"}
+        prepared = (command, child_environment, Path("/kitten"))
+        failed: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(command, 7)
+        succeeded: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(command, 0)
+        wake_failed: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(command, 5)
+        with (
+            mock.patch("kisesh.panel_launcher._quick_access_command", return_value=prepared),
+            mock.patch("kisesh.panel_launcher.subprocess.run", return_value=failed),
+        ):
+            self.assertEqual(panel_launcher.run([], {}), 7)
+        with (
+            mock.patch("kisesh.panel_launcher._quick_access_command", return_value=prepared),
+            mock.patch("kisesh.panel_launcher._panel_socket", return_value=None),
+            mock.patch("kisesh.panel_launcher.subprocess.run", return_value=succeeded),
+        ):
+            self.assertEqual(panel_launcher.run([], {}), 0)
+        with (
+            mock.patch("kisesh.panel_launcher._quick_access_command", return_value=prepared),
+            mock.patch("kisesh.panel_launcher._panel_socket", return_value="unix:/tmp/panel.sock"),
+            mock.patch(
+                "kisesh.panel_launcher.subprocess.run",
+                side_effect=(succeeded, wake_failed),
+            ) as run,
+        ):
+            self.assertEqual(panel_launcher.run([], {}), 5)
+            self.assertEqual(run.call_args_list[-1].args[0][-1], "ctrl+g")
+
+    def test_panel_launcher_reports_expected_setup_errors_without_a_traceback(self) -> None:
+        with (
+            mock.patch(
+                "kisesh.panel_launcher.run",
+                side_effect=panel_launcher.PanelLaunchError("socket unavailable"),
+            ),
+            mock.patch("sys.stderr") as stderr,
+        ):
+            self.assertEqual(panel_launcher.main([]), 1)
+
+        self.assertIn("socket unavailable", stderr.write.call_args_list[0].args[0])
+
     def test_optional_quick_access_profile_remains_centered_and_theme_aware(self) -> None:
         project = Path(__file__).parents[1]
-        profile = (project / "integration/quick-access-terminal.conf").read_text(encoding="utf-8")
+        profile = (project / "kisesh/integration/quick-access-terminal.conf").read_text(
+            encoding="utf-8"
+        )
 
         for setting in (
             "edge center-sized",

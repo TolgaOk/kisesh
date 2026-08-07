@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass, field
 
-from kisesh.session_filter import set_session_filter
+from kisesh.kitty_actions import set_session_filter
 
 
 @dataclass(slots=True)

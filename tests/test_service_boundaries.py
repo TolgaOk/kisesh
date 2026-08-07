@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from kisesh.domain import SessionContext
 from kisesh.kitty_client import KittyError, LiveTab
+from kisesh.model import SessionContext
 from kisesh.service import (
     KiSeshError,
     KiSeshService,

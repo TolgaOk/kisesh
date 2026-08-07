@@ -21,8 +21,8 @@ from kisesh.agent_resume import (
     resolve_agent_resumes,
 )
 from kisesh.app_profiles import DEFAULT_APP_PROFILES
-from kisesh.domain import KittyProcess, KittyWindow
 from kisesh.kitty_client import LiveTab
+from kisesh.model import KittyProcess, KittyWindow
 
 CODEX_ID = "019fd808-918d-7481-b526-c4da01513c42"
 CODEX_OTHER_ID = "019fd767-cf0f-7ce2-9e0a-855046828fc6"

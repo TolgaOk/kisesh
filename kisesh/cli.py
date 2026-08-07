@@ -12,10 +12,15 @@ import tyro
 
 from .app_profiles import load_app_profiles
 from .context import normalize_command_event, pane_last_command_output
-from .domain import ClosingPaneCapture, CommandEvent, JsonObject, KittyWindow
 from .kitty_client import KittyClient, KittyError
-from .manager_surface import expand_manager_surface, restore_manager_surface
-from .panel import PanelError, hide_quick_access_panel, is_panel_process
+from .model import ClosingPaneCapture, CommandEvent, JsonObject, KittyWindow
+from .panel import (
+    PanelError,
+    expand_manager_surface,
+    hide_quick_access_panel,
+    is_panel_process,
+    restore_manager_surface,
+)
 from .paths import data_root
 from .service import (
     KiSeshError,
@@ -28,7 +33,6 @@ from .store import SessionStore, StoreError
 from .tui import SessionManager
 
 PositionalString = Annotated[str, tyro.conf.Positional]
-OptionalPositionalString = Annotated[str | None, tyro.conf.Positional]
 OptionalUnownedTabsAction = Annotated[
     UnownedTabsAction | None,
     tyro.conf.EnumChoicesFromValues,
@@ -120,14 +124,6 @@ class CopyTab:
 
     session: PositionalString
     """Target session name, slug, or identifier."""
-
-
-@dataclass(frozen=True, slots=True)
-class SaveSession:
-    """Save a live session or the session owning the focused tab."""
-
-    session: OptionalPositionalString = None
-    """Optional session name, slug, or identifier."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,7 +245,6 @@ Command = (
     ]
     | Annotated[DetachTab, tyro.conf.subcommand(name="detach-tab")]
     | Annotated[CopyTab, tyro.conf.subcommand(name="copy-tab")]
-    | Annotated[SaveSession, tyro.conf.subcommand(name="save")]
     | Annotated[OpenSession, tyro.conf.subcommand(name="open")]
     | Annotated[CloseSession, tyro.conf.subcommand(name="close")]
     | Annotated[RenameSession, tyro.conf.subcommand(name="rename")]
@@ -270,9 +265,7 @@ Command = (
 )
 
 ReadCommand = ListSessions | ShowContext | PrintLastOutput | RestoreShell
-MembershipCommand = (
-    CreateSession | AddTab | DetachTab | CopyTab | SaveSession | OpenSession | CloseSession
-)
+MembershipCommand = CreateSession | AddTab | DetachTab | CopyTab | OpenSession | CloseSession
 LifecycleCommand = RenameSession | ArchiveSession | UnarchiveSession | RemoveSession
 MaintenanceCommand = AutosaveSession | Doctor
 IntegrationCommand = InstallIntegration | DisableIntegration | UninstallIntegration
@@ -386,7 +379,7 @@ def _run_read(command: ReadCommand, service: KiSeshService) -> int:
 
 
 def _run_membership(command: MembershipCommand, service: KiSeshService) -> int:
-    """Execute creation, tab membership, save, or open operations."""
+    """Execute creation, tab membership, close, or open operations."""
     if isinstance(command, CreateSession):
         stored = service.create_from_active(command.name, command.root)
     elif isinstance(command, AddTab):
@@ -395,8 +388,6 @@ def _run_membership(command: MembershipCommand, service: KiSeshService) -> int:
         stored = service.detach_current_tab(command.session)
     elif isinstance(command, CopyTab):
         stored = service.copy_current_tab(command.session)
-    elif isinstance(command, SaveSession):
-        stored = service.save(command.session) if command.session else service.save_current()
     elif isinstance(command, CloseSession):
         stored = service.save_and_close(command.session, command.promote_os_window)
     else:
@@ -477,8 +468,6 @@ def _autosave_payload_from_stdin(
     if not enabled:
         return [], None
     payload: object = json.load(sys.stdin)
-    if isinstance(payload, list):
-        return _normalized_events(payload), None
     if not isinstance(payload, dict):
         raise ValueError(INVALID_PAYLOAD_MESSAGE)
     return (
@@ -529,7 +518,7 @@ def _dispatch(config: CliConfig, service: KiSeshService) -> int:
         return _run_read(command, service)
     if isinstance(
         command,
-        (CreateSession, AddTab, DetachTab, CopyTab, SaveSession, OpenSession, CloseSession),
+        (CreateSession, AddTab, DetachTab, CopyTab, OpenSession, CloseSession),
     ):
         return _run_membership(command, service)
     if isinstance(

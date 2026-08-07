@@ -3,15 +3,16 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from kisesh.domain import (
+from kisesh.kitty_client import LiveTab
+from kisesh.model import (
     KittyWindow,
     PaneContext,
     RestoreSpec,
     SessionContext,
+    SessionManifest,
+    SnapshotSummary,
     TabContext,
 )
-from kisesh.kitty_client import LiveTab
-from kisesh.model import SessionManifest, SnapshotSummary
 from kisesh.preview import build_session_preview, is_shell_program
 from kisesh.service import SessionView
 from kisesh.store import StoredSession

@@ -5,9 +5,8 @@ import unittest
 from pathlib import Path
 
 from kisesh.context import build_context
-from kisesh.domain import SessionContext
 from kisesh.kitty_client import LiveTab
-from kisesh.model import SnapshotSummary
+from kisesh.model import SessionContext, SnapshotSummary
 from kisesh.store import SessionConflict, SessionNotFound, SessionStore, StoreError
 
 

@@ -17,7 +17,8 @@ from .app_profiles import (
     AppProfiles,
     DefaultRestoreMode,
 )
-from .domain import (
+from .kitty_client import LiveTab
+from .model import (
     ClosingPaneCapture,
     CommandEvent,
     CommandRecord,
@@ -28,9 +29,8 @@ from .domain import (
     RestoreSpec,
     SessionContext,
     TabContext,
+    utc_now,
 )
-from .kitty_client import LiveTab
-from .model import utc_now
 
 CONTEXT_SCHEMA_VERSION = 1
 COMMAND_HISTORY_LIMIT = 2000
@@ -656,7 +656,7 @@ def build_context(
 
 
 def _context_tabs(context: ContextInput) -> list[TabContext]:
-    """Return structurally valid tab mappings from current or legacy context."""
+    """Return structurally valid tab mappings from persisted context."""
     tabs = _items(context.get("tabs")) if context is not None else []
     return [cast(TabContext, tab) for tab in tabs if isinstance(tab, Mapping)]
 
@@ -812,7 +812,7 @@ def pane_terminal_history(
     tab_index: int,
     pane_index: int,
 ) -> str:
-    """Return inert normal-buffer scrollback with legacy last-output fallback."""
+    """Return inert normal-buffer scrollback with a last-output fallback."""
     pane = _pane_context(context, tab_index, pane_index)
     if pane is None:
         return ""

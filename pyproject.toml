@@ -8,6 +8,7 @@ dependencies = ["tyro>=1.0.15,<2"]
 
 [project.scripts]
 kisesh = "kisesh.cli:main"
+kisesh-panel = "kisesh.panel_launcher:main"
 
 [build-system]
 requires = ["uv_build>=0.11.28,<0.12"]
@@ -16,11 +17,8 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-root = ""
 source-include = [
-  "bin/**",
   "install.sh",
-  "integration/**",
   "justfile",
-  "typings/**",
 ]
 
 [dependency-groups]
@@ -71,7 +69,6 @@ max-statements = 60
 python_version = "3.11"
 strict = true
 files = ["kisesh", "tests"]
-mypy_path = "typings"
 
 [tool.coverage.run]
 branch = true

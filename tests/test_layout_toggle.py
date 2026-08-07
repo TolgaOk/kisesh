@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 
-from kisesh.layout_toggle import toggle_session_layout
+from kisesh.kitty_actions import toggle_session_layout
 
 
 @dataclass(slots=True)

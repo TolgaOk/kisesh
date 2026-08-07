@@ -114,9 +114,6 @@ class SessionOperations(Protocol):
     def copy_current_tab(self, slug_or_id: str) -> StoredSession:
         """Copy the source tab."""
 
-    def save(self, slug_or_id: str) -> StoredSession:
-        """Save a live session."""
-
     def save_and_close(self, slug_or_id: str) -> StoredSession:
         """Save a live session before closing its tabs."""
 
@@ -176,7 +173,6 @@ _HELP_SECTIONS: tuple[HelpSection, ...] = (
         "SESSION ACTIONS",
         (
             ("n", "New session; resolve unattached tabs first."),
-            ("s", "Snapshot all owned live tabs."),
             ("x", "Save successfully, then close all live tabs."),
             ("r", "Rename session."),
             ("Shift+R", "Rename a selected session tab."),
@@ -485,7 +481,6 @@ class SessionManager:
                 ("g/G", "ends"),
                 ("l/↵/Space", "focus"),
                 ("/", "search"),
-                ("s", "save"),
                 ("x", "save+close"),
             )
         else:
@@ -842,7 +837,6 @@ class SessionManager:
             "a": (self.service.add_current_tab, "added source tab to {name}"),
             "d": (self.service.detach_current_tab, "detached source tab from {name}"),
             "c": (self.service.copy_current_tab, "copied safe tab layout into {name}"),
-            "s": (self.service.save, "saved {name}"),
             "e": (self.service.archive, "archived {name}"),
         }
         action = actions.get(key) if isinstance(key, str) else None

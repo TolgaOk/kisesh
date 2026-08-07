@@ -33,8 +33,8 @@ from kisesh.context import (
     restore_session,
     update_context_for_closing_pane,
 )
-from kisesh.domain import ClosingPaneCapture, CommandRecord, KittyWindow
 from kisesh.kitty_client import LiveTab
+from kisesh.model import ClosingPaneCapture, CommandRecord, KittyWindow
 
 
 def _tab(*windows: Mapping[str, object], tab_id: int = 7) -> LiveTab:
@@ -325,14 +325,14 @@ class ContextBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(IndexError, "saved context"):
             rename_context_tab(original, 3, "Missing")
 
-    def test_public_context_readers_tolerate_missing_indexes_and_legacy_output(self) -> None:
-        legacy: dict[str, object] = {
-            "tabs": [{"panes": [{"last_command_output": "legacy output\n"}]}]
+    def test_public_context_readers_tolerate_missing_indexes_and_output_fallback(self) -> None:
+        fallback: dict[str, object] = {
+            "tabs": [{"panes": [{"last_command_output": "fallback output\n"}]}]
         }
-        self.assertEqual(pane_terminal_history(legacy, 0, 0), "legacy output\n")
+        self.assertEqual(pane_terminal_history(fallback, 0, 0), "fallback output\n")
         self.assertEqual(pane_last_command_output(None, 0, 0), "")
-        self.assertEqual(pane_terminal_history(legacy, 4, 0), "")
-        self.assertEqual(pane_terminal_history(legacy, 0, 4), "")
+        self.assertEqual(pane_terminal_history(fallback, 4, 0), "")
+        self.assertEqual(pane_terminal_history(fallback, 0, 4), "")
         self.assertEqual(pane_alternate_screen_text(None, 0, 0), "")
         self.assertEqual(pane_command_history(None, 0, 0), [])
         self.assertEqual(merge_context(None, None)["tabs"], [])

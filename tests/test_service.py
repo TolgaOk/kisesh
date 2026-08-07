@@ -7,22 +7,19 @@ from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
-from kisesh import legacy
 from kisesh.app_profiles import AppProfiles
 from kisesh.context import pane_auto_run_argv
-from kisesh.domain import (
-    ClosingPaneCapture,
-    CommandEvent,
-    KittyOsWindowState,
-    KittyWindow,
-    SessionContext,
-)
 from kisesh.kitty_client import KittyError, LiveTab
 from kisesh.model import (
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
+    ClosingPaneCapture,
+    CommandEvent,
+    KittyOsWindowState,
+    KittyWindow,
+    SessionContext,
 )
 from kisesh.service import (
     KiSeshError,
@@ -638,15 +635,15 @@ class ServiceTests(unittest.TestCase):
         self.assertNotIn("build completed", restored)
         self.assertEqual(list(self.store.root.glob(".shell-work.restore.*")), [])
 
-    def test_open_rewrites_previous_ownership_markers_without_altering_layout(self) -> None:
+    def test_open_rewrites_stale_ownership_markers_without_altering_layout(self) -> None:
         stored = self.store.create("Renamed Product", "/tmp/project")
         previous_snapshot = (
             "new_tab Editor\n"
             "layout splits\n"
             "launch --cwd=/tmp/project "
-            f"--var=kitty_workbench_session={stored.manifest.id} "
-            "--var=kitty_workbench_slug=renamed-product "
-            "--var=kitty_workbench_name='Renamed Product' "
+            "--var=kisesh_session=stale-id "
+            "--var=kisesh_slug=stale-name "
+            "--var=kisesh_name='Stale Name' "
             "--var=user_choice=keep\n"
         )
         self.store.write_snapshot(
@@ -667,47 +664,12 @@ class ServiceTests(unittest.TestCase):
         self.service.open(stored.manifest.id)
 
         restored = self.kitty.opened_contents[-1]
-        self.assertNotIn("kitty_workbench", restored)
+        self.assertNotIn("stale-id", restored)
         self.assertIn(f"{SESSION_ID_VAR}={stored.manifest.id}", restored)
         self.assertIn(f"{SESSION_SLUG_VAR}=renamed-product", restored)
         self.assertIn(f"{SESSION_NAME_VAR}=Renamed Product", restored)
         self.assertIn("layout splits", restored)
         self.assertIn("--var=user_choice=keep", restored)
-
-    def test_renamed_running_session_stays_live_and_restamps_without_reopening(self) -> None:
-        stored = self.store.create("Silver Seal", "/tmp/project")
-        variables = self.kitty.window.setdefault("user_vars", {})
-        variables.update(
-            {
-                legacy.SESSION_ID_VARIABLE: stored.manifest.id,
-                legacy.SESSION_SLUG_VARIABLE: stored.manifest.slug,
-                legacy.SESSION_NAME_VARIABLE: stored.manifest.name,
-            }
-        )
-
-        current = self.service.current_session()
-        view = next(
-            candidate
-            for candidate in self.service.views()
-            if candidate.stored.manifest.id == stored.manifest.id
-        )
-        opened = self.service.open(stored.manifest.id)
-
-        self.assertEqual(current.manifest.id, stored.manifest.id)
-        self.assertTrue(view.live)
-        self.assertEqual([tab.tab_id for tab in view.live_tabs], [self.kitty.tab.tab_id])
-        self.assertEqual(opened.manifest.id, stored.manifest.id)
-        self.assertEqual(self.kitty.opened, [])
-        self.assertEqual(variables[SESSION_ID_VAR], stored.manifest.id)
-        self.assertEqual(variables[SESSION_SLUG_VAR], stored.manifest.slug)
-        self.assertEqual(variables[SESSION_NAME_VAR], stored.manifest.name)
-        self.assertNotIn(legacy.SESSION_ID_VARIABLE, variables)
-        self.assertNotIn(legacy.SESSION_SLUG_VARIABLE, variables)
-        self.assertNotIn(legacy.SESSION_NAME_VARIABLE, variables)
-        self.assertEqual(
-            self.kitty.activated_sessions[-1],
-            (stored.manifest.id, self.kitty.tab.tab_id),
-        )
 
     def test_cmd_w_after_reopen_persists_new_history_for_the_next_reopen(self) -> None:
         self.kitty.window.update(
@@ -923,9 +885,16 @@ class ServiceTests(unittest.TestCase):
     def test_rename_keeps_uuid_and_updates_live_and_saved_markers(self) -> None:
         created = self.service.create_from_active("Old Name")
         renamed = self.service.rename(created.manifest.id, "New Name")
+        view = next(
+            item for item in self.service.views() if item.stored.manifest.id == created.manifest.id
+        )
+        opened = self.service.open(created.manifest.id)
 
         self.assertEqual(renamed.manifest.id, created.manifest.id)
         self.assertEqual(renamed.manifest.slug, "new-name")
+        self.assertTrue(view.live)
+        self.assertEqual(opened.manifest.id, created.manifest.id)
+        self.assertEqual(self.kitty.opened, [])
         self.assertEqual(self.kitty.window["user_vars"][SESSION_SLUG_VAR], "new-name")
         self.assertIn(
             f"{SESSION_SLUG_VAR}=new-name", renamed.snapshot_path.read_text(encoding="utf-8")

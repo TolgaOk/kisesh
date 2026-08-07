@@ -11,11 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from kisesh import legacy
-from kisesh.domain import KittyOsWindowState
 from kisesh.kitty_client import (
-    SESSION_CLOSE_KITTEN,
-    SESSION_FILTER_KITTEN,
     KittyClient,
     KittyError,
     LiveTab,
@@ -31,6 +27,7 @@ from kisesh.model import (
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
+    KittyOsWindowState,
 )
 from tests.fakes import RecordingCommandRunner
 
@@ -275,7 +272,14 @@ class KittyClientBoundaryTests(unittest.TestCase):
             },
         ]
         runner = RecordingCommandRunner(stdout=json.dumps(state))
-        client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
+        runtime = Path("/runtime")
+        actions = runtime / "integration" / "actions.py"
+        client = KittyClient(
+            executable="/kitty",
+            socket="unix:/tmp/test",
+            runner=runner,
+            runtime=runtime,
+        )
         target = client.tabs(state)[0]
 
         client.activate_session(session_id, target)
@@ -287,23 +291,16 @@ class KittyClientBoundaryTests(unittest.TestCase):
             [command[command.index("--match") + 1] for command in scope_commands[:-1]],
             ["id:3 or id:4 or id:6", "id:9"],
         )
-        self.assertEqual(
-            scope_commands[0][-2:],
-            [f"{SESSION_SCOPE_VAR}=1", legacy.SESSION_SCOPE_VARIABLE],
-        )
-        self.assertEqual(
-            scope_commands[1][-2:],
-            [SESSION_SCOPE_VAR, legacy.SESSION_SCOPE_VARIABLE],
-        )
+        self.assertEqual(scope_commands[0][-1], f"{SESSION_SCOPE_VAR}=1")
+        self.assertEqual(scope_commands[1][-1], SESSION_SCOPE_VAR)
         self.assertEqual(runner.commands[-2][-1], "id:2")
         self.assertEqual(
-            runner.commands[-1][-3:],
+            runner.commands[-1][-4:],
             [
                 "kitten",
-                str(SESSION_FILTER_KITTEN),
-                f"var:{SESSION_ID_VAR}={session_id} or "
-                f"var:{legacy.SESSION_ID_VARIABLE}={session_id} or "
-                f"not var:{SESSION_SCOPE_VAR}=1",
+                str(actions),
+                "session-filter",
+                f"var:{SESSION_ID_VAR}={session_id} or not var:{SESSION_SCOPE_VAR}=1",
             ],
         )
         self.assertFalse(any("load-config" in command for command in runner.commands))
@@ -320,10 +317,11 @@ class KittyClientBoundaryTests(unittest.TestCase):
         client.close_session_tabs(session_id, successor)
 
         self.assertEqual(
-            runner.commands[-1][-5:],
+            runner.commands[-1][-6:],
             [
                 "kitten",
-                str(SESSION_CLOSE_KITTEN),
+                str(actions),
+                "session-close",
                 session_id,
                 successor_id,
                 "5",
@@ -332,8 +330,8 @@ class KittyClientBoundaryTests(unittest.TestCase):
 
         client.close_session_tabs(session_id)
         self.assertEqual(
-            runner.commands[-1][-5:],
-            ["kitten", str(SESSION_CLOSE_KITTEN), session_id, "-", "-"],
+            runner.commands[-1][-6:],
+            ["kitten", str(actions), "session-close", session_id, "-", "-"],
         )
 
         command_count = len(runner.commands)
@@ -352,18 +350,25 @@ class KittyClientBoundaryTests(unittest.TestCase):
 
     def test_session_close_never_uses_a_second_destructive_remote_command(self) -> None:
         runner = FailAtRunner(fail_at=0)
-        client = KittyClient(executable="/kitty", socket="unix:/tmp/test", runner=runner)
+        runtime = Path("/runtime")
+        client = KittyClient(
+            executable="/kitty",
+            socket="unix:/tmp/test",
+            runner=runner,
+            runtime=runtime,
+        )
 
         with self.assertRaisesRegex(KittyError, "capture failed"):
             client.close_session_tabs("session-id")
 
         self.assertEqual(len(runner.commands), 1)
         self.assertIn("kitten", runner.commands[0])
-        self.assertIn(str(SESSION_CLOSE_KITTEN), runner.commands[0])
+        self.assertIn(str(runtime / "integration" / "actions.py"), runner.commands[0])
+        self.assertIn("session-close", runner.commands[0])
         self.assertNotIn("load-config", runner.commands[0])
         self.assertNotIn("close-tab", runner.commands[0])
 
-    def test_session_capture_uses_one_action_compatible_restamped_match(self) -> None:
+    def test_session_capture_uses_one_exact_restamped_match(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             snapshot = Path(temporary) / "session.kitty-session"
             snapshot.write_text("new_tab Work\n", encoding="utf-8")

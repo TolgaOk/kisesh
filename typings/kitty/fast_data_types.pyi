@@ -1,3 +1,0 @@
-"""Typed subset of Kitty's fast-data helpers."""
-
-def get_options() -> object: ...

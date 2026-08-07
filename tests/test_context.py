@@ -20,8 +20,8 @@ from kisesh.context import (
     restore_session,
     update_context_for_closing_pane,
 )
-from kisesh.domain import ClosingPaneCapture, KittyWindow
 from kisesh.kitty_client import LiveTab
+from kisesh.model import ClosingPaneCapture, KittyWindow
 
 
 def _tab(*windows: Mapping[str, object], title: str = "Work") -> LiveTab:

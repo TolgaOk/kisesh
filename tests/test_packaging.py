@@ -38,7 +38,10 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(document["project"]["version"], __version__)
         self.assertEqual(
             document["project"]["scripts"],
-            {"kisesh": "kisesh.cli:main"},
+            {
+                "kisesh": "kisesh.cli:main",
+                "kisesh-panel": "kisesh.panel_launcher:main",
+            },
         )
         self.assertEqual(document["build-system"]["build-backend"], "uv_build")
         self.assertEqual(document["tool"]["uv"]["build-backend"]["module-root"], "")
@@ -78,15 +81,12 @@ class PackagingTests(unittest.TestCase):
             with tarfile.open(source, "r:gz") as archive:
                 source_names = set(archive.getnames())
             for relative in (
-                "bin/kisesh",
-                "bin/kisesh-panel",
                 "install.sh",
-                "integration/kisesh.conf",
-                "integration/safe_close.py",
-                "integration/session_close.py",
-                "integration/tab_bar.py",
                 "justfile",
                 "kisesh/default_apps.toml",
+                "kisesh/integration/actions.py",
+                "kisesh/integration/kisesh.conf",
+                "kisesh/integration/tab_bar.py",
             ):
                 self.assertIn(prefix + relative, source_names)
 
@@ -97,18 +97,18 @@ class PackagingTests(unittest.TestCase):
                 ).decode("utf-8")
             self.assertIn("kisesh/default_apps.toml", wheel_names)
             for resource in (
+                "kisesh/integration/actions.py",
                 "kisesh/integration/kisesh.conf",
-                "kisesh/integration/kisesh-panel",
+                "kisesh/integration/kitty_api.py",
                 "kisesh/integration/quick-access-terminal.conf",
-                "kisesh/integration/safe_close.py",
-                "kisesh/integration/session_close.py",
                 "kisesh/integration/tab_bar.py",
             ):
                 self.assertIn(resource, wheel_names)
             self.assertFalse(any(name.startswith("tests/") for name in wheel_names))
             self.assertEqual(
                 entry_points,
-                "[console_scripts]\nkisesh = kisesh.cli:main\n\n",
+                "[console_scripts]\nkisesh = kisesh.cli:main\n"
+                "kisesh-panel = kisesh.panel_launcher:main\n\n",
             )
 
             installed = Path(temporary) / "installed"
@@ -211,6 +211,10 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(
                 (runtime / "integration").resolve(),
                 (installed / "kisesh" / "integration").resolve(),
+            )
+            self.assertEqual(
+                (runtime / "bin" / "kisesh-panel").resolve(),
+                (installed / "bin" / "kisesh-panel").resolve(),
             )
             self.assertEqual(command_link.resolve(), (installed / "bin" / "kisesh").resolve())
             self.assertIn("# BEGIN kisesh", kitty_config.read_text(encoding="utf-8"))

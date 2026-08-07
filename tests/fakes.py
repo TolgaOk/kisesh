@@ -7,14 +7,14 @@ import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
-from kisesh.domain import KittyOsWindowState, KittyWindow
 from kisesh.kitty_client import LiveTab
-from kisesh.legacy import VARIABLE_ALIASES as LEGACY_VARIABLE_ALIASES
 from kisesh.model import (
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
+    KittyOsWindowState,
+    KittyWindow,
     SessionManifest,
     session_marker_name,
 )
@@ -167,7 +167,7 @@ class FakeKitty:
         *,
         exclude_window_id: int | None = None,
     ) -> None:
-        """Apply current membership variables and clear previous-name aliases."""
+        """Apply current membership variables to every eligible pane."""
         for window in tab.windows:
             if window["id"] == exclude_window_id:
                 continue
@@ -179,8 +179,6 @@ class FakeKitty:
                     SESSION_NAME_VAR: session_marker_name(manifest.name, manifest.slug),
                 }
             )
-            for name in (SESSION_ID_VAR, SESSION_SLUG_VAR, SESSION_NAME_VAR):
-                variables.pop(LEGACY_VARIABLE_ALIASES[name], None)
 
     def restamp_session(self, session_id: str, slug: str, name: str) -> None:
         """Update display markers on every visible member of one session."""
@@ -194,8 +192,6 @@ class FakeKitty:
                         SESSION_NAME_VAR: name,
                     }
                 )
-                for variable in (SESSION_ID_VAR, SESSION_SLUG_VAR, SESSION_NAME_VAR):
-                    variables.pop(LEGACY_VARIABLE_ALIASES[variable], None)
 
     def clear_tab_session(self, tab: LiveTab) -> None:
         """Remove membership markers without closing the tab."""
@@ -203,7 +199,6 @@ class FakeKitty:
             for name in (SESSION_ID_VAR, SESSION_SLUG_VAR, SESSION_NAME_VAR):
                 variables = window.setdefault("user_vars", {})
                 variables.pop(name, None)
-                variables.pop(LEGACY_VARIABLE_ALIASES[name], None)
 
     def capture_session(self, session_id: str, destination: Path) -> None:
         """Write the configured session serialization for a matching live session."""
@@ -294,7 +289,6 @@ class FakeKitty:
             for window in tab.windows:
                 variables = window.setdefault("user_vars", {})
                 variables.pop(SESSION_SCOPE_VAR, None)
-                variables.pop(LEGACY_VARIABLE_ALIASES[SESSION_SCOPE_VAR], None)
         if self.tab.session_id() == session_id:
             self.include_tab = False
         self.extra_tabs = [tab for tab in self.extra_tabs if tab.session_id() != session_id]

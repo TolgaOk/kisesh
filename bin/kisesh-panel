@@ -1,8 +1,0 @@
-#!/bin/sh
-# Load the packaged panel launcher while preserving the source-tree command.
-
-set -u
-
-project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-KISESH_INSTALL_ROOT="$project_dir" \
-    exec "$project_dir/kisesh/integration/kisesh-panel" "$@"

@@ -9,23 +9,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kisesh.installer import INTEGRATION_INCLUDE, MANAGED_BEGIN, MANAGED_END
-from kisesh.legacy import (
-    INTEGRATION_INCLUDE as LEGACY_INTEGRATION_INCLUDE,
+from kisesh.installer import (
+    COMPAT_MANAGED_BEGIN,
+    COMPAT_MANAGED_END,
+    INTEGRATION_INCLUDE,
+    MANAGED_BEGIN,
+    MANAGED_END,
 )
-from kisesh.legacy import (
-    MANAGED_BEGIN as LEGACY_MANAGED_BEGIN,
-)
-from kisesh.legacy import (
-    MANAGED_END as LEGACY_MANAGED_END,
-)
-from kisesh.legacy import (
-    PRODUCT_DIRECTORY as LEGACY_PRODUCT_DIRECTORY,
-)
-from kisesh.legacy import (
-    TAB_BAR_BACKUP as LEGACY_TAB_BAR_BACKUP,
-)
-from kisesh.tab_bar_install import TabBarPaths, install_tab_bar
 
 PROJECT = Path(__file__).parents[1]
 
@@ -75,11 +65,6 @@ class InstallerTests(unittest.TestCase):
         self.tab_bar = self.config.parent / "tab_bar.py"
         self.target = self.home / ".local" / "lib" / "kisesh"
         self.data = self.home / "data" / "kisesh"
-        self.legacy_target = self.target.with_name(LEGACY_PRODUCT_DIRECTORY)
-        self.legacy_app_config = (
-            self.app_config.parent.with_name(LEGACY_PRODUCT_DIRECTORY) / "apps.toml"
-        )
-        self.legacy_data = self.data.with_name(LEGACY_PRODUCT_DIRECTORY)
         self.environment = os.environ.copy()
         self.environment.update(
             {
@@ -125,6 +110,10 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(
             (self.target / "bin" / "kisesh").resolve(),
             (PROJECT / ".venv" / "bin" / "kisesh").resolve(),
+        )
+        self.assertEqual(
+            (self.target / "bin" / "kisesh-panel").resolve(),
+            (PROJECT / ".venv" / "bin" / "kisesh-panel").resolve(),
         )
 
     def test_installer_module_help_is_available_with_a_gui_style_path(self) -> None:
@@ -185,39 +174,15 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("Kitty was left running", result.stdout)
         self.assertNotIn("restart", result.stdout.casefold())
 
-    def test_enable_upgrades_previous_code_config_sessions_profiles_and_tab_bar(self) -> None:
-        original_bar = "def draw_tab(*args):\n    return 23\n"
+    def test_enable_replaces_the_previous_kisesh_marker_without_duplicates(self) -> None:
         self.write_config(
             "font_size 15\n"
-            f"{LEGACY_MANAGED_BEGIN}\n"
+            f"{COMPAT_MANAGED_BEGIN}\n"
             "allow_remote_control socket-only\n"
             "listen_on unix:/tmp/previous-main\n"
-            f"{LEGACY_INTEGRATION_INCLUDE}\n"
-            f"{LEGACY_MANAGED_END}\n"
+            f"{INTEGRATION_INCLUDE}\n"
+            f"{COMPAT_MANAGED_END}\n"
         )
-        self.tab_bar.write_text(original_bar, encoding="utf-8")
-        self.legacy_target.parent.mkdir(parents=True)
-        self.legacy_target.symlink_to(PROJECT, target_is_directory=True)
-        legacy_bar = TabBarPaths(
-            live=self.tab_bar,
-            source=self.legacy_target / "integration" / "tab_bar.py",
-            state=self.legacy_data / ".integration" / "tab-bar.json",
-            backup=self.legacy_data / ".integration" / LEGACY_TAB_BAR_BACKUP,
-        )
-        install_tab_bar(legacy_bar)
-        saved = self.legacy_data / "sessions" / "existing" / "current.kitty-session"
-        saved.parent.mkdir(parents=True)
-        saved_snapshot = (
-            "new_tab Existing\nlaunch --var=kitty_workbench_session=old-id --cwd=/tmp/existing\n"
-        )
-        saved.write_text(saved_snapshot, encoding="utf-8")
-        custom_profiles = (PROJECT / "kisesh" / "default_apps.toml").read_text(
-            encoding="utf-8"
-        ) + "\n# preserved profile choices\n"
-        self.legacy_app_config.parent.mkdir(parents=True)
-        self.legacy_app_config.write_text(custom_profiles, encoding="utf-8")
-        legacy_config_sibling = self.legacy_app_config.with_name("keep.toml")
-        legacy_config_sibling.write_text("keep", encoding="utf-8")
 
         enabled = self.run_installer()
         configured = self.config.read_text(encoding="utf-8")
@@ -225,50 +190,10 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(enabled.returncode, 0, enabled.stderr)
         self.assertEqual(configured.count(MANAGED_BEGIN), 1)
         self.assertEqual(configured.count(INTEGRATION_INCLUDE), 1)
-        self.assertNotIn(LEGACY_MANAGED_BEGIN, configured)
-        self.assertNotIn(LEGACY_INTEGRATION_INCLUDE, configured)
+        self.assertNotIn(COMPAT_MANAGED_BEGIN, configured)
+        self.assertNotIn(COMPAT_MANAGED_END, configured)
         self.assert_runtime()
-        self.assertFalse(self.legacy_target.exists())
-        self.assertFalse(self.legacy_target.is_symlink())
-        self.assertFalse(self.legacy_data.exists())
-        self.assertEqual(
-            (self.data / "sessions" / "existing" / "current.kitty-session").read_text(
-                encoding="utf-8"
-            ),
-            saved_snapshot,
-        )
-        self.assertEqual(self.app_config.read_text(encoding="utf-8"), custom_profiles)
-        self.assertFalse(self.legacy_app_config.exists())
-        self.assertEqual(legacy_config_sibling.read_text(encoding="utf-8"), "keep")
         self.assertTrue(self.tab_bar.is_symlink())
-        self.assertEqual(
-            self.tab_bar.resolve(),
-            (PROJECT / "kisesh" / "integration" / "tab_bar.py").resolve(),
-        )
-        self.assertIn("(upgraded)", enabled.stdout)
-
-        disabled = self.run_installer("--disable")
-
-        self.assertEqual(disabled.returncode, 0, disabled.stderr)
-        self.assertFalse(self.tab_bar.is_symlink())
-        self.assertEqual(self.tab_bar.read_text(encoding="utf-8"), original_bar)
-
-    def test_enable_refuses_to_guess_when_both_previous_and_current_data_exist(self) -> None:
-        self.legacy_data.mkdir(parents=True)
-        self.data.mkdir(parents=True)
-        previous = self.legacy_data / "keep"
-        current = self.data / "keep"
-        previous.write_text("previous", encoding="utf-8")
-        current.write_text("current", encoding="utf-8")
-
-        result = self.run_installer()
-
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("both KiSesh and previous session-data directories", result.stderr)
-        self.assertEqual(previous.read_text(encoding="utf-8"), "previous")
-        self.assertEqual(current.read_text(encoding="utf-8"), "current")
-        self.assertFalse(self.target.exists())
-        self.assertFalse(self.config.exists())
 
     def test_existing_custom_tab_bar_is_restored_exactly_on_disable(self) -> None:
         self.write_config("font_size 14\n")

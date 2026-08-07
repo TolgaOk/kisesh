@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Literal, cast
 
 APP_PROFILE_SCHEMA_VERSION = 1
-BUNDLED_APP_CONFIG = Path(__file__).with_name("default_apps.toml")
 RestoreMode = Literal["resume", "captured", "configured", "prefill", "ignore"]
 ResumeAdapter = Literal["claude", "codex"]
 DefaultRestoreMode = Literal["prefill", "ignore"]
@@ -87,6 +86,11 @@ def app_config_path(override: str | os.PathLike[str] | None = None) -> Path:
         return Path(configured).expanduser()
     base = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser()
     return base / "kisesh" / "apps.toml"
+
+
+def bundled_app_config_path() -> Path:
+    """Resolve the package-owned default profile only when it is needed."""
+    return Path(__file__).with_name("default_apps.toml")
 
 
 def _table(value: object, location: str) -> Mapping[str, object]:
@@ -247,7 +251,7 @@ def load_app_profiles(path: str | os.PathLike[str] | None = None) -> AppProfiles
     explicit = path is not None or bool(os.environ.get("KISESH_APP_CONFIG"))
     if configured.exists() and not configured.is_file():
         raise AppProfileError(f"app config is not a file: {configured}")
-    source = configured if configured.is_file() else BUNDLED_APP_CONFIG
+    source = configured if configured.is_file() else bundled_app_config_path()
     if explicit and not configured.is_file():
         raise AppProfileError(f"app config does not exist: {configured}")
     try:
@@ -257,7 +261,7 @@ def load_app_profiles(path: str | os.PathLike[str] | None = None) -> AppProfiles
     return parse_app_profiles(text, source=str(source))
 
 
-DEFAULT_APP_PROFILES = load_app_profiles(BUNDLED_APP_CONFIG)
+DEFAULT_APP_PROFILES = load_app_profiles(bundled_app_config_path())
 _current_profiles: AppProfiles | None = None
 _current_signature: ProfileSignature | None = None
 
@@ -266,7 +270,7 @@ def _profile_signature() -> ProfileSignature | None:
     """Describe the active user or bundled file without reading its contents."""
     configured = app_config_path()
     try:
-        source = configured if configured.is_file() else BUNDLED_APP_CONFIG
+        source = configured if configured.is_file() else bundled_app_config_path()
         metadata = source.stat()
     except OSError:
         return None

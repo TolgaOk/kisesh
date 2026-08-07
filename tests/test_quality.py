@@ -12,7 +12,6 @@ from pathlib import Path
 PROJECT = Path(__file__).parents[1]
 SOURCE_FILES = [
     *sorted((PROJECT / "kisesh").rglob("*.py")),
-    *sorted((PROJECT / "integration").glob("*.py")),
 ]
 
 
@@ -73,6 +72,28 @@ class QualityContractTests(unittest.TestCase):
                     comments.append(f"{path.relative_to(PROJECT)}:{token.start[0]} {token.string}")
         self.assertEqual(comments, [])
 
+    def test_runtime_paths_are_not_frozen_in_module_globals(self) -> None:
+        frozen: list[str] = []
+        path_factories = {"Path", "app_config_path", "data_root", "runtime_root"}
+        path_methods = {"absolute", "expanduser", "home", "resolve"}
+        for path in SOURCE_FILES:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for statement in tree.body:
+                value = (
+                    statement.value if isinstance(statement, (ast.Assign, ast.AnnAssign)) else None
+                )
+                if value is None:
+                    continue
+                for node in ast.walk(value):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    name = node.func.id if isinstance(node.func, ast.Name) else None
+                    method = node.func.attr if isinstance(node.func, ast.Attribute) else None
+                    if name in path_factories or method in path_methods:
+                        frozen.append(f"{path.relative_to(PROJECT)}:{statement.lineno}")
+                        break
+        self.assertEqual(frozen, [])
+
     def test_justfile_is_the_only_task_runner_contract(self) -> None:
         self.assertTrue((PROJECT / "justfile").is_file())
         self.assertFalse((PROJECT / "Makefile").exists())
@@ -89,18 +110,13 @@ class QualityContractTests(unittest.TestCase):
         self.assertFalse((PROJECT / "bootstrap.sh").exists())
 
     def test_obsolete_lifecycle_terms_are_absent_from_the_product(self) -> None:
-        legacy_module = PROJECT / "kisesh" / "legacy.py"
-        roots = (
-            PROJECT / "kisesh",
-            PROJECT / "integration",
-            PROJECT / "bin",
-        )
+        roots = (PROJECT / "kisesh",)
         files = [PROJECT / "README.md", PROJECT / "install.sh"]
         for root in roots:
             files.extend(
                 path
                 for path in root.rglob("*")
-                if path.is_file() and path != legacy_module and "__pycache__" not in path.parts
+                if path.is_file() and "__pycache__" not in path.parts
             )
 
         obsolete = ("park", "undo", "migrate", "migration", "adopt")
@@ -110,22 +126,27 @@ class QualityContractTests(unittest.TestCase):
                 with self.subTest(path=path, term=term):
                     self.assertNotIn(term, text)
 
-    def test_previous_product_identifiers_are_isolated_to_one_module(self) -> None:
-        legacy_module = PROJECT / "kisesh" / "legacy.py"
+    def test_previous_product_identifiers_are_absent(self) -> None:
         old_names = ("kitty-workbench", "kitty_workbench", "KITTY_WORKBENCH")
         production_files = [
-            *sorted((PROJECT / "kisesh").glob("*.py")),
-            *sorted((PROJECT / "integration").glob("*.py")),
-            *sorted((PROJECT / "bin").glob("*")),
+            *sorted((PROJECT / "kisesh").rglob("*")),
             PROJECT / "install.sh",
         ]
         for path in production_files:
-            if path == legacy_module:
+            if not path.is_file() or "__pycache__" in path.parts:
                 continue
             text = path.read_text(encoding="utf-8")
             for old_name in old_names:
                 with self.subTest(path=path, old_name=old_name):
                     self.assertNotIn(old_name, text)
+
+    def test_runtime_resources_have_one_owner_and_no_stub_or_wrapper_trees(self) -> None:
+        self.assertTrue((PROJECT / "kisesh" / "integration" / "kisesh.conf").is_file())
+        self.assertFalse((PROJECT / "integration").exists())
+        self.assertFalse((PROJECT / "bin").exists())
+        self.assertFalse((PROJECT / "typings").exists())
+        self.assertFalse((PROJECT / "kisesh" / "legacy.py").exists())
+        self.assertIn("/TODO.md", (PROJECT / ".gitignore").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

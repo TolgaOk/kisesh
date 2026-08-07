@@ -66,13 +66,13 @@ class TabBarInstallTests(unittest.TestCase):
         self.assertFalse(self.paths.live.exists())
         self.assertFalse(self.paths.live.is_symlink())
 
-        legacy = self.paths.live.parent / "legacy.py"
-        legacy.write_text("legacy = True\n", encoding="utf-8")
-        self.paths.live.symlink_to("legacy.py")
+        existing = self.paths.live.parent / "existing.py"
+        existing.write_text("existing = True\n", encoding="utf-8")
+        self.paths.live.symlink_to("existing.py")
         self.assertTrue(install_tab_bar(self.paths))
         self.assertTrue(restore_tab_bar(self.paths))
         self.assertTrue(self.paths.live.is_symlink())
-        self.assertEqual(os.readlink(self.paths.live), "legacy.py")
+        self.assertEqual(os.readlink(self.paths.live), "existing.py")
 
     def test_preexisting_kisesh_link_is_treated_as_user_owned_original_state(self) -> None:
         self.paths.live.symlink_to(self.paths.source)

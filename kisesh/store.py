@@ -14,9 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from .domain import SessionContext
 from .filesystem import atomic_write_text
-from .model import SessionManifest, SessionStatus, SnapshotSummary, slugify, utc_now
+from .model import SessionContext, SessionManifest, SessionStatus, SnapshotSummary, slugify, utc_now
 
 
 class StoreError(RuntimeError):

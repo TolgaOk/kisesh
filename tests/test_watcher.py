@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -12,7 +14,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 from unittest import mock
 
-from kisesh import legacy, watcher
+from kisesh import watcher
 
 
 class Child(watcher.WatcherChild):
@@ -277,6 +279,15 @@ class WatcherTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """Reset process-global watcher queues before each scenario."""
+        runtime_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(runtime_directory.cleanup)
+        runtime = Path(runtime_directory.name)
+        launcher = runtime / "bin" / "kisesh"
+        launcher.parent.mkdir()
+        launcher.touch()
+        environment = mock.patch.dict(os.environ, {"KISESH_INSTALL_ROOT": str(runtime)})
+        environment.start()
+        self.addCleanup(environment.stop)
         watcher._timers.clear()
         watcher._timer_generations.clear()
         watcher._pending_commands.clear()
@@ -304,6 +315,11 @@ class WatcherTests(unittest.TestCase):
                 watcher._runtime_root(),
                 Path("~/configured-kisesh").expanduser(),
             )
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(
+                watcher._runtime_root(),
+                Path("~/.local/lib/kisesh").expanduser(),
+            )
 
     def test_new_pane_inherits_autosave_identity_from_stamped_sibling(self) -> None:
         """Associate an unstamped split with a stamped sibling immediately."""
@@ -311,40 +327,6 @@ class WatcherTests(unittest.TestCase):
         new_pane = Window(3, session_id=None)
         self.assertEqual(
             watcher._session_id(new_pane, boss=Boss([[stamped, new_pane]])), "session-id"
-        )
-
-    def test_previous_live_markers_keep_autosave_identity_and_pane_location(self) -> None:
-        window = Window(session_id=None)
-        window.user_vars = {
-            legacy.SESSION_ID_VARIABLE: "session-id",
-            legacy.SESSION_SLUG_VARIABLE: "silver-seal",
-            legacy.SESSION_NAME_VARIABLE: "Silver Seal",
-            legacy.SESSION_SCOPE_VARIABLE: "1",
-        }
-        boss = Boss([[window]])
-
-        identity = watcher._window_identity(window)
-        with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
-            watcher.on_title_change(boss, window, {"title": "new prompt"})
-
-        self.assertEqual(identity.session_id, "session-id")
-        self.assertEqual(identity.session_slug, "silver-seal")
-        self.assertEqual(identity.session_name, "Silver Seal")
-        self.assertEqual(identity.session_scope, "1")
-        self.assertEqual(watcher._session_location(window, boss, "session-id"), (0, 0))
-        self.assertIn("session-id", watcher._timers)
-        self.assertTrue(FakeTimer.instances[-1].started)
-
-        with mock.patch.object(watcher, "_schedule") as schedule:
-            watcher.on_set_user_var(
-                boss,
-                window,
-                {"key": legacy.SESSION_NAME_VARIABLE, "value": "Silver Seal"},
-            )
-        schedule.assert_called_once_with(
-            window,
-            {"key": legacy.SESSION_NAME_VARIABLE, "value": "Silver Seal"},
-            boss,
         )
 
     def test_new_native_session_tab_is_stamped_before_its_autosave(self) -> None:
@@ -670,14 +652,13 @@ class WatcherTests(unittest.TestCase):
         original_path = list(sys.path)
         try:
             sys.path[:] = [entry for entry in sys.path if entry != project_root]
-            watcher._legacy_variable_aliases.cache_clear()
-            self.assertEqual(
-                watcher._legacy_variable_aliases()[watcher.SESSION_ID_VAR],
-                legacy.SESSION_ID_VARIABLE,
-            )
-            sys.path.remove(project_root)
-            self.assertIsNotNone(watcher._refreshed_app_profiles().match("codex"))
+            with mock.patch.dict(os.environ, {"KISESH_INSTALL_ROOT": project_root}):
+                self.assertIsNotNone(watcher._refreshed_app_profiles().match("codex"))
             self.assertEqual(sys.path[0], project_root)
+            path_length = len(sys.path)
+            with mock.patch.dict(os.environ, {"KISESH_INSTALL_ROOT": project_root}):
+                self.assertIsNotNone(watcher._refreshed_app_profiles().match("claude"))
+            self.assertEqual(len(sys.path), path_length)
         finally:
             sys.path[:] = original_path
 
@@ -695,17 +676,6 @@ class WatcherTests(unittest.TestCase):
             boss.remote_calls[-1][1][-2:],
             (f"{watcher.APP_VAR}=top", watcher.AGENT_VAR),
         )
-
-        variables.clear()
-        variables[legacy.APP_VARIABLE] = "claude"
-        variables[legacy.AGENT_VARIABLE] = "claude"
-        watcher.on_cmd_startstop(boss, window, {"is_start": True, "cmdline": ["top"]})
-
-        command = boss.remote_calls[-1][1]
-        self.assertIn(f"{watcher.APP_VAR}=top", command)
-        self.assertNotIn(watcher.AGENT_VAR, command)
-        self.assertIn(legacy.APP_VARIABLE, command)
-        self.assertIn(legacy.AGENT_VARIABLE, command)
 
     def test_autosave_uses_shared_launcher_and_receives_socket_before_subcommand(self) -> None:
         """Invoke the installed launcher with global options in Tyro order."""

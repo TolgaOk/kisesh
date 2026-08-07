@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -14,10 +15,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
-from kisesh import legacy
-from kisesh.domain import KittyOsWindowState, KittyTabState, KittyWindow
 from kisesh.kitty_client import KittyClient
-from kisesh.model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SCOPE_VAR, SESSION_SLUG_VAR
+from kisesh.model import (
+    KISESH_UI_VAR,
+    SESSION_ID_VAR,
+    SESSION_SCOPE_VAR,
+    SESSION_SLUG_VAR,
+    KittyOsWindowState,
+    KittyTabState,
+    KittyWindow,
+)
 from kisesh.store import SessionStore
 
 PROJECT = Path(__file__).parents[1]
@@ -50,8 +57,14 @@ class IsolatedKitty:
     def start(self) -> None:
         """Install the checkout into a temporary home and start Kitty hidden."""
         install = self.home / ".local" / "lib" / "kisesh"
-        install.parent.mkdir(parents=True)
-        install.symlink_to(PROJECT, target_is_directory=True)
+        binary = install / "bin"
+        install.mkdir(parents=True)
+        binary.mkdir()
+        (install / "kisesh").symlink_to(PROJECT / "kisesh", target_is_directory=True)
+        (install / "integration").symlink_to(
+            PROJECT / "kisesh" / "integration", target_is_directory=True
+        )
+        (binary / "kisesh").symlink_to(Path(sys.executable).with_name("kisesh"))
         self.config.write_text(
             "allow_remote_control yes\n"
             f"listen_on {self.socket}\n"
@@ -204,7 +217,7 @@ def _ui_windows(state: list[KittyOsWindowState]) -> list[KittyWindow]:
 
 def _mapped_close_action() -> list[str]:
     """Read the exact action attached to Command-W in the shipped integration."""
-    integration = (PROJECT / "integration/kisesh.conf").read_text(encoding="utf-8")
+    integration = (PROJECT / "kisesh/integration/kisesh.conf").read_text(encoding="utf-8")
     definition = next(
         line.split(maxsplit=2)[2]
         for line in integration.splitlines()
@@ -215,7 +228,7 @@ def _mapped_close_action() -> list[str]:
 
 def _mapped_manager_close_action() -> list[str]:
     """Read the conditional action that dismisses a focused manager overlay."""
-    integration = (PROJECT / "integration/kisesh.conf").read_text(encoding="utf-8")
+    integration = (PROJECT / "kisesh/integration/kisesh.conf").read_text(encoding="utf-8")
     definition = next(
         line.split(maxsplit=4)[4]
         for line in integration.splitlines()
@@ -249,7 +262,7 @@ class LiveKittyCloseTests(unittest.TestCase):
                 server.start()
                 created = subprocess.run(
                     [
-                        str(PROJECT / "bin" / "kisesh"),
+                        str(Path(sys.executable).with_name("kisesh")),
                         "--socket",
                         server.socket,
                         "create",
@@ -285,7 +298,6 @@ class LiveKittyCloseTests(unittest.TestCase):
                 client.activate_session(closing.manifest.id, live_closing)
                 expected_initial_filter = (
                     f"var:{SESSION_ID_VAR}={closing.manifest.id} or "
-                    f"var:{legacy.SESSION_ID_VARIABLE}={closing.manifest.id} or "
                     f"not var:{SESSION_SCOPE_VAR}={live_closing.os_window_id}"
                 )
                 self.assertEqual(server.tab_filter(), expected_initial_filter)
@@ -298,7 +310,7 @@ class LiveKittyCloseTests(unittest.TestCase):
                     "--env=KISESH_CALLER=overlay",
                     f"--var={KISESH_UI_VAR}=yes",
                     "--title=KiSesh close regression",
-                    str(PROJECT / "bin" / "kisesh"),
+                    str(Path(sys.executable).with_name("kisesh")),
                     "--socket",
                     server.socket,
                     "close",
@@ -332,7 +344,6 @@ class LiveKittyCloseTests(unittest.TestCase):
                 self.assertEqual(
                     server.tab_filter(),
                     f"var:{SESSION_ID_VAR}={successor.manifest.id} or "
-                    f"var:{legacy.SESSION_ID_VARIABLE}={successor.manifest.id} or "
                     f"not var:{SESSION_SCOPE_VAR}={scope}",
                 )
                 self.assertIsNotNone(store.read_context(closing.manifest.id))
@@ -393,7 +404,7 @@ class LiveKittyCloseTests(unittest.TestCase):
                 server.start()
                 created = subprocess.run(
                     [
-                        str(PROJECT / "bin" / "kisesh"),
+                        str(Path(sys.executable).with_name("kisesh")),
                         "--socket",
                         server.socket,
                         "create",
