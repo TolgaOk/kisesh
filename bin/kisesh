@@ -29,5 +29,5 @@ do
     fi
 done
 
-printf '%s\n' 'kisesh: run ./install to create the Python runtime' >&2
+printf '%s\n' 'kisesh: run ./install.sh to create the Python runtime' >&2
 exit 1

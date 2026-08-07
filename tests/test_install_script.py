@@ -7,13 +7,23 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import NotRequired, TypedDict, cast
 
 PROJECT = Path(__file__).parents[1]
-BOOTSTRAP = PROJECT / "bootstrap.sh"
+INSTALL_SCRIPT = PROJECT / "install.sh"
+DEFAULT_PACKAGE_URL = "https://github.com/TolgaOk/kisesh/archive/refs/heads/main.tar.gz"
 
 
-class BootstrapTests(unittest.TestCase):
-    """Run both public curl-bootstrap paths with isolated fake tool installations."""
+class ObservedCommand(TypedDict):
+    """Typed command record written by the isolated installer doubles."""
+
+    program: str
+    args: list[str]
+    cli: NotRequired[str | None]
+
+
+class InstallScriptTests(unittest.TestCase):
+    """Exercise local, remote, and curl-style installation without touching the host."""
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -27,7 +37,7 @@ class BootstrapTests(unittest.TestCase):
         fake_cli = (
             f"#!{sys.executable}\n"
             "import json, os, pathlib, sys\n"
-            "log = pathlib.Path(os.environ['KISESH_BOOTSTRAP_LOG'])\n"
+            "log = pathlib.Path(os.environ['KISESH_INSTALL_LOG'])\n"
             "with log.open('a') as stream:\n"
             "    payload = {\n"
             "        'program': 'kisesh',\n"
@@ -39,7 +49,7 @@ class BootstrapTests(unittest.TestCase):
         self.uv.write_text(
             f"#!{sys.executable}\n"
             "import json, os, pathlib, sys\n"
-            "log = pathlib.Path(os.environ['KISESH_BOOTSTRAP_LOG'])\n"
+            "log = pathlib.Path(os.environ['KISESH_INSTALL_LOG'])\n"
             "with log.open('a') as stream:\n"
             "    stream.write(json.dumps({'program': 'uv', 'args': sys.argv[1:]}) + '\\n')\n"
             "if sys.argv[1:3] == ['tool', 'install']:\n"
@@ -55,44 +65,55 @@ class BootstrapTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def environment(self) -> dict[str, str]:
-        """Return a deterministic GUI-like environment for the shell bootstrap."""
+        """Return an isolated GUI-like environment with an explicit remote source."""
         environment = os.environ.copy()
         environment.update(
             {
                 "HOME": str(self.home),
                 "PATH": f"{self.bin}:/usr/bin:/bin",
                 "XDG_DATA_HOME": str(self.home / "data"),
-                "KISESH_BOOTSTRAP_LOG": str(self.log),
+                "KISESH_INSTALL_LOG": str(self.log),
                 "KISESH_PACKAGE_URL": "https://example.invalid/kisesh.tar.gz",
                 "KISESH_PYTHON": "3.12",
             }
         )
         return environment
 
-    def run_bootstrap(
+    def run_install(
         self,
         environment: dict[str, str],
+        *arguments: str,
+        through_stdin: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        """Execute the exact public script and retain both user-facing streams."""
+        """Execute the public file or the exact shell-stdin form used by curl."""
+        command = (
+            ["/bin/sh", "-s", "--", *arguments]
+            if through_stdin
+            else [str(INSTALL_SCRIPT), *arguments]
+        )
         return subprocess.run(
-            [str(BOOTSTRAP)],
+            command,
             cwd=self.root,
             env=environment,
+            input=INSTALL_SCRIPT.read_text(encoding="utf-8") if through_stdin else None,
             check=False,
             capture_output=True,
             text=True,
             timeout=20,
         )
 
-    def commands(self) -> list[dict[str, object]]:
-        """Decode commands observed across the fake uv and installed CLI boundary."""
-        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+    def commands(self) -> list[ObservedCommand]:
+        """Decode calls observed across the fake uv and installed CLI boundary."""
+        return [
+            cast(ObservedCommand, json.loads(line))
+            for line in self.log.read_text(encoding="utf-8").splitlines()
+        ]
 
-    def test_existing_uv_installs_an_isolated_tool_then_runs_integration(self) -> None:
+    def test_remote_source_uses_existing_uv_then_enables_integration(self) -> None:
         environment = self.environment()
         environment["KISESH_UV"] = str(self.uv)
 
-        result = self.run_bootstrap(environment)
+        result = self.run_install(environment)
         commands = self.commands()
         tool_root = self.home / "data" / "kisesh-tool"
         cli = tool_root / "bin" / "kisesh"
@@ -119,7 +140,48 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("Kitty was left running", result.stdout)
         self.assertNotIn("restart", result.stdout.casefold())
 
-    def test_curl_path_uses_a_temporary_pinned_uv_without_persisting_it(self) -> None:
+    def test_checkout_installs_editably_and_forwards_integration_arguments(self) -> None:
+        environment = self.environment()
+        environment["KISESH_UV"] = str(self.uv)
+        environment.pop("KISESH_PACKAGE_URL")
+        kitty_config = self.root / "kitty.conf"
+
+        result = self.run_install(environment, "--kitty-config", str(kitty_config))
+        commands = self.commands()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            commands[0],
+            {
+                "program": "uv",
+                "args": [
+                    "tool",
+                    "install",
+                    "--force",
+                    "--editable",
+                    "--python",
+                    "3.12",
+                    str(PROJECT),
+                ],
+            },
+        )
+        self.assertEqual(
+            commands[1]["args"],
+            ["install", "--kitty-config", str(kitty_config)],
+        )
+
+    def test_curl_style_stdin_uses_the_default_remote_source(self) -> None:
+        environment = self.environment()
+        environment["KISESH_UV"] = str(self.uv)
+        environment.pop("KISESH_PACKAGE_URL")
+
+        result = self.run_install(environment, through_stdin=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands()[0]["args"][-1], DEFAULT_PACKAGE_URL)
+        self.assertNotIn("--editable", self.commands()[0]["args"])
+
+    def test_missing_uv_uses_a_temporary_pinned_installer(self) -> None:
         curl = self.bin / "curl"
         curl_log = self.root / "curl.json"
         curl.write_text(
@@ -150,7 +212,7 @@ class BootstrapTests(unittest.TestCase):
         self.uv.rename(self.root / "fake-uv-source")
         environment["KISESH_FAKE_UV"] = str(self.root / "fake-uv-source")
 
-        result = self.run_bootstrap(environment)
+        result = self.run_install(environment)
         curl_call = json.loads(curl_log.read_text(encoding="utf-8"))
         temporary = Path(curl_call["output"]).parent
 
@@ -159,10 +221,10 @@ class BootstrapTests(unittest.TestCase):
         self.assertFalse(temporary.exists())
         self.assertEqual(self.commands()[-1]["program"], "kisesh")
 
-    def test_bootstrap_reports_missing_tools_and_incomplete_tool_installs(self) -> None:
+    def test_missing_tools_and_incomplete_tool_installs_fail_cleanly(self) -> None:
         invalid_uv = self.environment()
         invalid_uv["KISESH_UV"] = str(self.root / "missing-uv")
-        result = self.run_bootstrap(invalid_uv)
+        result = self.run_install(invalid_uv)
         self.assertEqual(result.returncode, 1)
         self.assertIn("uv is not executable", result.stderr)
 
@@ -171,7 +233,7 @@ class BootstrapTests(unittest.TestCase):
         no_command_uv.chmod(0o755)
         no_command = self.environment()
         no_command["KISESH_UV"] = str(no_command_uv)
-        result = self.run_bootstrap(no_command)
+        result = self.run_install(no_command)
         self.assertEqual(result.returncode, 1)
         self.assertIn("installed command is missing", result.stderr)
 
@@ -179,7 +241,7 @@ class BootstrapTests(unittest.TestCase):
         missing_curl["PATH"] = "/usr/bin:/bin"
         missing_curl["KISESH_CURL"] = str(self.root / "missing-curl")
         missing_curl.pop("KISESH_UV", None)
-        result = self.run_bootstrap(missing_curl)
+        result = self.run_install(missing_curl)
         self.assertEqual(result.returncode, 1)
         self.assertIn("curl was not found", result.stderr)
 

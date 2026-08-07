@@ -28,7 +28,6 @@ from kisesh.legacy import (
 from kisesh.tab_bar_install import TabBarPaths, install_tab_bar
 
 PROJECT = Path(__file__).parents[1]
-INSTALLER = PROJECT / "install"
 
 
 class InstallerTests(unittest.TestCase):
@@ -101,7 +100,7 @@ class InstallerTests(unittest.TestCase):
         environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [str(INSTALLER), *arguments],
+            [sys.executable, "-m", "kisesh.installer", *arguments],
             cwd=PROJECT,
             env=environment or self.environment,
             check=False,
@@ -128,74 +127,16 @@ class InstallerTests(unittest.TestCase):
             (PROJECT / ".venv" / "bin" / "kisesh").resolve(),
         )
 
-    def test_launcher_is_executable_and_finds_python_with_a_gui_style_path(self) -> None:
-        homebrew_bin = self.home / "homebrew" / "bin"
-        homebrew_bin.mkdir(parents=True)
-        (homebrew_bin / "python3").symlink_to(Path(sys.executable).resolve())
+    def test_installer_module_help_is_available_with_a_gui_style_path(self) -> None:
         environment = dict(self.environment)
         environment["PATH"] = "/usr/bin:/bin"
 
         result = self.run_installer("--help", environment=environment)
 
-        self.assertTrue(os.access(INSTALLER, os.X_OK))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--disable", result.stdout)
         self.assertIn("--uninstall", result.stdout)
         self.assertIn("--purge", result.stdout)
-
-    def test_clean_bootstrap_installs_the_project_editably_before_running_installer(self) -> None:
-        checkout = self.root / "checkout"
-        checkout.mkdir()
-        shutil.copy2(INSTALLER, checkout / "install")
-        home = self.root / "bootstrap-home"
-        fake_python = home / "homebrew" / "bin" / "python3"
-        fake_python.parent.mkdir(parents=True)
-        command_log = self.root / "bootstrap-commands.jsonl"
-        fake_python.write_text(
-            f"#!{sys.executable}\n"
-            "import json, os, pathlib, sys\n"
-            "arguments = sys.argv[1:]\n"
-            "with pathlib.Path(os.environ['KISESH_BOOTSTRAP_LOG']).open('a') as stream:\n"
-            "    stream.write(json.dumps(arguments) + '\\n')\n"
-            "if arguments[:2] == ['-m', 'venv']:\n"
-            "    runtime = pathlib.Path(arguments[2]) / 'bin' / 'python'\n"
-            "    runtime.parent.mkdir(parents=True)\n"
-            "    runtime.symlink_to(pathlib.Path(__file__).resolve())\n"
-            "elif arguments[:2] == ['-m', 'pip']:\n"
-            "    cli = pathlib.Path(sys.argv[0]).with_name('kisesh')\n"
-            "    cli.write_text('#!/bin/sh\\nexit 0\\n')\n"
-            "    cli.chmod(0o755)\n"
-            "elif arguments[:2] == ['-m', 'kisesh.installer']:\n"
-            "    print('installer reached')\n",
-            encoding="utf-8",
-        )
-        fake_python.chmod(0o755)
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "HOME": str(home),
-                "PATH": "/usr/bin:/bin",
-                "KISESH_BOOTSTRAP_LOG": str(command_log),
-            }
-        )
-
-        result = subprocess.run(
-            [str(checkout / "install"), "--help"],
-            cwd=checkout,
-            env=environment,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        commands = [json.loads(line) for line in command_log.read_text().splitlines()]
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("installer reached", result.stdout)
-        self.assertIn(["-m", "venv", str(checkout / ".venv")], commands)
-        pip_command = next(command for command in commands if command[:2] == ["-m", "pip"])
-        self.assertEqual(pip_command[-2:], ["--editable", str(checkout)])
-        self.assertTrue((checkout / ".venv" / "bin" / "kisesh").is_file())
 
     def test_enable_adopts_manual_include_and_is_idempotent(self) -> None:
         original = (

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import io
+import os
 import tokenize
 import unittest
 from pathlib import Path
@@ -79,6 +80,14 @@ class QualityContractTests(unittest.TestCase):
         self.assertIn("typecheck:", recipes)
         self.assertNotIn("\ntypes:", recipes)
 
+    def test_install_sh_is_the_only_public_install_script(self) -> None:
+        installer = PROJECT / "install.sh"
+
+        self.assertTrue(installer.is_file())
+        self.assertTrue(os.access(installer, os.X_OK))
+        self.assertFalse((PROJECT / "install").exists())
+        self.assertFalse((PROJECT / "bootstrap.sh").exists())
+
     def test_obsolete_lifecycle_terms_are_absent_from_the_product(self) -> None:
         legacy_module = PROJECT / "kisesh" / "legacy.py"
         roots = (
@@ -86,7 +95,7 @@ class QualityContractTests(unittest.TestCase):
             PROJECT / "integration",
             PROJECT / "bin",
         )
-        files = [PROJECT / "README.md", PROJECT / "install"]
+        files = [PROJECT / "README.md", PROJECT / "install.sh"]
         for root in roots:
             files.extend(
                 path
@@ -108,7 +117,7 @@ class QualityContractTests(unittest.TestCase):
             *sorted((PROJECT / "kisesh").glob("*.py")),
             *sorted((PROJECT / "integration").glob("*.py")),
             *sorted((PROJECT / "bin").glob("*")),
-            PROJECT / "install",
+            PROJECT / "install.sh",
         ]
         for path in production_files:
             if path == legacy_module:

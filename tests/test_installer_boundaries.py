@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest import mock
 
 from kisesh.installer import (
+    COMPAT_MANAGED_BEGIN,
+    COMPAT_MANAGED_END,
     DEFAULT_LISTEN_ON,
     INTEGRATION_INCLUDE,
     MANAGED_BEGIN,
@@ -216,6 +218,13 @@ class InstallerBoundaryTests(unittest.TestCase):
         )
         self.assertTrue(changed)
         self.assertEqual(stripped, "font_size 15\n")
+
+        stripped, changed = _strip_kisesh_config(
+            f"font_size 16\n{COMPAT_MANAGED_BEGIN}\n{INTEGRATION_INCLUDE}\n{COMPAT_MANAGED_END}\n",
+            paths,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(stripped, "font_size 16\n")
 
     def test_previous_upgrade_rolls_back_each_changed_resource_after_failures(self) -> None:
         paths = self.paths()

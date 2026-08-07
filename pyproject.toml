@@ -17,8 +17,7 @@ build-backend = "uv_build"
 module-root = ""
 source-include = [
   "bin/**",
-  "bootstrap.sh",
-  "install",
+  "install.sh",
   "integration/**",
   "justfile",
   "typings/**",

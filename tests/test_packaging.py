@@ -80,8 +80,7 @@ class PackagingTests(unittest.TestCase):
             for relative in (
                 "bin/kisesh",
                 "bin/kisesh-panel",
-                "bootstrap.sh",
-                "install",
+                "install.sh",
                 "integration/kisesh.conf",
                 "integration/safe_close.py",
                 "integration/session_close.py",

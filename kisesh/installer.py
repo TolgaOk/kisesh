@@ -56,8 +56,10 @@ from .tab_bar_install import (
     tab_bar_paths,
 )
 
-MANAGED_BEGIN = "# BEGIN kisesh (managed by ./install)"
-MANAGED_END = "# END kisesh (managed by ./install)"
+MANAGED_BEGIN = "# BEGIN kisesh (managed by kisesh install)"
+MANAGED_END = "# END kisesh (managed by kisesh install)"
+COMPAT_MANAGED_BEGIN = "# BEGIN kisesh (managed by ./install)"
+COMPAT_MANAGED_END = "# END kisesh (managed by ./install)"
 INTEGRATION_INCLUDE = "include ~/.local/lib/kisesh/integration/kisesh.conf"
 DEFAULT_LISTEN_ON = "unix:/tmp/kisesh-main"
 MANAGED_KEYS = ("alt+s", "alt+shift+s", "cmd+w")
@@ -295,6 +297,7 @@ def _strip_kisesh_config(text: str, paths: InstallPaths) -> tuple[str, bool]:
     }
     managed_blocks = {
         MANAGED_BEGIN: MANAGED_END,
+        COMPAT_MANAGED_BEGIN: COMPAT_MANAGED_END,
         LEGACY_MANAGED_BEGIN: LEGACY_MANAGED_END,
     }
     managed_ends = frozenset(managed_blocks.values())
@@ -773,7 +776,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> InstallArguments:
     """Parse installer flags with Tyro into a fully typed configuration."""
     return tyro.cli(
         InstallArguments,
-        prog="./install",
+        prog="kisesh install",
         description="Install, disable, or remove KiSesh safely.",
         args=list(argv) if argv is not None else None,
         config=(tyro.conf.HelptextFromCommentsOff,),
