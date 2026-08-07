@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from .agent_resume import exact_resume_argv
 from .app_profiles import (
     DEFAULT_APP_PROFILES,
     AppProfile,
@@ -187,12 +188,18 @@ def _command_name(value: object) -> str | None:
     return name or None
 
 
-def _foreground_argv(window: KittyWindow) -> list[str]:
-    """Return the foreground process or an in-progress shell command."""
+def _foreground_argv(window: KittyWindow, profiles: AppProfiles) -> list[str]:
+    """Prefer a supervising agent over its transient foreground tool process."""
+    candidates: list[list[str]] = []
     for process in reversed(window.get("foreground_processes", [])):
         argv = _command_argv(process.get("cmdline"))
         if argv:
-            return argv
+            candidates.append(argv)
+            profile = profiles.match(_command_name(argv))
+            if profile is not None and profile.agent:
+                return argv
+    if candidates:
+        return candidates[0]
     if not bool(window.get("at_prompt")):
         return _command_argv(window.get("last_reported_cmdline"))
     return []
@@ -300,16 +307,18 @@ def _append_history(
 
 def _claude_resume(argv: Sequence[str]) -> list[str]:
     """Reduce a live Claude invocation to its stable direct-resume form."""
+    resume_picker = False
     for index, token in enumerate(argv[1:], start=1):
-        if token in {"--resume", "-r"} and index + 1 < len(argv):
+        if token in {"--resume", "-r", "--session-id"} and index + 1 < len(argv):
             session = argv[index + 1]
             if not session.startswith("-"):
                 return ["claude", "--resume", session]
-        if token.startswith("--resume=") and token.partition("=")[2]:
+        if token.startswith(("--resume=", "--session-id=")) and token.partition("=")[2]:
             return ["claude", "--resume", token.partition("=")[2]]
         if token in {"--continue", "-c"}:
             return ["claude", "--continue"]
-    return ["claude", "--continue"]
+        resume_picker = resume_picker or token in {"--resume", "-r"}
+    return ["claude", "--resume"] if resume_picker else ["claude"]
 
 
 def _codex_resume(argv: Sequence[str]) -> list[str]:
@@ -317,12 +326,12 @@ def _codex_resume(argv: Sequence[str]) -> list[str]:
     try:
         resume_index = argv.index("resume", 1)
     except ValueError:
-        return ["codex", "resume", "--last"]
+        return ["codex"]
     tail = list(argv[resume_index + 1 :])
     if "--last" in tail:
         return ["codex", "resume", "--last"]
     session = next((item for item in tail if item and not item.startswith("-")), None)
-    return ["codex", "resume", session] if session else ["codex", "resume", "--last"]
+    return ["codex", "resume", session] if session else ["codex", "resume"]
 
 
 def _restore_command(
@@ -330,6 +339,7 @@ def _restore_command(
     *,
     profile: AppProfile | None,
     default_restore: DefaultRestoreMode,
+    resolved_resume: Sequence[str] = (),
 ) -> RestoreSpec | None:
     """Apply one configured app policy to captured foreground process metadata."""
     program = _command_name(argv)
@@ -338,7 +348,14 @@ def _restore_command(
     restore = profile.restore if profile is not None else default_restore
     if restore == "ignore":
         return None
-    if profile is not None and profile.adapter == "claude":
+    exact_resume = (
+        exact_resume_argv(profile.adapter, resolved_resume)
+        if profile is not None and profile.adapter is not None
+        else None
+    )
+    if exact_resume is not None:
+        restore_argv = exact_resume
+    elif profile is not None and profile.adapter == "claude":
         restore_argv = _claude_resume(argv)
     elif profile is not None and profile.adapter == "codex":
         restore_argv = _codex_resume(argv)
@@ -434,6 +451,7 @@ class _ContextBuilder:
         terminal_histories: Mapping[int, object],
         alternate_screen_texts: Mapping[int, object],
         profiles: AppProfiles,
+        agent_resumes: Mapping[int, Sequence[str]],
     ) -> None:
         """Index prior panes and normalized completion events once per capture."""
         self.captured_at = utc_now()
@@ -443,6 +461,7 @@ class _ContextBuilder:
         self.terminal_histories = terminal_histories
         self.alternate_screen_texts = alternate_screen_texts
         self.profiles = profiles
+        self.agent_resumes = agent_resumes
         for raw_event in command_events:
             event = normalize_command_event(raw_event)
             if event is not None:
@@ -473,7 +492,7 @@ class _ContextBuilder:
         cwd = _clean_text(window.get("cwd"), 4096)
         events = self.events_by_window.get(window_id, [])
         history = self._command_history(window, old, events, cwd)
-        argv = _foreground_argv(window)
+        argv = _foreground_argv(window, self.profiles)
         program = _command_name(argv)
         profile = self.profiles.match(program)
         agent = profile.name if profile is not None and profile.agent else None
@@ -492,6 +511,7 @@ class _ContextBuilder:
                 argv,
                 profile=profile,
                 default_restore=self.profiles.defaults.restore,
+                resolved_resume=self.agent_resumes.get(window_id, ()),
             ),
             "at_prompt": bool(window.get("at_prompt")),
             "alternate_screen": alternate_screen,
@@ -616,6 +636,7 @@ def build_context(
     terminal_histories: Mapping[int, object] | None = None,
     alternate_screen_texts: Mapping[int, object] | None = None,
     profiles: AppProfiles = DEFAULT_APP_PROFILES,
+    agent_resumes: Mapping[int, Sequence[str]] | None = None,
 ) -> SessionContext:
     """Capture typed pane context, bounded history, and safe resume candidates."""
     builder = _ContextBuilder(
@@ -625,6 +646,7 @@ def build_context(
         terminal_histories or {},
         alternate_screen_texts or {},
         profiles,
+        agent_resumes or {},
     )
     return builder.build(tabs)
 
@@ -728,9 +750,18 @@ def update_context_for_closing_pane(
         {window_id: capture["terminal_history"]},
         {window_id: capture["alternate_screen_text"]},
         profiles,
+        {},
     )
     tab_index, pane_index = location
-    tabs[tab_index]["panes"][pane_index] = builder._build_pane(capture["window"], location)
+    previous = tabs[tab_index]["panes"][pane_index]
+    pane = builder._build_pane(capture["window"], location)
+    if not pane["foreground_argv"] and not pane["at_prompt"] and previous["restore"] is not None:
+        pane["program"] = previous["program"]
+        pane["agent"] = previous["agent"]
+        pane["foreground_argv"] = previous["foreground_argv"]
+        pane["foreground_command"] = previous["foreground_command"]
+        pane["restore"] = previous["restore"]
+    tabs[tab_index]["panes"][pane_index] = pane
     updated = _summarize(tabs, builder.captured_at)
     _preserve_snapshot_revision(updated, existing)
     return updated

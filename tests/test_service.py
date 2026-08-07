@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
 from kisesh import legacy
+from kisesh.app_profiles import AppProfiles
+from kisesh.context import pane_auto_run_argv
 from kisesh.domain import (
     ClosingPaneCapture,
     CommandEvent,
@@ -501,6 +504,106 @@ class ServiceTests(unittest.TestCase):
         self.assertNotIn("dangerously-skip-permissions", self.kitty.opened_contents[-1])
         self.assertEqual(self.kitty.focused[-1], self.kitty.tab.tab_id)
         self.assertEqual(list(self.store.root.glob(".agent-work.restore.*")), [])
+
+    def test_x_revives_the_exact_claude_and_codex_sessions_after_teardown(self) -> None:
+        """Exercise save, destructive close callbacks, remap, and pane-specific revive."""
+        codex_id = "019fd808-918d-7481-b526-c4da01513c42"
+        claude_id = "7f676817-c49e-459c-86de-17382e2170ef"
+        codex: KittyWindow = {
+            "id": 11,
+            "title": "Codex",
+            "cwd": "/tmp/project",
+            "user_vars": {},
+            "foreground_processes": [{"cmdline": ["codex"], "pid": 101}],
+            "at_prompt": False,
+        }
+        claude: KittyWindow = {
+            "id": 12,
+            "title": "Claude",
+            "cwd": "/tmp/project",
+            "user_vars": {},
+            "foreground_processes": [{"cmdline": ["claude"], "pid": 202}],
+            "at_prompt": False,
+        }
+        self.kitty.tab.windows = [codex, claude]
+        self.kitty.window = codex
+        self.kitty.capture_session_text = (
+            "new_tab Agents\nlaunch --cwd=/tmp/project\nlaunch --cwd=/tmp/project\n"
+        )
+
+        def exact_resumes(
+            tabs: Sequence[LiveTab],
+            _profiles: AppProfiles,
+        ) -> dict[int, list[str]]:
+            """Return the identities observed for this two-agent live session."""
+            self.assertEqual([window["id"] for tab in tabs for window in tab.windows], [11, 12])
+            return {
+                11: ["codex", "resume", codex_id],
+                12: ["claude", "--resume", claude_id],
+            }
+
+        service = KiSeshService(self.store, self.kitty, resume_resolver=exact_resumes)
+        stored = service.create_from_active("Exact Agents")
+        service.save_and_close(stored.manifest.id)
+
+        for pane_index, window in enumerate((codex, claude)):
+            capture: ClosingPaneCapture = {
+                "tab_index": 0,
+                "pane_index": pane_index,
+                "window": {
+                    **window,
+                    "foreground_processes": [],
+                    "at_prompt": False,
+                },
+                "terminal_history": f"saved pane {pane_index}\n",
+                "alternate_screen_text": "",
+                "last_command_output": "",
+                "command_events": [],
+            }
+            service.save_closing_pane(stored.manifest.id, capture)
+
+        reopened_windows: list[KittyWindow] = [
+            {
+                "id": 91,
+                "title": "Codex",
+                "cwd": "/tmp/project",
+                "user_vars": {},
+                "foreground_processes": [{"cmdline": ["-zsh"]}],
+                "at_prompt": True,
+            },
+            {
+                "id": 92,
+                "title": "Claude",
+                "cwd": "/tmp/project",
+                "user_vars": {},
+                "foreground_processes": [{"cmdline": ["-zsh"]}],
+                "at_prompt": True,
+            },
+        ]
+        self.kitty.next_open_tab = LiveTab(
+            1,
+            27,
+            0,
+            "Agents",
+            "splits",
+            reopened_windows,
+            is_focused=True,
+            is_active=True,
+        )
+        service.open(stored.manifest.id)
+        context = self.store.read_context(stored.manifest.id)
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(
+            [pane["window_id"] for pane in context["tabs"][0]["panes"]],
+            [91, 92],
+        )
+        self.assertEqual(pane_auto_run_argv(context, 0, 0), ["codex", "resume", codex_id])
+        self.assertEqual(
+            pane_auto_run_argv(context, 0, 1),
+            ["claude", "--resume", claude_id],
+        )
 
     def test_open_restores_inert_scrollback_before_a_normal_shell(self) -> None:
         self.kitty.window.update(

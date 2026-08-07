@@ -16,6 +16,7 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
+from .agent_resume import AgentResumeResolver, resolve_agent_resumes
 from .app_profiles import DEFAULT_APP_PROFILES, AppProfiles
 from .context import (
     CONTEXT_SCHEMA_VERSION,
@@ -191,12 +192,14 @@ class KiSeshService:
         kitty: KittyController | None = None,
         kitty_factory: KittyFactory = KittyClient,
         profiles: AppProfiles = DEFAULT_APP_PROFILES,
+        resume_resolver: AgentResumeResolver = resolve_agent_resumes,
     ) -> None:
         """Initialize service dependencies without connecting to Kitty eagerly."""
         self.store = store
         self.kitty = kitty
         self.kitty_factory = kitty_factory
         self.profiles = profiles
+        self.resume_resolver = resume_resolver
 
     def _kitty(self) -> KittyController:
         """Return the injected client or construct one lazily."""
@@ -482,6 +485,7 @@ class KiSeshService:
             command_outputs=_capture_pane_texts([source], client.last_command_output),
             terminal_histories=_capture_pane_texts([source], client.terminal_history),
             profiles=self.profiles,
+            agent_resumes=self.resume_resolver([source], self.profiles),
         )
         context = merge_context(self.store.read_context(target.manifest.id), addition)
         context["snapshot_revision"] = copied.manifest.revision
@@ -547,6 +551,7 @@ class KiSeshService:
             snapshot_summary(safe),
         )
         events = list(command_events)
+        agent_resumes = self.resume_resolver(live_tabs, self.profiles)
         command_outputs = _capture_pane_texts(live_tabs, client.last_command_output)
         terminal_histories = _capture_pane_texts(live_tabs, client.terminal_history)
 
@@ -559,6 +564,7 @@ class KiSeshService:
                 command_outputs,
                 terminal_histories,
                 profiles=self.profiles,
+                agent_resumes=agent_resumes,
             )
             context["snapshot_revision"] = updated.manifest.revision
             return context

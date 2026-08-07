@@ -139,7 +139,8 @@ class ContextTests(unittest.TestCase):
 
         restored = restore_session(snapshot, context)
 
-        self.assertIn("codex resume --last", restored)
+        self.assertIn("--var=example=yes codex", restored)
+        self.assertNotIn("resume --last", restored)
         self.assertIn("nvim .", restored)
         self.assertEqual(restored.count("launch "), 2)
 
@@ -515,6 +516,89 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(
             [pane_auto_run_argv(context, 0, index) for index in range(len(commands))],
             [list(argv) for argv in commands],
+        )
+
+    def test_x_teardown_cannot_erase_exact_claude_and_codex_resumes(self) -> None:
+        """Model a good save followed by process metadata disappearing during tab kill."""
+        codex_id = "019fd808-918d-7481-b526-c4da01513c42"
+        claude_id = "7f676817-c49e-459c-86de-17382e2170ef"
+        windows = [
+            {
+                "id": 71,
+                "title": "Codex",
+                "cwd": "/tmp/project",
+                "foreground_processes": [
+                    {"cmdline": ["codex"], "pid": 101},
+                    {"cmdline": ["rg", "resume bug"], "pid": 102},
+                ],
+                "at_prompt": False,
+            },
+            {
+                "id": 72,
+                "title": "Claude",
+                "cwd": "/tmp/project",
+                "foreground_processes": [{"cmdline": ["claude"], "pid": 202}],
+                "at_prompt": False,
+            },
+        ]
+        context = build_context(
+            [_tab(*windows)],
+            agent_resumes={
+                71: ["codex", "resume", codex_id],
+                72: ["claude", "--resume", claude_id],
+            },
+        )
+
+        for pane_index, window in enumerate(windows):
+            capture: ClosingPaneCapture = {
+                "tab_index": 0,
+                "pane_index": pane_index,
+                "window": cast(
+                    KittyWindow,
+                    {
+                        **window,
+                        "foreground_processes": [],
+                        "at_prompt": False,
+                    },
+                ),
+                "terminal_history": f"pane {pane_index} history\n",
+                "alternate_screen_text": "",
+                "last_command_output": "",
+                "command_events": [],
+            }
+            context = update_context_for_closing_pane(context, capture)
+
+        self.assertEqual(
+            [candidate["argv"] for candidate in context["restore_commands"]],
+            [
+                ["codex", "resume", codex_id],
+                ["claude", "--resume", claude_id],
+            ],
+        )
+        restored = restore_session("new_tab work\nlaunch\nlaunch\n", context)
+        self.assertIn(f"codex resume {codex_id}", restored)
+        self.assertIn(f"claude --resume {claude_id}", restored)
+
+        prompt_capture: ClosingPaneCapture = {
+            "tab_index": 0,
+            "pane_index": 0,
+            "window": cast(
+                KittyWindow,
+                {
+                    **windows[0],
+                    "foreground_processes": [{"cmdline": ["-zsh"]}],
+                    "at_prompt": True,
+                },
+            ),
+            "terminal_history": "agent exited normally\n",
+            "alternate_screen_text": "",
+            "last_command_output": "",
+            "command_events": [],
+        }
+        exited = update_context_for_closing_pane(context, prompt_capture)
+        self.assertEqual(
+            [candidate["argv"] for candidate in exited["restore_commands"]],
+            [["claude", "--resume", claude_id]],
         )
 
 

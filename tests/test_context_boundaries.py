@@ -156,10 +156,14 @@ class ContextBoundaryTests(unittest.TestCase):
         self.assertIsNone(DEFAULT_APP_PROFILES.match("python"))
         self.assertEqual(_claude_resume(["claude", "--resume=abc"]), ["claude", "--resume", "abc"])
         self.assertEqual(_claude_resume(["claude", "-r", "abc"]), ["claude", "--resume", "abc"])
-        self.assertEqual(_claude_resume(["claude", "-r", "--flag"]), ["claude", "--continue"])
+        self.assertEqual(
+            _claude_resume(["claude", "--session-id", "abc"]),
+            ["claude", "--resume", "abc"],
+        )
+        self.assertEqual(_claude_resume(["claude", "-r", "--flag"]), ["claude", "--resume"])
         self.assertEqual(_claude_resume(["claude", "-c"]), ["claude", "--continue"])
-        self.assertEqual(_claude_resume(["claude"]), ["claude", "--continue"])
-        self.assertEqual(_codex_resume(["codex"]), ["codex", "resume", "--last"])
+        self.assertEqual(_claude_resume(["claude"]), ["claude"])
+        self.assertEqual(_codex_resume(["codex"]), ["codex"])
         self.assertEqual(
             _codex_resume(["codex", "resume", "--last"]),
             ["codex", "resume", "--last"],
@@ -170,7 +174,7 @@ class ContextBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(
             _codex_resume(["codex", "resume", "--sandbox"]),
-            ["codex", "resume", "--last"],
+            ["codex", "resume"],
         )
         self.assertIsNone(
             _restore_command(
