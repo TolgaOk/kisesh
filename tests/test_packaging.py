@@ -92,6 +92,7 @@ class PackagingTests(unittest.TestCase):
 
             with zipfile.ZipFile(wheel) as archive:
                 wheel_names = set(archive.namelist())
+                metadata = archive.read(f"kisesh-{__version__}.dist-info/METADATA").decode("utf-8")
                 entry_points = archive.read(
                     f"kisesh-{__version__}.dist-info/entry_points.txt"
                 ).decode("utf-8")
@@ -105,6 +106,7 @@ class PackagingTests(unittest.TestCase):
             ):
                 self.assertIn(resource, wheel_names)
             self.assertFalse(any(name.startswith("tests/") for name in wheel_names))
+            self.assertIn("Requires-Dist: tyro>=1.0.15,<2", metadata)
             self.assertEqual(
                 entry_points,
                 "[console_scripts]\nkisesh = kisesh.cli:main\n"
@@ -117,6 +119,8 @@ class PackagingTests(unittest.TestCase):
                     shutil.which("uv") or "uv",
                     "pip",
                     "install",
+                    "--python",
+                    sys.executable,
                     "--offline",
                     "--no-deps",
                     "--target",

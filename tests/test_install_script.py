@@ -5,13 +5,16 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
 PROJECT = Path(__file__).parents[1]
 INSTALL_SCRIPT = PROJECT / "install.sh"
-DEFAULT_PACKAGE_URL = "https://github.com/TolgaOk/kisesh/archive/refs/heads/main.tar.gz"
+README = PROJECT / "README.md"
+RELEASE_TAG = "v0.1.1-beta"
+DEFAULT_PACKAGE_URL = f"https://github.com/TolgaOk/kisesh/archive/refs/tags/{RELEASE_TAG}.tar.gz"
 
 
 class ObservedCommand(TypedDict):
@@ -180,6 +183,23 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands()[0]["args"][-1], DEFAULT_PACKAGE_URL)
         self.assertNotIn("--editable", self.commands()[0]["args"])
+
+    def test_public_install_sources_are_pinned_to_the_release_tag(self) -> None:
+        install_script = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            RELEASE_TAG.removeprefix("v").split("-", 1)[0], project["project"]["version"]
+        )
+        self.assertIn(f"default_package_url={DEFAULT_PACKAGE_URL}", install_script)
+        self.assertIn(
+            f"https://raw.githubusercontent.com/TolgaOk/kisesh/{RELEASE_TAG}/install.sh",
+            readme,
+        )
+        self.assertIn(DEFAULT_PACKAGE_URL, readme)
+        self.assertNotIn("refs/heads/main", install_script + readme)
+        self.assertNotIn("TolgaOk/kisesh/main/install.sh", readme)
 
     def test_missing_uv_uses_a_temporary_pinned_installer(self) -> None:
         curl = self.bin / "curl"

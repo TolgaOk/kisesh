@@ -34,13 +34,13 @@ KiSesh groups native Kitty tabs and panes into named sessions.
 - Nerd Font
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/main/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/v0.1.1-beta/install.sh | sh
 ```
 
 Using `uv`:
 
 ```sh
-uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/archive/refs/heads/main.tar.gz
+uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/archive/refs/tags/v0.1.1-beta.tar.gz
 kisesh install
 ```
 
@@ -64,4 +64,6 @@ match = ["nvim", "nvim-*", "vim", "vi"]
 restore = "captured"
 label = "Vim"
 icon = ""
+
+...
 ```
