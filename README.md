@@ -43,13 +43,13 @@ KiSesh groups native Kitty tabs and panes into named sessions.
 - Nerd Font
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/v0.2.0-alpha/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/v0.1.2-alpha/install.sh | sh
 ```
 
 Using `uv`:
 
 ```sh
-uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/archive/refs/tags/v0.2.0-alpha.tar.gz
+uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/archive/refs/tags/v0.1.2-alpha.tar.gz
 kisesh install
 ```
 

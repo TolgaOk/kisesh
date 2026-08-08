@@ -13,7 +13,7 @@ from typing import NotRequired, TypedDict, cast
 PROJECT = Path(__file__).parents[1]
 INSTALL_SCRIPT = PROJECT / "install.sh"
 README = PROJECT / "README.md"
-RELEASE_TAG = "v0.2.0-alpha"
+RELEASE_TAG = "v0.1.2-alpha"
 DEFAULT_PACKAGE_URL = f"https://github.com/TolgaOk/kisesh/archive/refs/tags/{RELEASE_TAG}.tar.gz"
 
 

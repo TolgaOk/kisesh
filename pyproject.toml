@@ -1,6 +1,6 @@
 [project]
 name = "kisesh"
-version = "0.2.0a0"
+version = "0.1.2a0"
 description = "Kitty-native, recoverable multi-tab session management"
 requires-python = ">=3.11"
 license = "MIT"
