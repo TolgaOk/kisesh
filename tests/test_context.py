@@ -470,7 +470,7 @@ class ContextTests(unittest.TestCase):
         self.assertTrue(restore["auto_run"])
 
     def test_cmd_w_keeps_running_commands_and_both_terminal_buffers(self) -> None:
-        """Model the three-pane xxx session through teardown and first reopen."""
+        """Preserve three running apps through teardown and the first reopen."""
         commands = (("nvim", "."), ("htop",), ("top",))
         windows = [
             {
@@ -530,7 +530,7 @@ class ContextTests(unittest.TestCase):
             )
         self.assertEqual(context["snapshot_revision"], 4)
 
-        snapshot = "new_tab xxx\n" + "launch\n" * len(commands)
+        snapshot = "new_tab Multi App\n" + "launch\n" * len(commands)
         restored = restore_session(snapshot, context)
         for argv in commands:
             self.assertIn(" ".join(argv), restored)

@@ -285,7 +285,7 @@ def _render_fixture(width: int) -> str:
 
 
 class SessionBarRenderingTests(unittest.TestCase):
-    def test_reviewed_wide_and_compact_rows_match_the_golden_render(self) -> None:
+    def test_wide_and_compact_rows_match_golden_render(self) -> None:
         rendered = "\n".join(
             (
                 f"top wide     {_render_fixture(60)}",
@@ -516,7 +516,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         first_active = Datum("Shell", 1, is_active=True)
         first_inactive = first_active._replace(is_active=False)
         second_active = Datum("Tests", 2, is_active=True)
-        variables = {SESSION_ID_VAR: "id", SESSION_NAME_VAR: "Silver Seal"}
+        variables = {SESSION_ID_VAR: "id", SESSION_NAME_VAR: "Research"}
         boss = Boss(
             {
                 1: NativeTab(Window(variables, title="Shell")),
@@ -583,7 +583,7 @@ class SessionBarAdapterTests(unittest.TestCase):
                 (cast(Datum, call[2]).title, cast(Datum, call[2]).is_active)
                 for call in first_drawer.calls
             ],
-            [(" Silver Seal", False), (" Shell", True)],
+            [(" Research", False), (" Shell", True)],
         )
         self.assertEqual(
             first_drawer.colors,
@@ -610,7 +610,7 @@ class SessionBarAdapterTests(unittest.TestCase):
                 (cast(Datum, call[2]).title, cast(Datum, call[2]).is_active)
                 for call in switched_drawer.calls
             ],
-            [(" Silver Seal", False), (" Shell", False), (" Tests", True)],
+            [(" Research", False), (" Shell", False), (" Tests", True)],
         )
         self.assertEqual(
             switched_drawer.colors,
@@ -1054,7 +1054,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             "from types import SimpleNamespace as N; "
             "from kitty.tab_bar import ExtraData,TabBarData; "
             "import kisesh.session_bar as s; "
-            f"v={{'{SESSION_ID_VAR}':'id','{SESSION_NAME_VAR}':'Silver Seal'}}; "
+            f"v={{'{SESSION_ID_VAR}':'id','{SESSION_NAME_VAR}':'Research'}}; "
             "w=N(user_vars=v,child=N(cmdline=('-zsh',)),title='Shell'); "
             "boss=N(tab_for_id={1:[w],2:[w]}.get); "
             "s._kitty_boss=lambda boss=boss:boss; "

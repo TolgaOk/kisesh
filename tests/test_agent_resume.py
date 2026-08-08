@@ -75,7 +75,7 @@ class AgentResumeTests(unittest.TestCase):
                 self.assertIsNone(resume_argv_for_session("claude", value))
 
     def test_two_plain_agents_resolve_to_distinct_exact_sessions(self) -> None:
-        """Model the reported work session without relying on global latest state."""
+        """Resolve two pane-local sessions without relying on global latest state."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             codex = root / "sessions" / f"rollout-now-{CODEX_ID}.jsonl"

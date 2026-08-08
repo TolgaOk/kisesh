@@ -211,8 +211,8 @@ class ContextBoundaryTests(unittest.TestCase):
         orange = "\x1b[38;2;245;130;65m"
         blue_background = "\x1b[48:2::90:170:215m"
         reset = "\x1b[0m"
-        styled_prompt = f"{orange} ~/dotfiles{blue_background}  main {reset}\u276f"
-        hyperlink_open = "\x1b]8;;file:///Users/tok/dotfiles\x1b\\"
+        styled_prompt = f"{orange} ~/project{blue_background}  main {reset}\u276f"
+        hyperlink_open = "\x1b]8;;file:///Users/example/project\x1b\\"
         hyperlink_close = "\x1b]8;;\x1b\\"
         captured = (
             f"{hyperlink_open}{styled_prompt}{hyperlink_close}"

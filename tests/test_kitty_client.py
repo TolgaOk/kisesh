@@ -159,7 +159,7 @@ class KittyClientTests(unittest.TestCase):
                                 "id": 3,
                                 "user_vars": {
                                     SESSION_ID_VAR: "session-id",
-                                    SESSION_SLUG_VAR: "silver-seal",
+                                    SESSION_SLUG_VAR: "research",
                                     SESSION_NAME_VAR: "Old name",
                                     SESSION_SCOPE_VAR: "1",
                                 },
@@ -183,8 +183,8 @@ class KittyClientTests(unittest.TestCase):
         self.assertEqual(tabs[0].session_scope(), "1")
 
         manifest = SessionManifest(
-            name="Silver Seal",
-            slug="silver-seal",
+            name="Research",
+            slug="research",
             project_root="/tmp",
             id="session-id",
         )
@@ -193,7 +193,7 @@ class KittyClientTests(unittest.TestCase):
 
         stamp_command = runner.commands[0]
         self.assertIn(f"{SESSION_ID_VAR}=session-id", stamp_command)
-        self.assertIn(f"{SESSION_NAME_VAR}=Silver Seal", stamp_command)
+        self.assertIn(f"{SESSION_NAME_VAR}=Research", stamp_command)
         scope_command = next(
             command for command in runner.commands if f"{SESSION_SCOPE_VAR}=10" in command
         )

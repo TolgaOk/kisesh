@@ -162,7 +162,7 @@ class TrackingSearchManager(SessionManager):
 
 
 class TuiRenderingTests(unittest.TestCase):
-    def test_sample_manager_matches_reviewed_render(self) -> None:
+    def test_sample_manager_matches_golden_render(self) -> None:
         actual, _, _ = rendered_manager()
         golden = Path(__file__).parent / "golden" / "session-manager-100x16.txt"
         self.assertMultiLineEqual(actual, golden.read_text(encoding="utf-8"))

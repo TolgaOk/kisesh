@@ -912,8 +912,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(pane["terminal_history"], "INITIAL BUFFER\nCLOSE-ONLY BUFFER\n")
         self.assertEqual(pane["alternate_screen_text"], "ACTIVE TOP FRAME\n")
 
-    def test_xxx_cmd_w_restores_three_apps_through_history_backed_shells(self) -> None:
-        """Exercise the reported nvim, htop, and top teardown as one session."""
+    def test_cmd_w_restores_three_apps_through_history_backed_shells(self) -> None:
+        """Restore three allowlisted apps after a complete session teardown."""
         commands = (("nvim", "."), ("htop",), ("top",))
         windows: list[KittyWindow] = []
         for index, argv in enumerate(commands):
@@ -931,11 +931,11 @@ class ServiceTests(unittest.TestCase):
             )
         self.kitty.window = windows[0]
         self.kitty.tab.windows = windows
-        self.kitty.capture_session_text = "new_tab xxx\n" + "launch\n" * len(windows)
+        self.kitty.capture_session_text = "new_tab Multi App\n" + "launch\n" * len(windows)
         self.kitty.terminal_histories = {
             window["id"]: f"{window['title'].upper()} FRAME\n" for window in windows
         }
-        stored = self.service.create_from_active("xxx")
+        stored = self.service.create_from_active("Multi App")
 
         for pane_index, (window, argv) in enumerate(zip(windows, commands, strict=True)):
             self.service.save_closing_pane(
