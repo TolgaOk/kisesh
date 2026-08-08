@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TextIO
+from pathlib import Path
+from typing import TextIO, cast
 
 from .app_profiles import ResumeAdapter
+from .filesystem import atomic_write_text
 
 INVALID_SESSION_START_MESSAGE = "agent SessionStart input is incomplete"
+CLAUDE_HOOK_COMMAND = "kisesh agent-hook claude"
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +23,150 @@ class AgentSessionStart:
     adapter: ResumeAdapter
     external_session_id: str
     window_id: int
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    """Read one optional JSON configuration without accepting scalar roots."""
+    if not path.exists():
+        return {}
+    try:
+        payload: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read agent hook configuration {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"agent hook configuration is not an object: {path}")
+    return payload
+
+
+def _editable_json_path(path: Path) -> Path:
+    """Resolve a configuration symlink so atomic replacement preserves the link."""
+    if not path.is_symlink():
+        return path
+    try:
+        return path.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"cannot resolve agent hook configuration {path}: {error}") from error
+
+
+def _backup_json_once(path: Path) -> None:
+    """Preserve one pre-KiSesh copy before mutating an existing configuration."""
+    if not path.exists():
+        return
+    backup = path.with_name(f"{path.name}.kisesh.bak")
+    if not backup.exists():
+        shutil.copy2(path, backup)
+
+
+def _write_json_object(path: Path, payload: Mapping[str, object]) -> None:
+    """Atomically write a private JSON configuration with stable formatting."""
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+    content = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    atomic_write_text(path, content, mode=mode, prefix=f".{path.name}.kisesh.")
+
+
+def _claude_session_groups(
+    payload: dict[str, object],
+    *,
+    create: bool,
+) -> list[object] | None:
+    """Resolve Claude's SessionStart matcher groups with structural validation."""
+    hooks = payload.get("hooks")
+    if hooks is None:
+        if not create:
+            return None
+        hooks = {}
+        payload["hooks"] = hooks
+    if not isinstance(hooks, dict):
+        raise ValueError("Claude settings hooks must be an object")
+    groups = hooks.get("SessionStart")
+    if groups is None:
+        if not create:
+            return None
+        groups = []
+        hooks["SessionStart"] = groups
+    if not isinstance(groups, list):
+        raise ValueError("Claude SessionStart hooks must be a list")
+    return groups
+
+
+def _claude_group_handlers(group: object) -> list[object]:
+    """Return one Claude matcher group's validated handler list."""
+    if not isinstance(group, dict) or not isinstance((handlers := group.get("hooks")), list):
+        raise ValueError("Claude SessionStart hook groups must contain a hooks list")
+    return handlers
+
+
+def _is_claude_handler(value: object) -> bool:
+    """Identify only KiSesh's exact Claude command handler."""
+    return (
+        isinstance(value, Mapping)
+        and value.get("type") == "command"
+        and value.get("command") == CLAUDE_HOOK_COMMAND
+    )
+
+
+def _has_claude_handler(groups: list[object]) -> bool:
+    """Search validated Claude groups for the exact KiSesh handler."""
+    return any(
+        _is_claude_handler(handler)
+        for group in groups
+        for handler in _claude_group_handlers(group)
+    )
+
+
+def claude_hook_enabled(path: Path) -> bool:
+    """Report whether Claude's user settings contain the KiSesh handler."""
+    editable = _editable_json_path(path)
+    groups = _claude_session_groups(_read_json_object(editable), create=False)
+    return groups is not None and _has_claude_handler(groups)
+
+
+def enable_claude_hook(path: Path) -> bool:
+    """Merge one native Claude SessionStart handler and report whether it changed."""
+    editable = _editable_json_path(path)
+    payload = _read_json_object(editable)
+    groups = _claude_session_groups(payload, create=True)
+    assert groups is not None
+    if _has_claude_handler(groups):
+        return False
+    groups.append({"hooks": [{"type": "command", "command": CLAUDE_HOOK_COMMAND}]})
+    _backup_json_once(editable)
+    _write_json_object(editable, payload)
+    return True
+
+
+def disable_claude_hook(path: Path) -> bool:
+    """Remove only KiSesh's Claude SessionStart handlers if present."""
+    editable = _editable_json_path(path)
+    if not editable.exists():
+        return False
+    payload = _read_json_object(editable)
+    groups = _claude_session_groups(payload, create=False)
+    if groups is None:
+        return False
+    retained_groups: list[object] = []
+    changed = False
+    for group in groups:
+        handlers = _claude_group_handlers(group)
+        retained_handlers = [handler for handler in handlers if not _is_claude_handler(handler)]
+        changed = changed or len(retained_handlers) != len(handlers)
+        if retained_handlers:
+            copied = dict(cast(dict[str, object], group))
+            copied["hooks"] = retained_handlers
+            retained_groups.append(copied)
+    if not changed:
+        return False
+    hooks = payload["hooks"]
+    assert isinstance(hooks, dict)
+    if retained_groups:
+        hooks["SessionStart"] = retained_groups
+    else:
+        hooks.pop("SessionStart", None)
+    if not hooks:
+        payload.pop("hooks")
+    _backup_json_once(editable)
+    _write_json_object(editable, payload)
+    return True
 
 
 def read_session_start(
