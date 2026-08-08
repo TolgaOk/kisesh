@@ -18,6 +18,7 @@ from kisesh.agent_resume import (
     _proc_open_files,
     exact_resume_argv,
     process_open_files,
+    resume_argv_for_session,
     resolve_agent_resumes,
 )
 from kisesh.app_profiles import DEFAULT_APP_PROFILES
@@ -60,6 +61,19 @@ def _write_codex(path: Path, session_id: str, source: object = "cli") -> None:
 
 
 class AgentResumeTests(unittest.TestCase):
+    def test_hook_session_ids_become_only_exact_validated_resume_commands(self) -> None:
+        self.assertEqual(
+            resume_argv_for_session("claude", CLAUDE_ID.upper()),
+            ["claude", "--resume", CLAUDE_ID],
+        )
+        self.assertEqual(
+            resume_argv_for_session("codex", CODEX_ID.upper()),
+            ["codex", "resume", CODEX_ID],
+        )
+        for value in (None, "", "not-a-session", True, 123):
+            with self.subTest(value=value):
+                self.assertIsNone(resume_argv_for_session("claude", value))
+
     def test_two_plain_agents_resolve_to_distinct_exact_sessions(self) -> None:
         """Model the reported work session without relying on global latest state."""
         with tempfile.TemporaryDirectory() as temporary:

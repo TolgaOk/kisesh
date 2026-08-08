@@ -16,8 +16,8 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
-from .agent_resume import AgentResumeResolver, resolve_agent_resumes
-from .app_profiles import DEFAULT_APP_PROFILES, AppProfiles
+from .agent_resume import AgentResumeResolver, resolve_agent_resumes, resume_argv_for_session
+from .app_profiles import DEFAULT_APP_PROFILES, AppProfiles, ResumeAdapter
 from .context import (
     CONTEXT_SCHEMA_VERSION,
     build_context,
@@ -30,7 +30,15 @@ from .context import (
 )
 from .filesystem import temporary_path
 from .kitty_client import KittyClient, KittyController, KittyError, LiveTab
-from .model import ClosingPaneCapture, KittyOsWindowState, SessionContext, SessionManifest, slugify
+from .model import (
+    AGENT_SESSION_VAR,
+    SESSION_ID_VAR,
+    ClosingPaneCapture,
+    KittyOsWindowState,
+    SessionContext,
+    SessionManifest,
+    slugify,
+)
 from .paths import runtime_root
 from .session_file import clean_tab_title, rename_snapshot_tab, sanitize_session, snapshot_summary
 from .store import SessionStore, StoredSession, StoreError
@@ -522,6 +530,52 @@ class KiSeshService:
     def save_current(self) -> StoredSession:
         """Save the session owning the focused source tab."""
         return self.save(self.current_session().manifest.id)
+
+    def record_agent_session_id(
+        self,
+        adapter: ResumeAdapter,
+        external_session_id: object,
+        window_id: int,
+    ) -> StoredSession | None:
+        """Persist one hook-reported agent identity for its exact Kitty pane."""
+        resume_argv = resume_argv_for_session(adapter, external_session_id)
+        if resume_argv is None:
+            raise KiSeshError(f"invalid {adapter} session ID")
+        client = self._kitty()
+        state = client.list_state()
+        tabs = client.tabs(state)
+        matches = [
+            window
+            for tab in tabs
+            for window in tab.windows
+            if window["id"] == window_id
+        ]
+        if len(matches) != 1:
+            raise KiSeshError(f"Kitty pane is unavailable: {window_id}")
+        window = matches[0]
+        session_id = window.get("user_vars", {}).get(SESSION_ID_VAR)
+        canonical_id = resume_argv[-1]
+        client.set_user_vars((window_id,), {AGENT_SESSION_VAR: canonical_id})
+        window.setdefault("user_vars", {})[AGENT_SESSION_VAR] = canonical_id
+        if session_id is None:
+            return None
+        live_tabs = [tab for tab in tabs if tab.session_id() == session_id]
+
+        def merge_agent_identity(existing: SessionContext | None) -> SessionContext:
+            """Refresh live context while carrying its matching layout revision."""
+            context = build_context(
+                live_tabs,
+                existing,
+                profiles=self.profiles,
+                agent_resumes={window_id: resume_argv},
+            )
+            if existing is not None:
+                revision = existing.get("snapshot_revision")
+                if isinstance(revision, int) and not isinstance(revision, bool):
+                    context["snapshot_revision"] = revision
+            return context
+
+        return self.store.update_context(session_id, merge_agent_identity)
 
     def save(
         self,

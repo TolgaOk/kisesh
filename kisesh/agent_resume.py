@@ -41,15 +41,23 @@ def _uuid(value: object) -> str | None:
         return None
 
 
+def resume_argv_for_session(adapter: ResumeAdapter, value: object) -> list[str] | None:
+    """Build one exact resume command from a validated external session UUID."""
+    session_id = _uuid(value)
+    if session_id is None:
+        return None
+    if adapter == "claude":
+        return ["claude", "--resume", session_id]
+    return ["codex", "resume", session_id]
+
+
 def exact_resume_argv(adapter: ResumeAdapter, value: Sequence[str]) -> list[str] | None:
     """Validate and canonicalize an exact adapter-specific resume command."""
     argv = list(value)
     if adapter == "claude" and len(argv) == 3 and argv[:2] == ["claude", "--resume"]:
-        session_id = _uuid(argv[2])
-        return ["claude", "--resume", session_id] if session_id is not None else None
+        return resume_argv_for_session(adapter, argv[2])
     if adapter == "codex" and len(argv) == 3 and argv[:2] == ["codex", "resume"]:
-        session_id = _uuid(argv[2])
-        return ["codex", "resume", session_id] if session_id is not None else None
+        return resume_argv_for_session(adapter, argv[2])
     return None
 
 

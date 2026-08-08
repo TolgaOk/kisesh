@@ -11,6 +11,7 @@ from kisesh.app_profiles import AppProfiles
 from kisesh.context import pane_auto_run_argv
 from kisesh.kitty_client import KittyError, LiveTab
 from kisesh.model import (
+    AGENT_SESSION_VAR,
     SESSION_ID_VAR,
     SESSION_NAME_VAR,
     SESSION_SCOPE_VAR,
@@ -135,6 +136,53 @@ class ServiceTests(unittest.TestCase):
             name,
             UnownedTabsDecision(UnownedTabsAction.ATTACH),
         )
+
+    def test_agent_hook_updates_only_its_pane_and_survives_a_later_save(self) -> None:
+        """Keep same-directory Claude and Codex identities isolated by pane ID."""
+        claude_id = "7f676817-c49e-459c-86de-17382e2170ef"
+        codex_id = "019fd808-918d-7481-b526-c4da01513c42"
+        self.kitty.window.update(
+            {
+                "title": "Claude",
+                "at_prompt": False,
+                "foreground_processes": [{"cmdline": ["claude"], "cwd": "/tmp/project"}],
+            }
+        )
+        codex: KittyWindow = {
+            "id": 12,
+            "title": "Codex",
+            "cwd": "/tmp/project",
+            "user_vars": {},
+            "foreground_processes": [{"cmdline": ["codex"], "cwd": "/tmp/project"}],
+            "at_prompt": False,
+        }
+        self.kitty.tab.windows.append(codex)
+        stored = self.service.create_from_active("Agent Work")
+
+        self.service.record_agent_session_id("claude", claude_id, 11)
+        first = self.store.read_context(stored.manifest.id)
+
+        self.assertIsNotNone(first)
+        assert first is not None
+        self.assertEqual(
+            [command["argv"] for command in first["restore_commands"]],
+            [["claude", "--resume", claude_id], ["codex"]],
+        )
+        self.assertEqual(self.kitty.window["user_vars"].get(AGENT_SESSION_VAR), claude_id)
+        self.assertNotIn(AGENT_SESSION_VAR, codex["user_vars"])
+
+        self.service.record_agent_session_id("codex", codex_id, 12)
+        self.service.save(stored.manifest.id)
+        saved = self.store.read_context(stored.manifest.id)
+
+        self.assertIsNotNone(saved)
+        assert saved is not None
+        self.assertEqual(
+            [command["argv"] for command in saved["restore_commands"]],
+            [["claude", "--resume", claude_id], ["codex", "resume", codex_id]],
+        )
+        with self.assertRaisesRegex(KiSeshError, "Kitty pane is unavailable: 404"):
+            self.service.record_agent_session_id("claude", claude_id, 404)
 
     def test_create_stamps_tab_and_writes_safe_multi_tab_snapshot(self) -> None:
         stored = self.service.create_from_active("My Project")

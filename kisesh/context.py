@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from .agent_resume import exact_resume_argv
+from .agent_resume import exact_resume_argv, resume_argv_for_session
 from .app_profiles import (
     DEFAULT_APP_PROFILES,
     AppProfile,
@@ -22,6 +22,7 @@ from .model import (
     ClosingPaneCapture,
     CommandEvent,
     CommandRecord,
+    AGENT_SESSION_VAR,
     KittyWindow,
     PaneContext,
     RestoreCandidate,
@@ -500,6 +501,22 @@ class _ContextBuilder:
         program = _command_name(argv)
         profile = self.profiles.match(program)
         agent = profile.name if profile is not None and profile.agent else None
+        resolved_resume: Sequence[str] = self.agent_resumes.get(window_id, ())
+        if profile is not None and profile.adapter is not None:
+            marker_resume = resume_argv_for_session(
+                profile.adapter,
+                window.get("user_vars", {}).get(AGENT_SESSION_VAR),
+            )
+            if marker_resume is not None:
+                resolved_resume = marker_resume
+            elif not resolved_resume:
+                prior_restore = _mapping(old.get("restore"))
+                prior_argv = _command_argv(
+                    prior_restore.get("argv") if prior_restore is not None else None
+                )
+                prior_resume = exact_resume_argv(profile.adapter, prior_argv)
+                if prior_resume is not None:
+                    resolved_resume = prior_resume
         alternate_screen = bool(window.get("in_alternate_screen"))
         output, output_command = self._last_output(window, old, events, history)
         screens = self._screens(window_id, old, alternate_screen)
@@ -515,7 +532,7 @@ class _ContextBuilder:
                 argv,
                 profile=profile,
                 default_restore=self.profiles.defaults.restore,
-                resolved_resume=self.agent_resumes.get(window_id, ()),
+                resolved_resume=resolved_resume,
             ),
             "at_prompt": bool(window.get("at_prompt")),
             "alternate_screen": alternate_screen,

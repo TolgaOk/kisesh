@@ -21,7 +21,7 @@ from kisesh.context import (
     update_context_for_closing_pane,
 )
 from kisesh.kitty_client import LiveTab
-from kisesh.model import ClosingPaneCapture, KittyWindow
+from kisesh.model import AGENT_SESSION_VAR, ClosingPaneCapture, KittyWindow
 
 
 def _tab(*windows: Mapping[str, object], title: str = "Work") -> LiveTab:
@@ -38,6 +38,37 @@ def _tab(*windows: Mapping[str, object], title: str = "Work") -> LiveTab:
 
 
 class ContextTests(unittest.TestCase):
+    def test_hook_session_marker_replaces_and_survives_later_agent_autosaves(self) -> None:
+        first_id = "7f676817-c49e-459c-86de-17382e2170ef"
+        second_id = "a76d8108-9f50-449c-b30f-e3cdb5eac4a4"
+        window = {
+            "id": 11,
+            "title": "Claude",
+            "cwd": "/tmp/project",
+            "foreground_processes": [{"cmdline": ["claude"], "pid": 991}],
+            "user_vars": {AGENT_SESSION_VAR: first_id},
+            "at_prompt": False,
+        }
+
+        first = build_context([_tab(window)])
+        window["user_vars"] = {AGENT_SESSION_VAR: second_id}
+        resumed = build_context([_tab(window)], first)
+        window["user_vars"] = {}
+        later_autosave = build_context([_tab(window)], resumed)
+
+        self.assertEqual(
+            first["restore_commands"][0]["argv"],
+            ["claude", "--resume", first_id],
+        )
+        self.assertEqual(
+            resumed["restore_commands"][0]["argv"],
+            ["claude", "--resume", second_id],
+        )
+        self.assertEqual(
+            later_autosave["restore_commands"][0]["argv"],
+            ["claude", "--resume", second_id],
+        )
+
     def test_capture_keeps_completed_history_and_builds_agent_resume_command(self) -> None:
         claude = {
             "id": 11,
