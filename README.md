@@ -25,7 +25,7 @@ KiSesh groups native Kitty tabs and panes into named sessions.
   - prefill **unrecognized** commands and arguments without executing them
   - auto resume `codex`, `claude` sessions
 
-> [!INFO]
+> [!IMPORTANT]
 >
 > Enable `claude` and `codex` session recovery via adding the hooks:
 >
