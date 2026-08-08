@@ -1080,6 +1080,61 @@ class ServiceTests(unittest.TestCase):
             (second.manifest.id, second_tab.tab_id),
         )
 
+    def test_switching_back_to_a_live_session_restores_its_last_focused_tab(self) -> None:
+        first = self.store.create("First Project", "/tmp/first")
+        second = self.store.create("Second Project", "/tmp/second")
+        self.kitty.window["last_focused_at"] = 10.0
+        first_last = LiveTab(
+            1,
+            8,
+            1,
+            "First tests",
+            "splits",
+            [
+                {"id": 12, "last_focused_at": 35.0, "user_vars": {}},
+                {"id": 13, "last_focused_at": 40.0, "user_vars": {}},
+            ],
+        )
+        second_first = LiveTab(
+            1,
+            9,
+            2,
+            "Second editor",
+            "splits",
+            [{"id": 14, "last_focused_at": 20.0, "user_vars": {}}],
+        )
+        second_last = LiveTab(
+            1,
+            10,
+            3,
+            "Second tests",
+            "splits",
+            [{"id": 15, "last_focused_at": 30.0, "user_vars": {}}],
+        )
+        self.kitty.tab.is_focused = False
+        self.kitty.tab.is_active = False
+        self.kitty.stamp_tab(self.kitty.tab, first.manifest)
+        self.kitty.stamp_tab(first_last, first.manifest)
+        self.kitty.stamp_tab(second_first, second.manifest)
+        self.kitty.stamp_tab(second_last, second.manifest)
+        self.kitty.extra_tabs.extend((first_last, second_first, second_last))
+
+        self.kitty.current_tab = second_first
+        self.service.open(first.manifest.id)
+        self.kitty.current_tab = first_last
+        self.service.open(second.manifest.id)
+        self.kitty.current_tab = second_last
+        self.service.open(first.manifest.id)
+
+        self.assertEqual(
+            self.kitty.activated_sessions[-3:],
+            [
+                (first.manifest.id, first_last.tab_id),
+                (second.manifest.id, second_last.tab_id),
+                (first.manifest.id, first_last.tab_id),
+            ],
+        )
+
     def test_save_and_close_preserves_context_before_kill_and_reopens_it(self) -> None:
         self.kitty.window.update(
             {

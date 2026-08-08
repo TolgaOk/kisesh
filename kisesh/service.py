@@ -696,6 +696,10 @@ class KiSeshService:
         stored = self.store.get(slug_or_id)
         client = self._kitty()
         state = client.list_state()
+        source = client.focused_tab(
+            state,
+            exclude_window_id=_environment_window_id(),
+        )
         live_tabs = client.tabs_for_session(stored.manifest.id, state)
         for live_tab in live_tabs:
             client.stamp_tab(live_tab, stored.manifest)
@@ -731,20 +735,19 @@ class KiSeshService:
             live_tabs = [*live_tabs, *unowned_tabs]
 
         if unowned_tabs and action is UnownedTabsAction.ATTACH:
-            active_tab = max(
-                unowned_tabs,
-                key=lambda tab: (tab.is_focused, tab.is_active, -tab.index),
-            )
+            focus_candidates = unowned_tabs
         else:
-            source_os_window_id = unowned_tabs[0].os_window_id if unowned_tabs else None
-            active_tab = next(
-                (
-                    tab
-                    for tab in live_tabs
-                    if source_os_window_id is not None and tab.os_window_id == source_os_window_id
-                ),
-                live_tabs[0],
-            )
+            same_window = [tab for tab in live_tabs if tab.os_window_id == source.os_window_id]
+            focus_candidates = same_window or live_tabs
+        active_tab = max(
+            focus_candidates,
+            key=lambda tab: (
+                tab.is_focused,
+                tab.is_active,
+                _last_focused_at(tab),
+                -tab.index,
+            ),
+        )
         client.activate_session(stored.manifest.id, active_tab)
         if unowned_tabs and action is UnownedTabsAction.DISCARD:
             client.close_tabs(tab.tab_id for tab in unowned_tabs)
