@@ -337,6 +337,13 @@ class SessionManager:
         if self.filtered:
             self.selected = min(self.selected, len(self.filtered) - 1)
 
+    def _refresh_after_close(self, closed: StoredSession) -> None:
+        """Refresh all rows while keeping a completed close authoritative."""
+        self._refresh()
+        row = next(view for view in self.rows if view.stored.manifest.id == closed.manifest.id)
+        row.stored = closed
+        row.live_tabs.clear()
+
     def _draw(self, screen: Screen) -> None:
         """Render the session table, footer, and optional help modal."""
         screen.erase()
@@ -825,7 +832,7 @@ class SessionManager:
             name = current.stored.manifest.name
             if self._confirm(screen, f"save and close {name}?"):
                 closed = self.service.save_and_close(identifier)
-                self._refresh()
+                self._refresh_after_close(closed)
                 self.message = f"saved and closed {closed.manifest.name}"
             return None
         if key == "d" and not current.live:

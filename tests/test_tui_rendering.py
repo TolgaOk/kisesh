@@ -11,6 +11,7 @@ from kisesh.kitty_client import LiveTab
 from kisesh.model import KittyWindow
 from kisesh.service import (
     KiSeshService,
+    SessionView,
     UnownedTabsAction,
     UnownedTabsDecision,
 )
@@ -86,6 +87,37 @@ class RecordingService(StaticService):
         self.removed.append(identifier)
         self._rows = [row for row in self._rows if row.stored.manifest.id != identifier]
         return Path("/tmp/trash") / identifier
+
+
+class StaleCloseRefreshService(RecordingService):
+    """Return one stale live row after an otherwise successful save-close."""
+
+    def __init__(self) -> None:
+        """Initialize normal fixtures and an empty one-shot stale snapshot."""
+        super().__init__()
+        self._stale_session_id: str | None = None
+        self._stale_live_tabs: list[LiveTab] = []
+
+    def save_and_close(self, slug_or_id: str) -> StoredSession:
+        """Close successfully while retaining the pre-close tabs for one refresh."""
+        row = next(view for view in self._rows if view.stored.manifest.id == slug_or_id)
+        self._stale_session_id = row.stored.manifest.id
+        self._stale_live_tabs = list(row.live_tabs)
+        return super().save_and_close(slug_or_id)
+
+    def views(self) -> list[SessionView]:
+        """Model Kitty publishing one stale row immediately after close completion."""
+        rows = super().views()
+        if self._stale_session_id is None:
+            return rows
+        stale_session_id = self._stale_session_id
+        self._stale_session_id = None
+        return [
+            SessionView(view.stored, list(self._stale_live_tabs), view.context)
+            if view.stored.manifest.id == stale_session_id
+            else view
+            for view in rows
+        ]
 
 
 class ScriptedCanvas(Canvas):
@@ -661,6 +693,23 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertEqual(service.closed, [live_id])
         closed_row = next(row for row in manager.filtered if row.stored.manifest.id == live_id)
         self.assertFalse(closed_row.live)
+        self.assertEqual(manager.message, "saved and closed JAX Agents")
+
+    def test_successful_save_close_overrides_one_stale_immediate_refresh(self) -> None:
+        service = StaleCloseRefreshService()
+        manager = SessionManager(service)
+        manager._refresh()
+        live_id = manager.filtered[0].stored.manifest.id
+
+        manager._handle_key(ScriptedCanvas(16, 100, ["y"]), "x")
+        manager.palette = rendered_manager()[2]
+        screen = Canvas(16, 100)
+        manager._draw(screen)
+
+        closed_row = next(row for row in manager.filtered if row.stored.manifest.id == live_id)
+        rendered_row = next(line for line in screen.render().splitlines() if "JAX Agents" in line)
+        self.assertFalse(closed_row.live)
+        self.assertIn("○ JAX Agents", rendered_row)
         self.assertEqual(manager.message, "saved and closed JAX Agents")
 
     def test_real_save_close_waits_for_saved_row_and_preserves_source_session(self) -> None:
