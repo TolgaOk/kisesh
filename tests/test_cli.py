@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
+from kisesh.agent_hooks import claude_hook_enabled, codex_hook_enabled
 from kisesh.app_profiles import DEFAULT_APP_PROFILES
 from kisesh.cli import (
     INVALID_CLOSE_MESSAGE,
@@ -18,6 +19,7 @@ from kisesh.cli import (
     INVALID_PAYLOAD_MESSAGE,
     AddTab,
     AgentHook,
+    Agents,
     ArchiveSession,
     AutosaveSession,
     CliConfig,
@@ -43,6 +45,7 @@ from kisesh.cli import (
     _dispatch,
     _needs_kitty,
     _normalized_events,
+    _run_agents,
     _run_integration,
     _run_lifecycle,
     _run_maintenance,
@@ -149,6 +152,9 @@ class CliTests(unittest.TestCase):
         promoted = parse_arguments(["close", "project", "--promote-os-window", "41"])
         integration = parse_arguments(["install", "--kitty-config", "/tmp/kitty.conf"])
         hook = parse_arguments(["agent-hook", "claude"])
+        agent_actions = [
+            parse_arguments(["agents", action]) for action in ("enable", "status", "disable")
+        ]
 
         self.assertIsInstance(before.command, AddTab)
         self.assertEqual(before.socket, "unix:/tmp/kitty")
@@ -171,6 +177,10 @@ class CliTests(unittest.TestCase):
             Path("/tmp/kitty.conf"),
         )
         self.assertEqual(cast(AgentHook, hook.command).adapter, "claude")
+        self.assertEqual(
+            [cast(Agents, config.command).action for config in agent_actions],
+            ["enable", "status", "disable"],
+        )
 
     def test_only_live_operations_construct_an_eager_kitty_client(self) -> None:
         """Keep stored-context reads offline unless a connection override is explicit."""
@@ -201,6 +211,7 @@ class CliTests(unittest.TestCase):
                 live_service = _service(live)
 
         self.assertFalse(_needs_kitty(ListSessions()))
+        self.assertFalse(_needs_kitty(Agents("status")))
         self.assertTrue(_needs_kitty(Manager()))
         self.assertIsNone(offline_service.kitty)
         tool = offline_service.profiles.named("tool")
@@ -209,6 +220,81 @@ class CliTests(unittest.TestCase):
         self.assertIs(connected_service.kitty, client.return_value)
         self.assertIs(live_service.kitty, client.return_value)
         self.assertEqual(client.call_count, 2)
+
+    def test_agent_management_operates_both_user_configs_without_kitty(self) -> None:
+        """Exercise enable, status, and disable over real isolated config files."""
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = {"HOME": temporary}
+            claude_path = Path(temporary) / ".claude" / "settings.json"
+            codex_path = Path(temporary) / ".codex" / "hooks.json"
+
+            enabled_output = io.StringIO()
+            with redirect_stdout(enabled_output):
+                self.assertEqual(_run_agents(Agents("enable"), environment), 0)
+            self.assertTrue(claude_hook_enabled(claude_path))
+            self.assertTrue(codex_hook_enabled(codex_path))
+            self.assertEqual(
+                enabled_output.getvalue(),
+                "claude: configured\ncodex: configured (review with /hooks)\n",
+            )
+
+            status_output = io.StringIO()
+            with redirect_stdout(status_output):
+                self.assertEqual(_run_agents(Agents("status"), environment), 0)
+            self.assertEqual(status_output.getvalue(), enabled_output.getvalue())
+
+            disabled_output = io.StringIO()
+            with redirect_stdout(disabled_output):
+                self.assertEqual(_run_agents(Agents("disable"), environment), 0)
+            self.assertFalse(claude_hook_enabled(claude_path))
+            self.assertFalse(codex_hook_enabled(codex_path))
+            self.assertEqual(
+                disabled_output.getvalue(),
+                "claude: not configured\ncodex: not configured\n",
+            )
+
+    def test_agent_management_rolls_back_a_half_applied_enable(self) -> None:
+        """Restore Claude exactly when the subsequent Codex mutation is rejected."""
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = {"HOME": temporary}
+            claude_path = Path(temporary) / ".claude" / "settings.json"
+            codex_path = Path(temporary) / ".codex" / "hooks.json"
+            claude_path.parent.mkdir()
+            codex_path.parent.mkdir()
+            original_claude = '{"theme":"dark"}\n'
+            invalid_codex = "[]\n"
+            claude_path.write_text(original_claude, encoding="utf-8")
+            codex_path.write_text(invalid_codex, encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "configuration is not an object"):
+                _run_agents(Agents("enable"), environment)
+
+            self.assertEqual(claude_path.read_text(encoding="utf-8"), original_claude)
+            self.assertEqual(codex_path.read_text(encoding="utf-8"), invalid_codex)
+            self.assertFalse(claude_path.with_name("settings.json.kisesh.bak").exists())
+
+    def test_agent_management_removes_new_files_but_keeps_an_older_backup(self) -> None:
+        """Undo first-use creation without deleting a backup from an earlier install."""
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = {"HOME": temporary}
+            claude_path = Path(temporary) / ".claude" / "settings.json"
+            codex_path = Path(temporary) / ".codex" / "hooks.json"
+            claude_path.parent.mkdir()
+            old_backup = claude_path.with_name("settings.json.kisesh.bak")
+            old_backup.write_text("older settings\n", encoding="utf-8")
+
+            with (
+                mock.patch(
+                    "kisesh.agent_hooks.enable_codex_hook",
+                    side_effect=OSError("codex disk full"),
+                ),
+                self.assertRaisesRegex(OSError, "codex disk full"),
+            ):
+                _run_agents(Agents("enable"), environment)
+
+            self.assertFalse(claude_path.exists())
+            self.assertFalse(codex_path.exists())
+            self.assertEqual(old_backup.read_text(encoding="utf-8"), "older settings\n")
 
     def test_read_commands_render_text_json_context_output_and_shell(self) -> None:
         """Exercise every non-mutating CLI output shape and shell boundary."""
@@ -456,6 +542,7 @@ class CliTests(unittest.TestCase):
             (ArchiveSession("project"), "_run_lifecycle", 14),
             (Doctor(), "_run_maintenance", 15),
             (InstallIntegration(), "_run_integration", 16),
+            (Agents("status"), "_run_agents", 17),
         )
         for command, function_name, result in cases:
             config = CliConfig(command)
@@ -469,7 +556,7 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(_dispatch(config, service), result)
             if isinstance(command, Manager):
                 runner.assert_called_once_with(service)
-            elif isinstance(command, InstallIntegration):
+            elif isinstance(command, (InstallIntegration, Agents)):
                 runner.assert_called_once_with(command)
             else:
                 runner.assert_called_once_with(command, service)

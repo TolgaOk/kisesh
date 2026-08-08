@@ -5,13 +5,20 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 import tyro
 
-from .agent_hooks import read_session_start
+from .agent_hooks import (
+    claude_hook_enabled,
+    codex_hook_enabled,
+    configure_user_agent_hooks,
+    read_session_start,
+    user_agent_hook_paths,
+)
 from .app_profiles import ResumeAdapter, load_app_profiles
 from .context import normalize_command_event, pane_last_command_output
 from .kitty_client import KittyClient, KittyError
@@ -36,6 +43,8 @@ from .tui import SessionManager
 
 PositionalString = Annotated[str, tyro.conf.Positional]
 PositionalResumeAdapter = Annotated[ResumeAdapter, tyro.conf.Positional]
+AgentManagementAction = Literal["enable", "status", "disable"]
+PositionalAgentManagementAction = Annotated[AgentManagementAction, tyro.conf.Positional]
 OptionalUnownedTabsAction = Annotated[
     UnownedTabsAction | None,
     tyro.conf.EnumChoicesFromValues,
@@ -212,6 +221,14 @@ class AgentHook:
 
 
 @dataclass(frozen=True, slots=True)
+class Agents:
+    """Enable, inspect, or disable native agent session-ID hooks."""
+
+    action: PositionalAgentManagementAction
+    """Configuration action to apply to both Claude and Codex."""
+
+
+@dataclass(frozen=True, slots=True)
 class Doctor:
     """Check storage, snapshots, context, and Kitty state."""
 
@@ -270,6 +287,7 @@ Command = (
     ]
     | Annotated[AutosaveSession, tyro.conf.subcommand(name="autosave")]
     | Annotated[AgentHook, tyro.conf.subcommand(name="agent-hook")]
+    | Annotated[Agents, tyro.conf.subcommand(name="agents")]
     | Annotated[Doctor, tyro.conf.subcommand(name="doctor")]
     | Annotated[InstallIntegration, tyro.conf.subcommand(name="install")]
     | Annotated[DisableIntegration, tyro.conf.subcommand(name="disable")]
@@ -324,6 +342,7 @@ def _needs_kitty(command: Command) -> bool:
         ShowContext,
         PrintLastOutput,
         RestoreShell,
+        Agents,
         InstallIntegration,
         DisableIntegration,
         UninstallIntegration,
@@ -510,6 +529,27 @@ def _run_maintenance(command: MaintenanceCommand, service: KiSeshService) -> int
     return int(any(finding.startswith("ERROR") for finding in findings))
 
 
+def _run_agents(
+    command: Agents,
+    environment: Mapping[str, str] | None = None,
+) -> int:
+    """Manage both user-level agent hook files without connecting to Kitty."""
+    paths = user_agent_hook_paths(os.environ if environment is None else environment)
+    if command.action == "enable":
+        configure_user_agent_hooks(paths, enabled=True)
+        claude_enabled = codex_enabled = True
+    elif command.action == "disable":
+        configure_user_agent_hooks(paths, enabled=False)
+        claude_enabled = codex_enabled = False
+    else:
+        claude_enabled = claude_hook_enabled(paths.claude)
+        codex_enabled = codex_hook_enabled(paths.codex)
+    print(f"claude: {'configured' if claude_enabled else 'not configured'}")
+    codex_state = "configured (review with /hooks)" if codex_enabled else "not configured"
+    print(f"codex: {codex_state}")
+    return 0
+
+
 def _run_integration(command: IntegrationCommand) -> int:
     """Translate public lifecycle commands into the reversible installer contract."""
     from .installer import InstallArguments, run
@@ -532,6 +572,8 @@ def _dispatch(config: CliConfig, service: KiSeshService) -> int:
     command = config.command
     if isinstance(command, (InstallIntegration, DisableIntegration, UninstallIntegration)):
         return _run_integration(command)
+    if isinstance(command, Agents):
+        return _run_agents(command)
     if isinstance(command, Manager):
         return _run_manager(service)
     if isinstance(command, (ListSessions, ShowContext, PrintLastOutput, RestoreShell)):

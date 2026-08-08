@@ -14,13 +14,16 @@ from kisesh.agent_hooks import (
     CLAUDE_HOOK_COMMAND,
     CODEX_HOOK_COMMAND,
     INVALID_SESSION_START_MESSAGE,
+    AgentHookPaths,
     claude_hook_enabled,
     codex_hook_enabled,
+    configure_user_agent_hooks,
     disable_claude_hook,
     disable_codex_hook,
     enable_claude_hook,
     enable_codex_hook,
     read_session_start,
+    user_agent_hook_paths,
 )
 from kisesh.app_profiles import ResumeAdapter
 
@@ -52,6 +55,17 @@ class AgentHookTests(unittest.TestCase):
             self.assertEqual(event.adapter, adapter)
             self.assertEqual(event.external_session_id, session_id)
             self.assertEqual(event.window_id, window_id)
+
+    def test_user_hook_paths_are_explicit_and_require_home(self) -> None:
+        """Target only the two documented user-level hook files."""
+        paths = user_agent_hook_paths({"HOME": "/Users/example"})
+
+        self.assertEqual(paths.claude, Path("/Users/example/.claude/settings.json"))
+        self.assertEqual(paths.codex, Path("/Users/example/.codex/hooks.json"))
+        with self.assertRaisesRegex(ValueError, "HOME is unavailable"):
+            user_agent_hook_paths({})
+        with self.assertRaisesRegex(ValueError, "HOME must be an absolute path"):
+            user_agent_hook_paths({"HOME": "relative/home"})
 
     def test_malformed_or_unrelated_events_never_select_a_pane(self) -> None:
         """Reject every missing identity boundary before live Kitty is mutated."""
@@ -252,6 +266,24 @@ class AgentHookTests(unittest.TestCase):
             self.assertFalse(codex_hook_enabled(settings))
             self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), original)
             self.assertFalse(disable_codex_hook(settings))
+
+    def test_transaction_reports_when_automatic_rollback_itself_fails(self) -> None:
+        """Do not hide a failed recovery behind the original provider error."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = AgentHookPaths(root / "claude.json", root / "codex.json")
+            with (
+                mock.patch(
+                    "kisesh.agent_hooks.enable_codex_hook",
+                    side_effect=OSError("provider write failed"),
+                ),
+                mock.patch(
+                    "kisesh.agent_hooks._restore_json",
+                    side_effect=OSError("recovery disk full"),
+                ),
+                self.assertRaisesRegex(OSError, "cannot roll back agent hook configuration"),
+            ):
+                configure_user_agent_hooks(paths, enabled=True)
 
 
 if __name__ == "__main__":

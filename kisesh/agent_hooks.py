@@ -26,6 +26,38 @@ class AgentSessionStart:
     window_id: int
 
 
+@dataclass(frozen=True, slots=True)
+class AgentHookPaths:
+    """Documented user-level Claude and Codex hook configuration paths."""
+
+    claude: Path
+    codex: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _JsonSnapshot:
+    """Recoverable pre-transaction state for one resolved JSON configuration."""
+
+    path: Path
+    content: str | None
+    mode: int | None
+    backup_existed: bool
+
+
+def user_agent_hook_paths(environment: Mapping[str, str]) -> AgentHookPaths:
+    """Resolve agent hook files from an explicit, absolute HOME value."""
+    home_value = environment.get("HOME")
+    if not home_value:
+        raise ValueError("HOME is unavailable")
+    home = Path(home_value)
+    if not home.is_absolute():
+        raise ValueError("HOME must be an absolute path")
+    return AgentHookPaths(
+        home / ".claude" / "settings.json",
+        home / ".codex" / "hooks.json",
+    )
+
+
 def _read_json_object(path: Path) -> dict[str, object]:
     """Read one optional JSON configuration without accepting scalar roots."""
     if not path.exists():
@@ -56,6 +88,39 @@ def _backup_json_once(path: Path) -> None:
     backup = path.with_name(f"{path.name}.kisesh.bak")
     if not backup.exists():
         shutil.copy2(path, backup)
+
+
+def _snapshot_json(path: Path) -> _JsonSnapshot:
+    """Capture one resolved config and whether its one-time backup predates this action."""
+    editable = _editable_json_path(path)
+    backup_existed = editable.with_name(f"{editable.name}.kisesh.bak").exists()
+    if not editable.exists():
+        return _JsonSnapshot(editable, None, None, backup_existed)
+    return _JsonSnapshot(
+        editable,
+        editable.read_text(encoding="utf-8"),
+        editable.stat().st_mode & 0o777,
+        backup_existed,
+    )
+
+
+def _restore_json(snapshot: _JsonSnapshot) -> None:
+    """Restore one config and remove only a backup created by the failed action."""
+    if snapshot.content is None:
+        snapshot.path.unlink(missing_ok=True)
+    elif (
+        not snapshot.path.exists()
+        or snapshot.path.read_text(encoding="utf-8") != snapshot.content
+    ):
+        atomic_write_text(
+            snapshot.path,
+            snapshot.content,
+            mode=snapshot.mode,
+            prefix=f".{snapshot.path.name}.rollback.",
+        )
+    backup = snapshot.path.with_name(f"{snapshot.path.name}.kisesh.bak")
+    if not snapshot.backup_existed:
+        backup.unlink(missing_ok=True)
 
 
 def _write_json_object(path: Path, payload: Mapping[str, object]) -> None:
@@ -199,6 +264,25 @@ def enable_codex_hook(path: Path) -> bool:
 def disable_codex_hook(path: Path) -> bool:
     """Remove only the KiSesh handler from Codex's user hooks."""
     return _disable_hook(path, CODEX_HOOK_COMMAND, "Codex")
+
+
+def configure_user_agent_hooks(paths: AgentHookPaths, *, enabled: bool) -> None:
+    """Enable or disable both user hook files as one recoverable transaction."""
+    snapshots = (_snapshot_json(paths.claude), _snapshot_json(paths.codex))
+    try:
+        if enabled:
+            enable_claude_hook(paths.claude)
+            enable_codex_hook(paths.codex)
+        else:
+            disable_claude_hook(paths.claude)
+            disable_codex_hook(paths.codex)
+    except Exception:
+        try:
+            for snapshot in reversed(snapshots):
+                _restore_json(snapshot)
+        except OSError as rollback_error:
+            raise OSError("cannot roll back agent hook configuration") from rollback_error
+        raise
 
 
 def read_session_start(
