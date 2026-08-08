@@ -20,11 +20,20 @@ KiSesh groups native Kitty tabs and panes into named sessions.
 - Provide `live`, `saved`, `archived` session states
 - Autosave: layout, terminal context, and commands
 - Session recovery (see `apps.toml` for configuring)
-  - auto resume `codex`, `claude` sessions
-  - bring history up to 2000 lines
+  - bring back history up to 2000 lines
   - rerun **recognized** last running command
   - prefill **unrecognized** commands and arguments without executing them
+  - auto resume `codex`, `claude` sessions
 
+> [!INFO]
+>
+> Enable `claude` and `codex` session recovery via adding the hooks:
+>
+> ```sh
+> kisesh agents enable
+> ```
+>
+> Inspect it with `kisesh agents status`; remove it with `kisesh agents disable`.
 
 ## Install
 

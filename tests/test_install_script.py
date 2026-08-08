@@ -189,8 +189,11 @@ class InstallScriptTests(unittest.TestCase):
         readme = README.read_text(encoding="utf-8")
         project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
 
+        package_version = str(project["project"]["version"])
+        self.assertTrue(package_version.endswith("b0"))
         self.assertEqual(
-            RELEASE_TAG.removeprefix("v").split("-", 1)[0], project["project"]["version"]
+            RELEASE_TAG,
+            f"v{package_version.removesuffix('b0')}-beta",
         )
         self.assertIn(f"default_package_url={DEFAULT_PACKAGE_URL}", install_script)
         self.assertIn(

@@ -36,6 +36,8 @@ class PackagingTests(unittest.TestCase):
         lockfile = (PROJECT / "uv.lock").read_text(encoding="utf-8")
 
         self.assertEqual(document["project"]["version"], __version__)
+        self.assertEqual(document["project"]["license"], "MIT")
+        self.assertEqual(document["project"]["license-files"], ["LICENSE"])
         self.assertEqual(
             document["project"]["scripts"],
             {
@@ -81,6 +83,7 @@ class PackagingTests(unittest.TestCase):
             with tarfile.open(source, "r:gz") as archive:
                 source_names = set(archive.getnames())
             for relative in (
+                "LICENSE",
                 "install.sh",
                 "justfile",
                 "kisesh/default_apps.toml",
@@ -93,10 +96,17 @@ class PackagingTests(unittest.TestCase):
             with zipfile.ZipFile(wheel) as archive:
                 wheel_names = set(archive.namelist())
                 metadata = archive.read(f"kisesh-{__version__}.dist-info/METADATA").decode("utf-8")
+                packaged_license = archive.read(
+                    f"kisesh-{__version__}.dist-info/licenses/LICENSE"
+                ).decode("utf-8")
                 entry_points = archive.read(
                     f"kisesh-{__version__}.dist-info/entry_points.txt"
                 ).decode("utf-8")
             self.assertIn("kisesh/default_apps.toml", wheel_names)
+            self.assertEqual(
+                packaged_license,
+                (PROJECT / "LICENSE").read_text(encoding="utf-8"),
+            )
             for resource in (
                 "kisesh/integration/actions.py",
                 "kisesh/integration/kisesh.conf",
@@ -107,6 +117,8 @@ class PackagingTests(unittest.TestCase):
                 self.assertIn(resource, wheel_names)
             self.assertFalse(any(name.startswith("tests/") for name in wheel_names))
             self.assertIn("Requires-Dist: tyro>=1.0.15,<2", metadata)
+            self.assertIn("License-Expression: MIT", metadata)
+            self.assertIn("License-File: LICENSE", metadata)
             self.assertEqual(
                 entry_points,
                 "[console_scripts]\nkisesh = kisesh.cli:main\n"
