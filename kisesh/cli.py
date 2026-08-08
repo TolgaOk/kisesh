@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,8 @@ from typing import Annotated, cast
 
 import tyro
 
-from .app_profiles import load_app_profiles
+from .agent_hooks import read_session_start
+from .app_profiles import ResumeAdapter, load_app_profiles
 from .context import normalize_command_event, pane_last_command_output
 from .kitty_client import KittyClient, KittyError
 from .model import ClosingPaneCapture, CommandEvent, JsonObject, KittyWindow
@@ -33,6 +35,7 @@ from .store import SessionStore, StoreError
 from .tui import SessionManager
 
 PositionalString = Annotated[str, tyro.conf.Positional]
+PositionalResumeAdapter = Annotated[ResumeAdapter, tyro.conf.Positional]
 OptionalUnownedTabsAction = Annotated[
     UnownedTabsAction | None,
     tyro.conf.EnumChoicesFromValues,
@@ -201,6 +204,14 @@ class AutosaveSession:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentHook:
+    """Record an internal Claude or Codex SessionStart hook event."""
+
+    adapter: PositionalResumeAdapter
+    """Agent provider that emitted the standard-input payload."""
+
+
+@dataclass(frozen=True, slots=True)
 class Doctor:
     """Check storage, snapshots, context, and Kitty state."""
 
@@ -258,6 +269,7 @@ Command = (
         tyro.conf.subcommand(name="remove", aliases=("trash",)),
     ]
     | Annotated[AutosaveSession, tyro.conf.subcommand(name="autosave")]
+    | Annotated[AgentHook, tyro.conf.subcommand(name="agent-hook")]
     | Annotated[Doctor, tyro.conf.subcommand(name="doctor")]
     | Annotated[InstallIntegration, tyro.conf.subcommand(name="install")]
     | Annotated[DisableIntegration, tyro.conf.subcommand(name="disable")]
@@ -267,7 +279,7 @@ Command = (
 ReadCommand = ListSessions | ShowContext | PrintLastOutput | RestoreShell
 MembershipCommand = CreateSession | AddTab | DetachTab | CopyTab | OpenSession | CloseSession
 LifecycleCommand = RenameSession | ArchiveSession | UnarchiveSession | RemoveSession
-MaintenanceCommand = AutosaveSession | Doctor
+MaintenanceCommand = AutosaveSession | AgentHook | Doctor
 IntegrationCommand = InstallIntegration | DisableIntegration | UninstallIntegration
 
 
@@ -478,6 +490,14 @@ def _autosave_payload_from_stdin(
 
 def _run_maintenance(command: MaintenanceCommand, service: KiSeshService) -> int:
     """Execute watcher autosave or diagnostic maintenance."""
+    if isinstance(command, AgentHook):
+        event = read_session_start(command.adapter, sys.stdin, os.environ)
+        service.record_agent_session_id(
+            event.adapter,
+            event.external_session_id,
+            event.window_id,
+        )
+        return 0
     if isinstance(command, AutosaveSession):
         events, closing_pane = _autosave_payload_from_stdin(command.payload_stdin)
         if closing_pane is None:

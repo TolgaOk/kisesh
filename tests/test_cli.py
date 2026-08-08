@@ -17,6 +17,7 @@ from kisesh.cli import (
     INVALID_EVENTS_MESSAGE,
     INVALID_PAYLOAD_MESSAGE,
     AddTab,
+    AgentHook,
     ArchiveSession,
     AutosaveSession,
     CliConfig,
@@ -147,6 +148,7 @@ class CliTests(unittest.TestCase):
         discard = parse_arguments(["open", "project", "--unowned-tabs", "discard"])
         promoted = parse_arguments(["close", "project", "--promote-os-window", "41"])
         integration = parse_arguments(["install", "--kitty-config", "/tmp/kitty.conf"])
+        hook = parse_arguments(["agent-hook", "claude"])
 
         self.assertIsInstance(before.command, AddTab)
         self.assertEqual(before.socket, "unix:/tmp/kitty")
@@ -168,6 +170,7 @@ class CliTests(unittest.TestCase):
             cast(InstallIntegration, integration.command).kitty_config,
             Path("/tmp/kitty.conf"),
         )
+        self.assertEqual(cast(AgentHook, hook.command).adapter, "claude")
 
     def test_only_live_operations_construct_an_eager_kitty_client(self) -> None:
         """Keep stored-context reads offline unless a connection override is explicit."""
@@ -413,6 +416,28 @@ class CliTests(unittest.TestCase):
         ):
             self.assertEqual(_run_maintenance(AutosaveSession("session-id", True), service), 0)
         raw.save_closing_pane.assert_called_once_with("session-id", close)
+
+        hook_output = io.StringIO()
+        with (
+            mock.patch(
+                "sys.stdin",
+                _stdin_payload(
+                    {
+                        "hook_event_name": "SessionStart",
+                        "session_id": "7f676817-c49e-459c-86de-17382e2170ef",
+                    }
+                ),
+            ),
+            mock.patch.dict("os.environ", {"KITTY_WINDOW_ID": "17"}, clear=True),
+            redirect_stdout(hook_output),
+        ):
+            self.assertEqual(_run_maintenance(AgentHook("claude"), service), 0)
+        raw.record_agent_session_id.assert_called_once_with(
+            "claude",
+            "7f676817-c49e-459c-86de-17382e2170ef",
+            17,
+        )
+        self.assertEqual(hook_output.getvalue(), "")
 
         for findings, expected in ((["OK storage"], 0), (["ERROR broken"], 1)):
             raw.doctor.return_value = findings
