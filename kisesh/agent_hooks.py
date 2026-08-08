@@ -14,6 +14,7 @@ from .filesystem import atomic_write_text
 
 INVALID_SESSION_START_MESSAGE = "agent SessionStart input is incomplete"
 CLAUDE_HOOK_COMMAND = "kisesh agent-hook claude"
+CODEX_HOOK_COMMAND = "kisesh agent-hook codex"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,12 +65,13 @@ def _write_json_object(path: Path, payload: Mapping[str, object]) -> None:
     atomic_write_text(path, content, mode=mode, prefix=f".{path.name}.kisesh.")
 
 
-def _claude_session_groups(
+def _session_groups(
     payload: dict[str, object],
     *,
     create: bool,
+    product: str,
 ) -> list[object] | None:
-    """Resolve Claude's SessionStart matcher groups with structural validation."""
+    """Resolve one product's SessionStart groups with structural validation."""
     hooks = payload.get("hooks")
     if hooks is None:
         if not create:
@@ -77,7 +79,7 @@ def _claude_session_groups(
         hooks = {}
         payload["hooks"] = hooks
     if not isinstance(hooks, dict):
-        raise ValueError("Claude settings hooks must be an object")
+        raise ValueError(f"{product} settings hooks must be an object")
     groups = hooks.get("SessionStart")
     if groups is None:
         if not create:
@@ -85,70 +87,70 @@ def _claude_session_groups(
         groups = []
         hooks["SessionStart"] = groups
     if not isinstance(groups, list):
-        raise ValueError("Claude SessionStart hooks must be a list")
+        raise ValueError(f"{product} SessionStart hooks must be a list")
     return groups
 
 
-def _claude_group_handlers(group: object) -> list[object]:
-    """Return one Claude matcher group's validated handler list."""
+def _group_handlers(group: object, product: str) -> list[object]:
+    """Return one matcher group's validated hook-handler list."""
     if not isinstance(group, dict) or not isinstance((handlers := group.get("hooks")), list):
-        raise ValueError("Claude SessionStart hook groups must contain a hooks list")
+        raise ValueError(f"{product} SessionStart hook groups must contain a hooks list")
     return handlers
 
 
-def _is_claude_handler(value: object) -> bool:
-    """Identify only KiSesh's exact Claude command handler."""
+def _is_handler(value: object, command: str) -> bool:
+    """Identify only KiSesh's exact command hook handler."""
     return (
         isinstance(value, Mapping)
         and value.get("type") == "command"
-        and value.get("command") == CLAUDE_HOOK_COMMAND
+        and value.get("command") == command
     )
 
 
-def _has_claude_handler(groups: list[object]) -> bool:
-    """Search validated Claude groups for the exact KiSesh handler."""
+def _has_handler(groups: list[object], command: str, product: str) -> bool:
+    """Search validated groups for one exact KiSesh handler."""
     return any(
-        _is_claude_handler(handler)
+        _is_handler(handler, command)
         for group in groups
-        for handler in _claude_group_handlers(group)
+        for handler in _group_handlers(group, product)
     )
 
 
-def claude_hook_enabled(path: Path) -> bool:
-    """Report whether Claude's user settings contain the KiSesh handler."""
+def _hook_enabled(path: Path, command: str, product: str) -> bool:
+    """Report whether one agent configuration contains its KiSesh handler."""
     editable = _editable_json_path(path)
-    groups = _claude_session_groups(_read_json_object(editable), create=False)
-    return groups is not None and _has_claude_handler(groups)
+    groups = _session_groups(_read_json_object(editable), create=False, product=product)
+    return groups is not None and _has_handler(groups, command, product)
 
 
-def enable_claude_hook(path: Path) -> bool:
-    """Merge one native Claude SessionStart handler and report whether it changed."""
+def _enable_hook(path: Path, command: str, product: str) -> bool:
+    """Merge one native SessionStart handler and report whether it changed."""
     editable = _editable_json_path(path)
     payload = _read_json_object(editable)
-    groups = _claude_session_groups(payload, create=True)
+    groups = _session_groups(payload, create=True, product=product)
     assert groups is not None
-    if _has_claude_handler(groups):
+    if _has_handler(groups, command, product):
         return False
-    groups.append({"hooks": [{"type": "command", "command": CLAUDE_HOOK_COMMAND}]})
+    groups.append({"hooks": [{"type": "command", "command": command}]})
     _backup_json_once(editable)
     _write_json_object(editable, payload)
     return True
 
 
-def disable_claude_hook(path: Path) -> bool:
-    """Remove only KiSesh's Claude SessionStart handlers if present."""
+def _disable_hook(path: Path, command: str, product: str) -> bool:
+    """Remove only one exact KiSesh SessionStart handler if present."""
     editable = _editable_json_path(path)
     if not editable.exists():
         return False
     payload = _read_json_object(editable)
-    groups = _claude_session_groups(payload, create=False)
+    groups = _session_groups(payload, create=False, product=product)
     if groups is None:
         return False
     retained_groups: list[object] = []
     changed = False
     for group in groups:
-        handlers = _claude_group_handlers(group)
-        retained_handlers = [handler for handler in handlers if not _is_claude_handler(handler)]
+        handlers = _group_handlers(group, product)
+        retained_handlers = [handler for handler in handlers if not _is_handler(handler, command)]
         changed = changed or len(retained_handlers) != len(handlers)
         if retained_handlers:
             copied = dict(cast(dict[str, object], group))
@@ -167,6 +169,36 @@ def disable_claude_hook(path: Path) -> bool:
     _backup_json_once(editable)
     _write_json_object(editable, payload)
     return True
+
+
+def claude_hook_enabled(path: Path) -> bool:
+    """Report whether Claude's user settings contain the KiSesh handler."""
+    return _hook_enabled(path, CLAUDE_HOOK_COMMAND, "Claude")
+
+
+def enable_claude_hook(path: Path) -> bool:
+    """Merge the KiSesh handler into Claude's user settings."""
+    return _enable_hook(path, CLAUDE_HOOK_COMMAND, "Claude")
+
+
+def disable_claude_hook(path: Path) -> bool:
+    """Remove only the KiSesh handler from Claude's user settings."""
+    return _disable_hook(path, CLAUDE_HOOK_COMMAND, "Claude")
+
+
+def codex_hook_enabled(path: Path) -> bool:
+    """Report whether Codex's user hooks contain the KiSesh handler."""
+    return _hook_enabled(path, CODEX_HOOK_COMMAND, "Codex")
+
+
+def enable_codex_hook(path: Path) -> bool:
+    """Merge the KiSesh handler into Codex's user hooks."""
+    return _enable_hook(path, CODEX_HOOK_COMMAND, "Codex")
+
+
+def disable_codex_hook(path: Path) -> bool:
+    """Remove only the KiSesh handler from Codex's user hooks."""
+    return _disable_hook(path, CODEX_HOOK_COMMAND, "Codex")
 
 
 def read_session_start(

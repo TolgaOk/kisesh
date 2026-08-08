@@ -12,10 +12,14 @@ from unittest import mock
 
 from kisesh.agent_hooks import (
     CLAUDE_HOOK_COMMAND,
+    CODEX_HOOK_COMMAND,
     INVALID_SESSION_START_MESSAGE,
     claude_hook_enabled,
+    codex_hook_enabled,
     disable_claude_hook,
+    disable_codex_hook,
     enable_claude_hook,
+    enable_codex_hook,
     read_session_start,
 )
 from kisesh.app_profiles import ResumeAdapter
@@ -204,6 +208,50 @@ class AgentHookTests(unittest.TestCase):
             ):
                 enable_claude_hook(settings)
             self.assertEqual(settings.read_text(encoding="utf-8"), original)
+
+    def test_codex_enable_is_reversible_idempotent_and_preserves_other_hooks(self) -> None:
+        """Merge the user-level Codex hook without disturbing its lifecycle config."""
+        session_end_hooks: list[dict[str, object]] = [
+            {
+                "hooks": [{"type": "command", "command": "archive-notes", "timeout": 3}]
+            }
+        ]
+        original: dict[str, object] = {
+            "description": "Personal lifecycle hooks",
+            "hooks": {"SessionEnd": session_end_hooks},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = Path(temporary) / ".codex" / "hooks.json"
+            settings.parent.mkdir()
+            settings.write_text(json.dumps(original, indent=2) + "\n", encoding="utf-8")
+
+            self.assertTrue(enable_codex_hook(settings))
+            enabled_text = settings.read_text(encoding="utf-8")
+            enabled = json.loads(enabled_text)
+
+            self.assertTrue(codex_hook_enabled(settings))
+            self.assertEqual(
+                enabled,
+                {
+                    **original,
+                    "hooks": {
+                        "SessionEnd": session_end_hooks,
+                        "SessionStart": [
+                            {
+                                "hooks": [
+                                    {"type": "command", "command": CODEX_HOOK_COMMAND}
+                                ]
+                            }
+                        ],
+                    },
+                },
+            )
+            self.assertFalse(enable_codex_hook(settings))
+            self.assertEqual(settings.read_text(encoding="utf-8"), enabled_text)
+            self.assertTrue(disable_codex_hook(settings))
+            self.assertFalse(codex_hook_enabled(settings))
+            self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), original)
+            self.assertFalse(disable_codex_hook(settings))
 
 
 if __name__ == "__main__":
