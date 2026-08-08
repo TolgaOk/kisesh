@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Mapping
@@ -17,15 +16,14 @@ from kisesh.close_guard import (
     CloseGuardWindow,
     CloseRequest,
     TabOwnership,
+    _close_command,
+    _close_finished,
     _confirmed_close,
-    _launch_close,
     _pending_sessions,
     _release_session,
     _reserve_session,
-    _run_close_request,
     _string_mapping,
     _tab_ownership,
-    _wait_for_close,
     _window_environment,
     request_tab_close,
 )
@@ -71,6 +69,12 @@ class Confirmation:
     keyword_arguments: dict[str, object]
 
 
+@dataclass(slots=True)
+class BackgroundRequest:
+    command: list[str]
+    keyword_arguments: dict[str, object]
+
+
 class FakeBoss:
     def __init__(self, active_tab: FakeTab | None, tabs: list[FakeTab] | None = None) -> None:
         self.active_tab = active_tab
@@ -82,11 +86,14 @@ class FakeBoss:
         self.closed_tabs: list[int] = []
         self.closed_windows = 0
         self.confirmations: list[Confirmation] = []
+        self.background_requests: list[BackgroundRequest] = []
+        self.errors: list[tuple[str, str]] = []
         self.prompt = FakeWindow(999, overlay_parent=1)
         self.reject_match = False
         self.reject_close_tab = False
         self.reject_close_window = False
         self.reject_confirmation = False
+        self.reject_background = False
 
     def match_tabs(self, expression: str) -> list[FakeTab]:
         self.assert_expression(expression)
@@ -140,6 +147,43 @@ class FakeBoss:
         confirmation = self.confirmations[-1]
         confirmation.callback(confirmed, *confirmation.args)
 
+    def run_background_process(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        notify_on_death: Callable[[int, Exception | None], None] | None = None,
+        stdout: int | None = None,
+        stderr: int | None = None,
+    ) -> None:
+        if self.reject_background:
+            raise OSError("cannot launch")
+        self.background_requests.append(
+            BackgroundRequest(
+                command,
+                {
+                    "cwd": cwd,
+                    "env": env,
+                    "notify_on_death": notify_on_death,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                },
+            )
+        )
+
+    def finish_background(
+        self,
+        exit_status: int,
+        error: Exception | None = None,
+    ) -> None:
+        callback = self.background_requests[-1].keyword_arguments["notify_on_death"]
+        assert callable(callback)
+        callback(exit_status, error)
+
+    def show_error(self, title: str, message: str) -> None:
+        self.errors.append((title, message))
+
 
 class BrokenMapping:
     def get(self, key: int) -> FakeWindow | None:
@@ -162,31 +206,6 @@ class FlakyTab(FakeTab):
 class BrokenTab(FakeTab):
     def __iter__(self) -> Iterator[FakeWindow]:
         raise RuntimeError("tab unavailable")
-
-
-class FakeProcess:
-    def __init__(self, failure: BaseException | None = None) -> None:
-        self.failure = failure
-        self.waited = False
-
-    def wait(self) -> int:
-        self.waited = True
-        if self.failure is not None:
-            raise self.failure
-        return 0
-
-
-class DeferredThread:
-    def __init__(self, target: Callable[..., None], args: tuple[object, ...]) -> None:
-        self.target = target
-        self.args = args
-        self.started = False
-
-    def start(self) -> None:
-        self.started = True
-
-    def run(self) -> None:
-        self.target(*self.args)
 
 
 def owned_window(
@@ -338,44 +357,44 @@ class CloseGuardTests(unittest.TestCase):
             boss.reject_close_window = True
             route_close(11, boss)
 
-    def test_confirmed_close_launches_once_and_releases_only_after_process_exit(self) -> None:
+    def test_confirmed_close_uses_kitty_lifecycle_and_releases_only_after_exit(self) -> None:
         tab = FakeTab(7, 41, [owned_window()])
         boss = FakeBoss(tab)
-        process = FakeProcess()
-        threads: list[DeferredThread] = []
 
-        def thread_factory(
-            *,
-            target: Callable[..., None],
-            args: tuple[object, ...],
-            daemon: bool,
-        ) -> DeferredThread:
-            self.assertTrue(daemon)
-            thread = DeferredThread(target, args)
-            threads.append(thread)
-            return thread
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            launcher = runtime / "bin" / "kisesh"
+            launcher.parent.mkdir()
+            launcher.touch()
+            with mock.patch("kisesh.close_guard.runtime_root", return_value=runtime):
+                route_close(11, boss)
+                boss.answer(True)
+                route_close(11, boss)
+                self.assertEqual(len(boss.confirmations), 1)
+                self.assertEqual(len(boss.background_requests), 1)
+                boss.finish_background(0)
+                route_close(11, boss)
 
-        with (
-            mock.patch("kisesh.close_guard._launch_close", return_value=process) as launch,
-            mock.patch("kisesh.close_guard.threading.Thread", side_effect=thread_factory),
-        ):
-            route_close(11, boss)
-            boss.answer(True)
-            route_close(11, boss)
-            self.assertEqual(len(boss.confirmations), 1)
-            threads[0].run()
-            route_close(11, boss)
-
-        request = cast(CloseRequest, launch.call_args.args[0])
-        self.assertEqual(request.session_id, "session-a")
-        self.assertEqual(request.os_window_id, 41)
-        self.assertEqual(request.environment["KITTY_LISTEN_ON"], "unix:/tmp/kitty.sock")
-        self.assertTrue(threads[0].started)
-        self.assertTrue(process.waited)
+            background = boss.background_requests[0]
+            self.assertEqual(
+                background.command,
+                [
+                    str(launcher),
+                    "--socket",
+                    "unix:/tmp/kitty.sock",
+                    "close",
+                    "session-a",
+                    "--promote-os-window",
+                    "41",
+                ],
+            )
+            self.assertEqual(background.keyword_arguments["cwd"], str(runtime))
+        environment = cast(dict[str, str], background.keyword_arguments["env"])
+        self.assertEqual(environment["KITTY_LISTEN_ON"], "unix:/tmp/kitty.sock")
         self.assertEqual(len(boss.confirmations), 2)
+        self.assertEqual(boss.errors, [])
 
-    def test_close_process_uses_exact_shell_free_cli_arguments_and_socket_priority(self) -> None:
-        process = cast(subprocess.Popen[str], mock.MagicMock())
+    def test_close_command_is_shell_free_and_prefers_the_explicit_socket(self) -> None:
         environment = {
             "KISESH_TARGET_SOCKET": "unix:/tmp/preferred.sock",
             "KITTY_LISTEN_ON": "unix:/tmp/fallback.sock",
@@ -387,17 +406,14 @@ class CloseGuardTests(unittest.TestCase):
             launcher = runtime / "bin" / "kisesh"
             launcher.parent.mkdir()
             launcher.touch()
-            with (
-                mock.patch("kisesh.close_guard.runtime_root", return_value=runtime),
-                mock.patch("kisesh.close_guard.subprocess.Popen", return_value=process) as popen,
-            ):
-                result = _launch_close(request)
+            with mock.patch("kisesh.close_guard.runtime_root", return_value=runtime):
+                command = _close_command(request)
+                without_socket = _close_command(CloseRequest("session-b", 9, {}))
 
-            self.assertIs(result, process)
-            command = popen.call_args.args[0]
             self.assertEqual(
-                command[-6:],
+                command,
                 [
+                    str(launcher),
                     "--socket",
                     "unix:/tmp/preferred.sock",
                     "close",
@@ -406,73 +422,55 @@ class CloseGuardTests(unittest.TestCase):
                     "41",
                 ],
             )
-            self.assertNotIn("shell", popen.call_args.kwargs)
-            self.assertEqual(popen.call_args.kwargs["env"], environment)
-            self.assertTrue(popen.call_args.kwargs["start_new_session"])
-
-            without_socket = CloseRequest("session-b", 9, {})
-            with (
-                mock.patch("kisesh.close_guard.runtime_root", return_value=runtime),
-                mock.patch("kisesh.close_guard.subprocess.Popen", return_value=process) as popen,
-            ):
-                _launch_close(without_socket)
             self.assertEqual(
-                popen.call_args.args[0][-4:],
-                ["close", "session-b", "--promote-os-window", "9"],
+                without_socket,
+                [str(launcher), "close", "session-b", "--promote-os-window", "9"],
             )
 
-    def test_process_confirmation_and_wait_failures_release_the_guard(self) -> None:
-        request = CloseRequest("session-a", 1, {})
+    def test_cancel_launch_and_child_failures_release_guard_and_report_errors(self) -> None:
+        tab = FakeTab(7, 41, [owned_window()])
+        request = CloseRequest("session-a", 41, {})
+        boss = FakeBoss(tab)
+
         self.assertTrue(_reserve_session(request.session_id))
-        with mock.patch("kisesh.close_guard._launch_close", return_value=None):
-            _run_close_request(request)
-        self.assertTrue(_reserve_session(request.session_id))
-        _release_session(request.session_id)
+        _confirmed_close(False, request, cast(CloseGuardBoss, boss))
+        self.assertNotIn(request.session_id, _pending_sessions)
+
+        with mock.patch(
+            "kisesh.close_guard.runtime_root",
+            return_value=Path("/definitely/missing/kisesh"),
+        ):
+            route_close(11, boss)
+            boss.answer(True)
+        self.assertEqual(
+            boss.errors[-1],
+            ("KiSesh close failed", "The installed kisesh launcher is unavailable."),
+        )
+        self.assertNotIn(request.session_id, _pending_sessions)
 
         with tempfile.TemporaryDirectory() as directory:
             runtime = Path(directory)
             launcher = runtime / "bin" / "kisesh"
             launcher.parent.mkdir()
             launcher.touch()
-            with (
-                mock.patch("kisesh.close_guard.runtime_root", return_value=runtime),
-                mock.patch(
-                    "kisesh.close_guard.subprocess.Popen",
-                    side_effect=OSError("cannot fork"),
-                ),
-            ):
-                self.assertIsNone(_launch_close(request))
-        with mock.patch(
-            "kisesh.close_guard.runtime_root",
-            return_value=Path("/definitely/missing/kisesh"),
-        ):
-            self.assertIsNone(_launch_close(request))
-
-        for failure in (OSError("lost child"), subprocess.SubprocessError("broken child")):
-            process = FakeProcess(failure)
-            self.assertTrue(_reserve_session(request.session_id))
-            _wait_for_close(request.session_id, cast(subprocess.Popen[str], process))
-            self.assertTrue(process.waited)
-            self.assertTrue(_reserve_session(request.session_id))
-            _release_session(request.session_id)
-
-        self.assertTrue(_reserve_session(request.session_id))
-        _confirmed_close(False, request)
+            boss.reject_background = True
+            with mock.patch("kisesh.close_guard.runtime_root", return_value=runtime):
+                route_close(11, boss)
+                boss.answer(True)
+        self.assertIn("cannot launch", boss.errors[-1][1])
         self.assertNotIn(request.session_id, _pending_sessions)
 
-    def test_thread_start_confirmation_and_prompt_marker_failures_do_not_close_tabs(self) -> None:
-        request = CloseRequest("session-a", 1, {})
-        thread = mock.MagicMock()
-        thread.start.side_effect = RuntimeError("thread unavailable")
         self.assertTrue(_reserve_session(request.session_id))
-        with (
-            mock.patch("kisesh.close_guard._launch_close") as launch,
-            mock.patch("kisesh.close_guard.threading.Thread", return_value=thread),
-        ):
-            _confirmed_close(True, request)
+        _close_finished(7, None, request, cast(CloseGuardBoss, boss))
+        self.assertIn("status 7", boss.errors[-1][1])
         self.assertNotIn(request.session_id, _pending_sessions)
-        launch.assert_not_called()
 
+        self.assertTrue(_reserve_session(request.session_id))
+        _close_finished(1, OSError("lost child"), request, cast(CloseGuardBoss, boss))
+        self.assertIn("lost child", boss.errors[-1][1])
+        self.assertNotIn(request.session_id, _pending_sessions)
+
+    def test_confirmation_and_prompt_marker_failures_do_not_close_tabs(self) -> None:
         for reject_confirmation, reject_marker in ((True, False), (False, True)):
             tab = FakeTab(7, 1, [owned_window()])
             boss = FakeBoss(tab)

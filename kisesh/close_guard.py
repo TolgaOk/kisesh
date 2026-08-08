@@ -8,6 +8,8 @@ import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
 from typing import Protocol
 
 from .model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SLUG_VAR
@@ -73,6 +75,21 @@ class CloseGuardBoss(Protocol):
         title: str = "",
     ) -> CloseGuardWindow:
         """Open a native confirmation overlay and invoke its callback."""
+
+    def run_background_process(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        notify_on_death: Callable[[int, Exception | None], None] | None = None,
+        stdout: int | None = None,
+        stderr: int | None = None,
+    ) -> None:
+        """Launch a child owned and monitored by Kitty's main process."""
+
+    def show_error(self, title: str, message: str) -> None:
+        """Show one native Kitty error overlay."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,8 +173,8 @@ def _release_session(session_id: str) -> None:
         _pending_sessions.discard(session_id)
 
 
-def _launch_close(request: CloseRequest) -> subprocess.Popen[str] | None:
-    """Launch the shell-free save-close operation without blocking Kitty."""
+def _close_command(request: CloseRequest) -> list[str] | None:
+    """Build the shell-free save-close command for the installed runtime."""
     project = runtime_root()
     launcher = project / "bin" / "kisesh"
     if not launcher.is_file():
@@ -176,55 +193,55 @@ def _launch_close(request: CloseRequest) -> subprocess.Popen[str] | None:
             str(request.os_window_id),
         )
     )
-    try:
-        process: subprocess.Popen[str] = subprocess.Popen(
-            command,
-            cwd=project,
-            env=request.environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            text=True,
-        )
-    except OSError:
-        return None
-    return process
+    return command
 
 
-def _wait_for_close(session_id: str, process: subprocess.Popen[str]) -> None:
-    """Hold the close reservation until its isolated CLI process exits."""
-    try:
-        process.wait()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    finally:
-        _release_session(session_id)
-
-
-def _run_close_request(request: CloseRequest) -> None:
-    """Launch and track one reserved close entirely within its worker thread."""
-    process = _launch_close(request)
-    if process is None:
-        _release_session(request.session_id)
+def _close_finished(
+    exit_status: int,
+    error: Exception | None,
+    request: CloseRequest,
+    boss: CloseGuardBoss,
+) -> None:
+    """Release one native child reservation and surface every failed close."""
+    _release_session(request.session_id)
+    if exit_status == 0 and error is None:
         return
-    _wait_for_close(request.session_id, process)
+    message = str(error).strip() if error is not None else ""
+    if not message:
+        message = f"The save-and-close process exited with status {exit_status}."
+    with suppress(Exception):
+        boss.show_error("KiSesh close failed", message)
 
 
-def _confirmed_close(confirmed: bool, request: CloseRequest) -> None:
-    """Launch a confirmed close or release its reservation after cancellation."""
+def _confirmed_close(
+    confirmed: bool,
+    request: CloseRequest,
+    boss: CloseGuardBoss,
+) -> None:
+    """Delegate an accepted final close to Kitty's monitored child lifecycle."""
     if not confirmed:
         _release_session(request.session_id)
         return
-    waiter = threading.Thread(
-        target=_run_close_request,
-        args=(request,),
-        daemon=True,
-    )
+    command = _close_command(request)
+    if command is None:
+        _close_finished(
+            1,
+            FileNotFoundError("The installed kisesh launcher is unavailable."),
+            request,
+            boss,
+        )
+        return
     try:
-        waiter.start()
-    except RuntimeError:
-        _release_session(request.session_id)
+        boss.run_background_process(
+            command,
+            cwd=str(Path(command[0]).parent.parent),
+            env=request.environment,
+            notify_on_death=partial(_close_finished, request=request, boss=boss),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as error:
+        _close_finished(1, error, request, boss)
 
 
 def _close_transient_window(boss: CloseGuardBoss, window: CloseGuardWindow) -> bool:
@@ -293,6 +310,7 @@ def _request_tracked_close(
             f'Save and close the final tab of "{label}"?',
             _confirmed_close,
             request,
+            boss,
             window=window,
             confirm_on_cancel=False,
             confirm_on_accept=False,
