@@ -130,11 +130,7 @@ class AgentHookTests(unittest.TestCase):
                     "hooks": {
                         "SessionStart": [
                             session_hook,
-                            {
-                                "hooks": [
-                                    {"type": "command", "command": CLAUDE_HOOK_COMMAND}
-                                ]
-                            },
+                            {"hooks": [{"type": "command", "command": CLAUDE_HOOK_COMMAND}]},
                         ],
                         "PostToolUse": [post_tool_hook],
                     },
@@ -226,9 +222,7 @@ class AgentHookTests(unittest.TestCase):
     def test_codex_enable_is_reversible_idempotent_and_preserves_other_hooks(self) -> None:
         """Merge the user-level Codex hook without disturbing its lifecycle config."""
         session_end_hooks: list[dict[str, object]] = [
-            {
-                "hooks": [{"type": "command", "command": "archive-notes", "timeout": 3}]
-            }
+            {"hooks": [{"type": "command", "command": "archive-notes", "timeout": 3}]}
         ]
         original: dict[str, object] = {
             "description": "Personal lifecycle hooks",
@@ -251,11 +245,7 @@ class AgentHookTests(unittest.TestCase):
                     "hooks": {
                         "SessionEnd": session_end_hooks,
                         "SessionStart": [
-                            {
-                                "hooks": [
-                                    {"type": "command", "command": CODEX_HOOK_COMMAND}
-                                ]
-                            }
+                            {"hooks": [{"type": "command", "command": CODEX_HOOK_COMMAND}]}
                         ],
                     },
                 },

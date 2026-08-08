@@ -544,12 +544,7 @@ class KiSeshService:
         client = self._kitty()
         state = client.list_state()
         tabs = client.tabs(state)
-        matches = [
-            window
-            for tab in tabs
-            for window in tab.windows
-            if window["id"] == window_id
-        ]
+        matches = [window for tab in tabs for window in tab.windows if window["id"] == window_id]
         if len(matches) != 1:
             raise KiSeshError(f"Kitty pane is unavailable: {window_id}")
         window = matches[0]

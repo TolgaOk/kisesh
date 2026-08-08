@@ -168,6 +168,7 @@ class ServiceTests(unittest.TestCase):
             [command["argv"] for command in first["restore_commands"]],
             [["claude", "--resume", claude_id], ["codex"]],
         )
+        self.assertEqual(first.get("snapshot_revision"), stored.manifest.revision)
         self.assertEqual(self.kitty.window["user_vars"].get(AGENT_SESSION_VAR), claude_id)
         self.assertNotIn(AGENT_SESSION_VAR, codex["user_vars"])
 
@@ -183,6 +184,72 @@ class ServiceTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(KiSeshError, "Kitty pane is unavailable: 404"):
             self.service.record_agent_session_id("claude", claude_id, 404)
+
+    def test_agent_hook_validates_before_mutation_and_carries_an_unowned_marker(self) -> None:
+        """Reject bad IDs, then retain a valid pre-session identity through Save As."""
+        claude_id = "7f676817-c49e-459c-86de-17382e2170ef"
+        self.kitty.window.update(
+            {
+                "title": "Claude",
+                "at_prompt": False,
+                "foreground_processes": [{"cmdline": ["claude"], "cwd": "/tmp/project"}],
+            }
+        )
+
+        with self.assertRaisesRegex(KiSeshError, "invalid claude session ID"):
+            self.service.record_agent_session_id("claude", "not-a-session", 11)
+        self.assertEqual(self.kitty.user_var_updates, [])
+
+        self.assertIsNone(self.service.record_agent_session_id("claude", claude_id, 11))
+        self.assertEqual(self.kitty.window["user_vars"].get(AGENT_SESSION_VAR), claude_id)
+
+        stored = self.service.create_from_active("Later Attached")
+        context = self.store.read_context(stored.manifest.id)
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(
+            context["restore_commands"][0]["argv"],
+            [
+                "claude",
+                "--resume",
+                claude_id,
+            ],
+        )
+
+    def test_agent_hook_rebuilds_missing_or_unversioned_context(self) -> None:
+        """Persist an exact identity even when prior context is absent or legacy-shaped."""
+        first_id = "7f676817-c49e-459c-86de-17382e2170ef"
+        second_id = "019fd808-918d-7481-b526-c4da01513c42"
+        self.kitty.window.update(
+            {
+                "title": "Claude",
+                "at_prompt": False,
+                "foreground_processes": [{"cmdline": ["claude"], "cwd": "/tmp/project"}],
+            }
+        )
+        stored = self.service.create_from_active("Agent Work")
+        stored.context_path.unlink()
+
+        self.service.record_agent_session_id("claude", first_id, 11)
+        rebuilt = self.store.read_context(stored.manifest.id)
+
+        self.assertIsNotNone(rebuilt)
+        assert rebuilt is not None
+        self.assertNotIn("snapshot_revision", rebuilt)
+        rebuilt["snapshot_revision"] = True
+        self.store.write_context(stored.manifest.id, rebuilt)
+
+        self.service.record_agent_session_id("claude", second_id, 11)
+        updated = self.store.read_context(stored.manifest.id)
+
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertNotIn("snapshot_revision", updated)
+        self.assertEqual(
+            updated["restore_commands"][0]["argv"],
+            ["claude", "--resume", second_id],
+        )
 
     def test_create_stamps_tab_and_writes_safe_multi_tab_snapshot(self) -> None:
         stored = self.service.create_from_active("My Project")

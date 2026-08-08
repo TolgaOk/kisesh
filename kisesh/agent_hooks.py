@@ -109,8 +109,7 @@ def _restore_json(snapshot: _JsonSnapshot) -> None:
     if snapshot.content is None:
         snapshot.path.unlink(missing_ok=True)
     elif (
-        not snapshot.path.exists()
-        or snapshot.path.read_text(encoding="utf-8") != snapshot.content
+        not snapshot.path.exists() or snapshot.path.read_text(encoding="utf-8") != snapshot.content
     ):
         atomic_write_text(
             snapshot.path,

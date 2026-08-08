@@ -18,8 +18,8 @@ from kisesh.agent_resume import (
     _proc_open_files,
     exact_resume_argv,
     process_open_files,
-    resume_argv_for_session,
     resolve_agent_resumes,
+    resume_argv_for_session,
 )
 from kisesh.app_profiles import DEFAULT_APP_PROFILES
 from kisesh.kitty_client import LiveTab

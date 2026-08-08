@@ -19,10 +19,10 @@ from .app_profiles import (
 )
 from .kitty_client import LiveTab
 from .model import (
+    AGENT_SESSION_VAR,
     ClosingPaneCapture,
     CommandEvent,
     CommandRecord,
-    AGENT_SESSION_VAR,
     KittyWindow,
     PaneContext,
     RestoreCandidate,
