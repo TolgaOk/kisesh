@@ -1,48 +1,56 @@
-version = 1
+version = 2
 
 # Unknown foreground apps are typed at the restored prompt but never submitted.
-# App modes: resume normalizes a supported agent; captured reuses captured argv;
-# configured uses argv below; prefill types without Enter; ignore restores no app.
+# Agents and regular apps share presentation fields but have distinct restore rules.
 [defaults]
 restore = "prefill"
 label = "App"
 icon = ""
 
-[apps.aider]
+[agents.aider]
 match = ["aider", "aider-*"]
 restore = "captured"
 label = "Aider"
 icon = "󰚩"
-agent = true
+
+[agents.claude]
+match = ["claude", "claude-*"]
+restore = "resume"
+adapter = "claude"
+label = "Claude"
+icon = "✻"
+
+[agents.codex]
+match = ["codex", "codex-*"]
+restore = "resume"
+adapter = "codex"
+label = "Codex"
+icon = "󰋙"
+
+[agents.gemini]
+match = ["gemini", "gemini-*"]
+restore = "captured"
+label = "Gemini"
+icon = "✦"
+
+[agents.opencode]
+match = ["opencode", "opencode-*"]
+restore = "captured"
+label = "OpenCode"
+icon = "󰅩"
+
+[agents.pi]
+match = ["pi"]
+restore = "resume"
+adapter = "pi"
+label = "Pi"
+icon = "π"
 
 [apps.btop]
 match = ["btop"]
 restore = "captured"
 label = "btop"
 icon = "󰍛"
-
-[apps.claude]
-match = ["claude", "claude-*"]
-restore = "resume"
-adapter = "claude"
-label = "Claude"
-icon = "✻"
-agent = true
-
-[apps.codex]
-match = ["codex", "codex-*"]
-restore = "resume"
-adapter = "codex"
-label = "Codex"
-icon = "󰋙"
-agent = true
-
-[apps.gemini]
-match = ["gemini", "gemini-*"]
-restore = "captured"
-label = "Gemini"
-icon = "✦"
-agent = true
 
 [apps.helix]
 match = ["helix", "hx"]
@@ -68,17 +76,9 @@ restore = "captured"
 label = "Vim"
 icon = ""
 
-[apps.opencode]
-match = ["opencode", "opencode-*"]
-restore = "captured"
-label = "OpenCode"
-icon = "󰅩"
-agent = true
-
 [apps.top]
 match = ["top"]
 restore = "configured"
-# Use exact argv for deterministic tools whose transient flags should not return.
 argv = ["top"]
 label = "top"
 icon = "󰍛"

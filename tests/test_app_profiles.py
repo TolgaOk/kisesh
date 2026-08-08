@@ -5,12 +5,19 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from kisesh import app_profiles, session_bar
 from kisesh.app_profiles import (
     DEFAULT_APP_PROFILES,
     AppProfileError,
+    CapturedRestore,
+    ConfiguredRestore,
+    IgnoreRestore,
+    PrefillRestore,
+    ResumeRestore,
     app_config_path,
     current_app_profiles,
     load_app_profiles,
@@ -28,20 +35,19 @@ from kisesh.store import StoredSession
 PROJECT = Path(__file__).parents[1]
 
 CUSTOM_CONFIG = """\
-version = 1
+version = 2
 
 [defaults]
 restore = "prefill"
 label = "Unknown"
 icon = "?"
 
-[apps.claude]
+[agents.claude]
 match = ["claude", "claude-*"]
 restore = "resume"
 adapter = "claude"
 label = "Claude Custom"
 icon = "C"
-agent = true
 
 [apps.custom]
 match = ["custom", "custom-*"]
@@ -70,7 +76,7 @@ icon = "I"
 """
 
 
-def _document(apps: str, *, defaults: str | None = None, version: str = "1") -> str:
+def _document(apps: str, *, defaults: str | None = None, version: str = "2") -> str:
     """Build one complete TOML document around a focused validation case."""
     default_table = defaults or 'restore = "prefill"\nlabel = "App"\nicon = "?"'
     return f"version = {version}\n\n[defaults]\n{default_table}\n\n{apps}"
@@ -90,18 +96,31 @@ def _window(window_id: int, *argv: str) -> KittyWindow:
 class AppProfileBehaviorTests(unittest.TestCase):
     """Exercise profiles through capture, restore, preview, and native rendering."""
 
-    def test_bundled_profiles_cover_common_apps_and_use_the_hexagon_codex_icon(self) -> None:
+    def test_bundled_profiles_cover_apps_and_resumable_agents(self) -> None:
         """Ship a populated, ordered config with safe unmatched behavior."""
         codex = DEFAULT_APP_PROFILES.match("/opt/homebrew/bin/CODEX-nightly")
+        pi = DEFAULT_APP_PROFILES.named("pi")
         top = DEFAULT_APP_PROFILES.named("TOP")
 
-        self.assertEqual(DEFAULT_APP_PROFILES.defaults.restore, "prefill")
+        self.assertIsInstance(DEFAULT_APP_PROFILES.defaults.restore, PrefillRestore)
         self.assertEqual(DEFAULT_APP_PROFILES.defaults.icon, "")
         self.assertIsNotNone(codex)
         self.assertEqual(codex.icon if codex is not None else None, "󰋙")
-        self.assertTrue(codex.agent if codex is not None else False)
+        self.assertEqual(codex.kind if codex is not None else None, "agent")
+        self.assertEqual(pi.kind if pi is not None else None, "agent")
+        self.assertEqual(pi.icon if pi is not None else None, "π")
+        self.assertEqual(
+            pi.restore.adapter
+            if pi is not None and isinstance(pi.restore, ResumeRestore)
+            else None,
+            "pi",
+        )
         self.assertIsNotNone(top)
-        self.assertEqual(top.argv if top is not None else (), ("top",))
+        self.assertIsInstance(top.restore if top is not None else None, ConfiguredRestore)
+        configured = top.restore if top is not None else None
+        self.assertEqual(
+            configured.argv if isinstance(configured, ConfiguredRestore) else (), ("top",)
+        )
         self.assertIsNone(DEFAULT_APP_PROFILES.match(None))
         self.assertIsNone(DEFAULT_APP_PROFILES.match("python"))
         self.assertIsNone(DEFAULT_APP_PROFILES.named(None))
@@ -215,6 +234,29 @@ class AppProfileBehaviorTests(unittest.TestCase):
 class AppProfileBoundaryTests(unittest.TestCase):
     """Cover malformed files and every path-resolution and cache boundary."""
 
+    def test_closed_parser_types_reject_unrecognized_runtime_variants(self) -> None:
+        """Fail closed if an internal parser contract returns an unknown variant."""
+        unknown_mode = cast(app_profiles.RestoreMode, "unknown")
+        with mock.patch.object(app_profiles, "_restore_mode", return_value=unknown_mode):
+            for parser in (
+                app_profiles._app_restore,
+                app_profiles._agent_restore,
+                app_profiles._v1_restore,
+            ):
+                with self.subTest(parser=parser.__name__), self.assertRaises(AssertionError):
+                    parser({}, "profiles.invalid")
+
+        defaults = {"restore": "prefill", "label": "App", "icon": "?"}
+        unknown_document = cast(
+            app_profiles._SchemaV1 | app_profiles._SchemaV2,
+            SimpleNamespace(defaults=defaults),
+        )
+        with (
+            mock.patch.object(app_profiles, "_schema_document", return_value=unknown_document),
+            self.assertRaises(AssertionError),
+        ):
+            parse_app_profiles("version = 2")
+
     def test_path_precedence_and_loader_fallback_are_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -279,7 +321,7 @@ class AppProfileBoundaryTests(unittest.TestCase):
         )
         cases = {
             "invalid TOML": "version = [",
-            "version must be 1": _document(valid_app, version="true"),
+            "version must be 1 or 2": _document(valid_app, version="true"),
             "unknown field": _document(valid_app) + "\nunexpected = true\n",
             "defaults must be a TOML table": "version = 1\napps = {}\n",
             "defaults has unknown field": _document(
@@ -308,14 +350,17 @@ class AppProfileBoundaryTests(unittest.TestCase):
             "invalid app profile name: 'Tool'": _document(
                 '[apps.Tool]\nmatch = ["tool"]\nrestore = "captured"\n'
             ),
-            "apps.tool has unknown field": _document(valid_app + "extra = true\n"),
+            "unknown field: extra": _document(valid_app + "extra = true\n"),
             "apps.tool.restore": _document('[apps.tool]\nmatch = ["tool"]\n'),
-            "apps.tool.adapter": _document(
-                '[apps.tool]\nmatch = ["tool"]\nrestore = "resume"\nadapter = "other"\n'
+            "cannot be resume": _document('[apps.tool]\nmatch = ["tool"]\nrestore = "resume"\n'),
+            "agents.tool.adapter": _document(
+                '[agents.tool]\nmatch = ["tool"]\nrestore = "resume"\nadapter = "other"\n'
             ),
-            "adapter is required": _document('[apps.tool]\nmatch = ["tool"]\nrestore = "resume"\n'),
+            "adapter is required": _document(
+                '[agents.tool]\nmatch = ["tool"]\nrestore = "resume"\n'
+            ),
             "adapter is only valid": _document(
-                '[apps.tool]\nmatch = ["tool"]\nrestore = "captured"\nadapter = "claude"\n'
+                '[agents.tool]\nmatch = ["tool"]\nrestore = "captured"\nadapter = "claude"\n'
             ),
             "argv is required": _document(
                 '[apps.tool]\nmatch = ["tool"]\nrestore = "configured"\n'
@@ -323,8 +368,11 @@ class AppProfileBoundaryTests(unittest.TestCase):
             "argv is only valid": _document(
                 '[apps.tool]\nmatch = ["tool"]\nrestore = "captured"\nargv = ["tool"]\n'
             ),
-            "agent must be": _document(
-                '[apps.tool]\nmatch = ["tool"]\nrestore = "captured"\nagent = "yes"\n'
+            "unknown field: agent": _document(
+                '[apps.tool]\nmatch = ["tool"]\nrestore = "captured"\nagent = true\n'
+            ),
+            "cannot be configured": _document(
+                '[agents.tool]\nmatch = ["tool"]\nrestore = "configured"\n'
             ),
             "nonempty bounded string array": _document(
                 '[apps.tool]\nmatch = []\nrestore = "captured"\n'
@@ -333,9 +381,20 @@ class AppProfileBoundaryTests(unittest.TestCase):
             "executable basenames only": _document(
                 '[apps.tool]\nmatch = ["/usr/bin/tool"]\nrestore = "captured"\n'
             ),
-            "duplicate app match": _document(
+            "duplicate match": _document(
                 '[apps.one]\nmatch = ["Tool"]\nrestore = "captured"\n'
                 '[apps.two]\nmatch = ["tool"]\nrestore = "captured"\n'
+            ),
+            "duplicate profile name": _document(
+                '[apps.tool]\nmatch = ["tool"]\nrestore = "captured"\n'
+                '[agents.tool]\nmatch = ["agent"]\nrestore = "captured"\n'
+            ),
+            "invalid agent profile name": _document(
+                '[agents."Bad Name"]\nmatch = ["agent"]\nrestore = "captured"\n'
+            ),
+            "agents must be a TOML table": (
+                'version = 2\nagents = "wrong"\n'
+                '[defaults]\nrestore = "prefill"\nlabel = "App"\nicon = "?"\n'
             ),
         }
         for message, content in cases.items():
@@ -374,6 +433,115 @@ class AppProfileBoundaryTests(unittest.TestCase):
             app_profiles._display_text("x" * 65, "label", maximum=64)
         with self.assertRaisesRegex(AppProfileError, "invalid app profile name"):
             parse_app_profiles(_document('[apps.""]\nmatch = ["x"]\nrestore = "captured"\n'))
+
+    def test_version_one_profiles_remain_readable_without_weakening_version_two(self) -> None:
+        """Normalize version-one agents while keeping version-two namespaces strict."""
+        version_one = _document(
+            '[apps.claude]\nmatch = ["claude"]\nrestore = "resume"\n'
+            'adapter = "claude"\nagent = true\n'
+            '[apps.nvim]\nmatch = ["nvim"]\nrestore = "captured"\n'
+            '[apps.top]\nmatch = ["top"]\nrestore = "configured"\nargv = ["top"]\n'
+            '[apps.note]\nmatch = ["note"]\nrestore = "prefill"\n'
+            '[apps.ignored]\nmatch = ["ignored"]\nrestore = "ignore"\n',
+            version="1",
+        )
+        profiles = parse_app_profiles(version_one)
+
+        claude = profiles.named("claude")
+        nvim = profiles.named("nvim")
+        top = profiles.named("top")
+        note = profiles.named("note")
+        ignored = profiles.named("ignored")
+        self.assertEqual(claude.kind if claude is not None else None, "agent")
+        self.assertEqual(nvim.kind if nvim is not None else None, "app")
+        self.assertIsInstance(nvim.restore if nvim is not None else None, CapturedRestore)
+        self.assertIsInstance(top.restore if top is not None else None, ConfiguredRestore)
+        self.assertIsInstance(note.restore if note is not None else None, PrefillRestore)
+        self.assertIsInstance(ignored.restore if ignored is not None else None, IgnoreRestore)
+
+        invalid_v1_profiles = (
+            (
+                "argv is only valid",
+                '[apps.tool]\nmatch = ["tool"]\nrestore = "resume"\n'
+                'adapter = "claude"\nargv = ["tool"]\n',
+            ),
+            ("adapter is required", '[apps.tool]\nmatch = ["tool"]\nrestore = "resume"\n'),
+            (
+                "adapter is only valid",
+                '[apps.tool]\nmatch = ["tool"]\nrestore = "configured"\n'
+                'adapter = "claude"\nargv = ["tool"]\n',
+            ),
+            (
+                "argv is required",
+                '[apps.tool]\nmatch = ["tool"]\nrestore = "configured"\n',
+            ),
+            (
+                "adapter is only valid",
+                '[apps.tool]\nmatch = ["tool"]\nrestore = "captured"\nadapter = "claude"\n',
+            ),
+            (
+                "argv is only valid",
+                '[apps.tool]\nmatch = ["tool"]\nrestore = "captured"\nargv = ["tool"]\n',
+            ),
+            (
+                "agent must be",
+                '[apps.tool]\nmatch = ["tool"]\nrestore = "captured"\nagent = "yes"\n',
+            ),
+        )
+        for expected, profile in invalid_v1_profiles:
+            with self.subTest(expected=expected), self.assertRaisesRegex(AppProfileError, expected):
+                parse_app_profiles(_document(profile, version="1"))
+
+        with self.assertRaisesRegex(AppProfileError, "unknown field"):
+            parse_app_profiles(
+                _document(
+                    '[agents.claude]\nmatch = ["claude"]\nrestore = "resume"\n'
+                    'adapter = "claude"\nagent = true\n'
+                )
+            )
+
+    def test_agents_can_choose_non_resuming_restore_policies_without_adapter_state(self) -> None:
+        """Represent safe agent commands without inventing a resumable session adapter."""
+        profiles = parse_app_profiles(
+            _document(
+                '[agents.capture]\nmatch = ["capture-agent"]\nrestore = "captured"\n'
+                '[agents.note]\nmatch = ["note-agent"]\nrestore = "prefill"\n'
+                '[agents.ignored]\nmatch = ["ignored-agent"]\nrestore = "ignore"\n'
+            )
+        )
+
+        capture = profiles.named("capture")
+        note = profiles.named("note")
+        ignored = profiles.named("ignored")
+        self.assertIsInstance(capture.restore if capture is not None else None, CapturedRestore)
+        self.assertIsInstance(note.restore if note is not None else None, PrefillRestore)
+        self.assertIsInstance(ignored.restore if ignored is not None else None, IgnoreRestore)
+        self.assertTrue(
+            all(
+                profile is not None and profile.kind == "agent"
+                for profile in (capture, note, ignored)
+            )
+        )
+
+    def test_agent_profiles_take_precedence_over_broad_regular_app_patterns(self) -> None:
+        """Keep agent identity and resume semantics when a generic app glob also matches."""
+        profiles = parse_app_profiles(
+            _document(
+                '[apps.command]\nmatch = ["*"]\nrestore = "captured"\n'
+                '[agents.claude]\nmatch = ["claude"]\nrestore = "resume"\n'
+                'adapter = "claude"\n'
+            )
+        )
+
+        claude = profiles.match("claude")
+        shell_command = profiles.match("rg")
+        self.assertEqual(claude.kind if claude is not None else None, "agent")
+        self.assertIsInstance(claude.restore if claude is not None else None, ResumeRestore)
+        self.assertEqual(shell_command.kind if shell_command is not None else None, "app")
+        self.assertIsInstance(
+            shell_command.restore if shell_command is not None else None,
+            CapturedRestore,
+        )
 
     def test_process_cache_falls_back_on_bad_user_edits_and_refreshes_on_demand(self) -> None:
         custom = parse_app_profiles(CUSTOM_CONFIG)

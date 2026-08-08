@@ -138,9 +138,10 @@ class ServiceTests(unittest.TestCase):
         )
 
     def test_agent_hook_updates_only_its_pane_and_survives_a_later_save(self) -> None:
-        """Keep same-directory Claude and Codex identities isolated by pane ID."""
+        """Keep same-directory agent identities isolated by pane ID."""
         claude_id = "7f676817-c49e-459c-86de-17382e2170ef"
         codex_id = "019fd808-918d-7481-b526-c4da01513c42"
+        pi_id = "b624c385-95da-4626-9aeb-8b4f54e31dc2"
         self.kitty.window.update(
             {
                 "title": "Claude",
@@ -156,7 +157,15 @@ class ServiceTests(unittest.TestCase):
             "foreground_processes": [{"cmdline": ["codex"], "cwd": "/tmp/project"}],
             "at_prompt": False,
         }
-        self.kitty.tab.windows.append(codex)
+        pi: KittyWindow = {
+            "id": 13,
+            "title": "Pi",
+            "cwd": "/tmp/project",
+            "user_vars": {},
+            "foreground_processes": [{"cmdline": ["pi"], "cwd": "/tmp/project"}],
+            "at_prompt": False,
+        }
+        self.kitty.tab.windows.extend((codex, pi))
         stored = self.service.create_from_active("Agent Work")
 
         self.service.record_agent_session_id("claude", claude_id, 11)
@@ -166,13 +175,15 @@ class ServiceTests(unittest.TestCase):
         assert first is not None
         self.assertEqual(
             [command["argv"] for command in first["restore_commands"]],
-            [["claude", "--resume", claude_id], ["codex"]],
+            [["claude", "--resume", claude_id], ["codex"], ["pi"]],
         )
         self.assertEqual(first.get("snapshot_revision"), stored.manifest.revision)
         self.assertEqual(self.kitty.window["user_vars"].get(AGENT_SESSION_VAR), claude_id)
         self.assertNotIn(AGENT_SESSION_VAR, codex["user_vars"])
+        self.assertNotIn(AGENT_SESSION_VAR, pi["user_vars"])
 
         self.service.record_agent_session_id("codex", codex_id, 12)
+        self.service.record_agent_session_id("pi", pi_id, 13)
         self.service.save(stored.manifest.id)
         saved = self.store.read_context(stored.manifest.id)
 
@@ -180,7 +191,11 @@ class ServiceTests(unittest.TestCase):
         assert saved is not None
         self.assertEqual(
             [command["argv"] for command in saved["restore_commands"]],
-            [["claude", "--resume", claude_id], ["codex", "resume", codex_id]],
+            [
+                ["claude", "--resume", claude_id],
+                ["codex", "resume", codex_id],
+                ["pi", "--session", pi_id],
+            ],
         )
         with self.assertRaisesRegex(KiSeshError, "Kitty pane is unavailable: 404"):
             self.service.record_agent_session_id("claude", claude_id, 404)

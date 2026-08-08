@@ -181,7 +181,7 @@ class TuiRenderingTests(unittest.TestCase):
         claude_x = lines[editor_row + 1].index("✻")
         self.assertEqual(
             canvas.styles[editor_row + 1][claude_x],
-            palette.accent | curses.A_BOLD,
+            palette.good | curses.A_BOLD,
         )
 
     def test_selected_live_session_uses_current_agents_focus_and_attention(self) -> None:
@@ -207,10 +207,15 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertIn(" n  new", navigation)
         self.assertIn(" x  save+close", navigation)
         agent_row = next(index for index, line in enumerate(lines) if "󰋙 Codex" in line)
+        claude_x = lines[agent_row].index("✻")
         codex_x = lines[agent_row].index("󰋙")
         self.assertEqual(
-            screen.styles[agent_row][codex_x],
+            screen.styles[agent_row][claude_x],
             palette.good | curses.A_BOLD,
+        )
+        self.assertEqual(
+            screen.styles[agent_row][codex_x],
+            palette.accent | curses.A_BOLD,
         )
         attention_row = next(index for index, line in enumerate(lines) if "󰍛 top !" in line)
         attention_x = lines[attention_row].index("top")

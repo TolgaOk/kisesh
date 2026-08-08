@@ -9,9 +9,12 @@ import shutil
 import subprocess
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
+from typing import assert_never
 
-from .app_profiles import AppProfiles, ResumeAdapter
+from .app_profiles import AppProfile, AppProfiles, ResumeAdapter, ResumeRestore
 from .kitty_client import LiveTab
 
 ResumeCommands = dict[int, list[str]]
@@ -31,6 +34,16 @@ _CLAUDE_TRANSCRIPT = re.compile(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _LiveAgentProcess:
+    """Identify one resumable foreground agent and its owning Kitty pane."""
+
+    window_id: int
+    pid: int
+    adapter: ResumeAdapter
+    argv: tuple[str, ...]
+
+
 def _uuid(value: object) -> str | None:
     """Return one canonical UUID string or reject malformed session metadata."""
     if not isinstance(value, str):
@@ -46,47 +59,94 @@ def resume_argv_for_session(adapter: ResumeAdapter, value: object) -> list[str] 
     session_id = _uuid(value)
     if session_id is None:
         return None
-    if adapter == "claude":
-        return ["claude", "--resume", session_id]
-    return ["codex", "resume", session_id]
+    return _resume_argv(adapter, session_id)
+
+
+def _resume_argv(adapter: ResumeAdapter, session_id: str) -> list[str]:
+    """Build the adapter-specific command for an already validated session UUID."""
+    match adapter:
+        case "claude":
+            return ["claude", "--resume", session_id]
+        case "codex":
+            return ["codex", "resume", session_id]
+        case "pi":
+            return ["pi", "--session", session_id]
+        case _ as unknown:
+            assert_never(unknown)
 
 
 def exact_resume_argv(adapter: ResumeAdapter, value: Sequence[str]) -> list[str] | None:
     """Validate and canonicalize an exact adapter-specific resume command."""
     argv = list(value)
-    if adapter == "claude" and len(argv) == 3 and argv[:2] == ["claude", "--resume"]:
-        return resume_argv_for_session(adapter, argv[2])
-    if adapter == "codex" and len(argv) == 3 and argv[:2] == ["codex", "resume"]:
-        return resume_argv_for_session(adapter, argv[2])
+    match adapter:
+        case "claude":
+            match argv:
+                case ["claude", "--resume", session_id]:
+                    return resume_argv_for_session(adapter, session_id)
+                case _:
+                    return None
+        case "codex":
+            match argv:
+                case ["codex", "resume", session_id]:
+                    return resume_argv_for_session(adapter, session_id)
+                case _:
+                    return None
+        case "pi":
+            match argv:
+                case ["pi", "--session", session_id]:
+                    return resume_argv_for_session(adapter, session_id)
+                case _:
+                    return None
+        case _ as unknown:
+            assert_never(unknown)
+
+
+def _flagged_session_id(argv: Sequence[str], flags: frozenset[str]) -> str | None:
+    """Extract one full UUID from a supported option or its equals form."""
+    for index, token in enumerate(argv[1:], start=1):
+        if (
+            token in flags
+            and index + 1 < len(argv)
+            and (session_id := _uuid(argv[index + 1])) is not None
+        ):
+            return session_id
+        for flag in flags:
+            prefix = f"{flag}="
+            if (
+                token.startswith(prefix)
+                and (session_id := _uuid(token.removeprefix(prefix))) is not None
+            ):
+                return session_id
     return None
+
+
+def _codex_explicit_session(argv: Sequence[str]) -> str | None:
+    """Extract one full UUID following Codex's resume subcommand."""
+    try:
+        resume_index = argv.index("resume", 1)
+    except ValueError:
+        return None
+    return next(
+        (
+            session_id
+            for token in argv[resume_index + 1 :]
+            if not token.startswith("-") and (session_id := _uuid(token)) is not None
+        ),
+        None,
+    )
 
 
 def _explicit_session_id(adapter: ResumeAdapter, argv: Sequence[str]) -> str | None:
-    """Extract a UUID already present in a live Claude or Codex invocation."""
-    if adapter == "codex":
-        try:
-            resume_index = argv.index("resume", 1)
-        except ValueError:
-            return None
-        return next(
-            (
-                session_id
-                for token in argv[resume_index + 1 :]
-                if not token.startswith("-") and (session_id := _uuid(token)) is not None
-            ),
-            None,
-        )
-    for index, token in enumerate(argv[1:], start=1):
-        if (
-            token in {"--resume", "-r", "--session-id"}
-            and index + 1 < len(argv)
-            and (session_id := _uuid(argv[index + 1]))
-        ):
-            return session_id
-        for prefix in ("--resume=", "--session-id="):
-            if token.startswith(prefix) and (session_id := _uuid(token.removeprefix(prefix))):
-                return session_id
-    return None
+    """Extract a full UUID already present in a live agent invocation."""
+    match adapter:
+        case "claude":
+            return _flagged_session_id(argv, frozenset(("--resume", "-r", "--session-id")))
+        case "codex":
+            return _codex_explicit_session(argv)
+        case "pi":
+            return _flagged_session_id(argv, frozenset(("--session",)))
+        case _ as unknown:
+            assert_never(unknown)
 
 
 def _codex_root_session(path: Path) -> str | None:
@@ -117,11 +177,62 @@ def _claude_root_session(path: Path) -> str | None:
     return _uuid(match.group(1))
 
 
+def _pi_root_session(path: Path) -> str | None:
+    """Read the UUID from one open persisted Pi session header."""
+    if path.suffix != ".jsonl" or "sessions" not in path.parts:
+        return None
+    try:
+        with path.open(encoding="utf-8") as transcript:
+            record = json.loads(transcript.readline())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    match record:
+        case {"type": "session", "id": session_id}:
+            return _uuid(session_id)
+        case _:
+            return None
+
+
 def _session_from_open_files(adapter: ResumeAdapter, paths: Sequence[Path]) -> str | None:
     """Return one unambiguous root session referenced by an agent process."""
-    extractor = _claude_root_session if adapter == "claude" else _codex_root_session
+    match adapter:
+        case "claude":
+            extractor = _claude_root_session
+        case "codex":
+            extractor = _codex_root_session
+        case "pi":
+            extractor = _pi_root_session
+        case _ as unknown:
+            assert_never(unknown)
     sessions = {session_id for path in paths if (session_id := extractor(path)) is not None}
     return next(iter(sessions)) if len(sessions) == 1 else None
+
+
+def _live_agent_process(
+    window: Mapping[str, object], profiles: AppProfiles
+) -> _LiveAgentProcess | None:
+    """Return the first supervising resumable agent process in one Kitty pane."""
+    match window:
+        case {"id": int() as window_id, "foreground_processes": list() as processes} if not (
+            isinstance(window_id, bool)
+        ):
+            pass
+        case _:
+            return None
+    for process in reversed(processes):
+        match process:
+            case {"cmdline": list() as argv, "pid": int() as pid} if not isinstance(
+                pid, bool
+            ) and all(isinstance(item, str) for item in argv):
+                profile = profiles.match(argv[0] if argv else None)
+            case _:
+                continue
+        match profile:
+            case AppProfile(restore=ResumeRestore(adapter=adapter)):
+                return _LiveAgentProcess(window_id, pid, adapter, tuple(argv))
+            case _:
+                continue
+    return None
 
 
 def _proc_open_files(pid: int) -> list[Path] | None:
@@ -140,6 +251,15 @@ def _proc_open_files(pid: int) -> list[Path] | None:
         except OSError:
             continue
     return paths
+
+
+def _requested_lsof_pid(value: str, requested: frozenset[int]) -> int | None:
+    """Parse one lsof process record only when its PID was requested."""
+    try:
+        candidate = int(value)
+    except ValueError:
+        return None
+    return candidate if candidate in requested else None
 
 
 def process_open_files(pids: Sequence[int]) -> OpenFiles:
@@ -166,19 +286,16 @@ def process_open_files(pids: Sequence[int]) -> OpenFiles:
         )
     except (OSError, subprocess.SubprocessError):
         return paths
+    requested = frozenset(unresolved)
     current_pid: int | None = None
     for line in result.stdout.splitlines():
-        if line.startswith("p"):
-            try:
-                candidate = int(line[1:])
-            except ValueError:
-                current_pid = None
-            else:
-                current_pid = candidate if candidate in unresolved else None
+        match line[:1]:
+            case "p":
+                current_pid = _requested_lsof_pid(line[1:], requested)
                 if current_pid is not None:
                     paths.setdefault(current_pid, [])
-        elif line.startswith("n") and current_pid is not None:
-            paths[current_pid].append(Path(line[1:]))
+            case "n" if current_pid is not None:
+                paths[current_pid].append(Path(line[1:]))
     return paths
 
 
@@ -188,45 +305,30 @@ def resolve_agent_resumes(
     open_files: OpenFileReader = process_open_files,
 ) -> ResumeCommands:
     """Resolve exact per-pane resumes without persisting process IDs or transcript paths."""
-    unresolved: list[tuple[int, int, ResumeAdapter]] = []
+    unresolved: list[_LiveAgentProcess] = []
     resumes: ResumeCommands = {}
-    for tab in tabs:
-        for window in tab.windows:
-            for process in reversed(window.get("foreground_processes", [])):
-                argv = process.get("cmdline", [])
-                profile = profiles.match(argv[0] if argv else None)
-                pid = process.get("pid")
-                if (
-                    profile is None
-                    or profile.adapter is None
-                    or not isinstance(pid, int)
-                    or isinstance(pid, bool)
-                ):
-                    continue
-                session_id = _explicit_session_id(profile.adapter, argv)
-                if session_id is not None:
-                    command = (
-                        ["claude", "--resume", session_id]
-                        if profile.adapter == "claude"
-                        else ["codex", "resume", session_id]
-                    )
-                    resumes[window["id"]] = command
-                else:
-                    unresolved.append((window["id"], pid, profile.adapter))
-                break
+    windows = chain.from_iterable(tab.windows for tab in tabs)
+    for window in windows:
+        candidate = _live_agent_process(window, profiles)
+        if candidate is None:
+            continue
+        session_id = _explicit_session_id(candidate.adapter, candidate.argv)
+        if session_id is None:
+            unresolved.append(candidate)
+            continue
+        resumes[candidate.window_id] = _resume_argv(candidate.adapter, session_id)
     if not unresolved:
         return resumes
     try:
-        paths_by_pid = open_files(tuple(item[1] for item in unresolved))
+        paths_by_pid = open_files(tuple(candidate.pid for candidate in unresolved))
     except (OSError, subprocess.SubprocessError):
         return resumes
-    for window_id, pid, adapter in unresolved:
-        session_id = _session_from_open_files(adapter, paths_by_pid.get(pid, ()))
-        if session_id is None:
-            continue
-        resumes[window_id] = (
-            ["claude", "--resume", session_id]
-            if adapter == "claude"
-            else ["codex", "resume", session_id]
+    for candidate in unresolved:
+        discovered_session_id = _session_from_open_files(
+            candidate.adapter,
+            paths_by_pid.get(candidate.pid, ()),
         )
+        if discovered_session_id is None:
+            continue
+        resumes[candidate.window_id] = _resume_argv(candidate.adapter, discovered_session_id)
     return resumes

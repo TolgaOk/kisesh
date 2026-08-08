@@ -3,7 +3,7 @@
 
 set -eu
 
-default_package_url=https://github.com/TolgaOk/kisesh/archive/refs/tags/v0.1.2-beta.tar.gz
+default_package_url=https://github.com/TolgaOk/kisesh/archive/refs/tags/v0.2.0-alpha.tar.gz
 python_version=${KISESH_PYTHON:-3.11}
 uv_installer_url=${KISESH_UV_INSTALLER_URL:-https://astral.sh/uv/0.11.32/install.sh}
 data_home=${XDG_DATA_HOME:-"$HOME/.local/share"}

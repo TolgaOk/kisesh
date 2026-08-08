@@ -23,17 +23,17 @@ KiSesh groups native Kitty tabs and panes into named sessions.
   - bring back history up to 2000 lines
   - rerun **recognized** last running command
   - prefill **unrecognized** commands and arguments without executing them
-  - auto resume `codex`, `claude` sessions
+  - auto resume `claude`, `codex`, and `pi` sessions
 
 > [!IMPORTANT]
 >
-> Enable `claude` and `codex` session recovery via adding the hooks:
+> Enable agent session recovery hooks:
 >
 > ```sh
 > kisesh agents enable
 > ```
 >
-> Inspect it with `kisesh agents status`; remove it with `kisesh agents disable`.
+> Inspect them with `kisesh agents status`; remove them with `kisesh agents disable`.
 
 ## Install
 
@@ -43,13 +43,13 @@ KiSesh groups native Kitty tabs and panes into named sessions.
 - Nerd Font
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/v0.1.2-beta/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/v0.2.0-alpha/install.sh | sh
 ```
 
 Using `uv`:
 
 ```sh
-uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/archive/refs/tags/v0.1.2-beta.tar.gz
+uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/archive/refs/tags/v0.2.0-alpha.tar.gz
 kisesh install
 ```
 
@@ -63,10 +63,19 @@ Session data is stored locally in `~/.local/share/kisesh/` by default.
 [bundled defaults](kisesh/default_apps.toml). Existing configuration is kept.
 
 ```toml
+version = 2
+
 [defaults]
 restore = "prefill"
 label = "App"
 icon = ""
+
+[agents.claude]
+match = ["claude", "claude-*"]
+restore = "resume"
+adapter = "claude"
+label = "Claude"
+icon = "✻"
 
 [apps.nvim]
 match = ["nvim", "nvim-*", "vim", "vi"]
@@ -74,5 +83,5 @@ restore = "captured"
 label = "Vim"
 icon = ""
 
-...
+# Additional profiles follow the same section-specific fields.
 ```

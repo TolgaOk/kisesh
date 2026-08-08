@@ -13,7 +13,7 @@ from typing import NotRequired, TypedDict, cast
 PROJECT = Path(__file__).parents[1]
 INSTALL_SCRIPT = PROJECT / "install.sh"
 README = PROJECT / "README.md"
-RELEASE_TAG = "v0.1.2-beta"
+RELEASE_TAG = "v0.2.0-alpha"
 DEFAULT_PACKAGE_URL = f"https://github.com/TolgaOk/kisesh/archive/refs/tags/{RELEASE_TAG}.tar.gz"
 
 
@@ -190,10 +190,10 @@ class InstallScriptTests(unittest.TestCase):
         project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
 
         package_version = str(project["project"]["version"])
-        self.assertTrue(package_version.endswith("b0"))
+        self.assertTrue(package_version.endswith("a0"))
         self.assertEqual(
             RELEASE_TAG,
-            f"v{package_version.removesuffix('b0')}-beta",
+            f"v{package_version.removesuffix('a0')}-alpha",
         )
         self.assertIn(f"default_package_url={DEFAULT_PACKAGE_URL}", install_script)
         self.assertIn(

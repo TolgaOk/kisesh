@@ -669,14 +669,15 @@ class SessionManager:
             separators = max(0, remaining - 1) * 2
             label_width = max(1, (max(0, right - pane_x - separators)) // remaining)
             rendered = _ellipsize(label, label_width)
-            if pane.needs_attention:
-                style = self.palette.warning
-            elif pane.agent == "claude":
-                style = self.palette.accent | curses.A_BOLD
-            elif pane.agent == "codex" or pane.active:
-                style = self.palette.good | curses.A_BOLD
-            else:
-                style = self.palette.normal
+            match pane:
+                case PanePreview(needs_attention=True):
+                    style = self.palette.warning
+                case PanePreview(active=True):
+                    style = self.palette.good | curses.A_BOLD
+                case PanePreview(agent=str()):
+                    style = self.palette.accent | curses.A_BOLD
+                case _:
+                    style = self.palette.normal
             _safe_addstr(screen, y, pane_x, rendered, style)
             pane_x += len(rendered)
 

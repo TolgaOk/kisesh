@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 SESSION_ID_VAR = "kisesh_session"
 SESSION_SLUG_VAR = "kisesh_slug"
@@ -105,7 +105,7 @@ class WatcherAppProfile(Protocol):
     """Configured app identity needed for lightweight agent classification."""
 
     name: str
-    agent: bool
+    kind: Literal["app", "agent"]
 
 
 class WatcherAppProfiles(Protocol):
@@ -763,7 +763,7 @@ def _update_app_markers(
     """Cache lightweight app and agent markers for the in-process native tab bar."""
     current = _string_mapping(window.user_vars)
     application = profile.name if profile is not None else None
-    agent = profile.name if profile is not None and profile.agent else None
+    agent = profile.name if profile is not None and profile.kind == "agent" else None
     desired = ((APP_VAR, application), (AGENT_VAR, agent))
     assignments = tuple(
         f"{name}={value}" if value is not None else name

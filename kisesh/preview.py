@@ -120,7 +120,7 @@ def _saved_pane(pane: PaneContext, active: bool, profiles: AppProfiles) -> PaneP
         program = pane["title"].strip() or "shell"
     matched = profiles.match(program)
     agent = (pane["agent"] or "").strip().casefold() or (
-        matched.name if matched is not None and matched.agent else None
+        matched.name if matched is not None and matched.kind == "agent" else None
     )
     label, icon = _presentation(program, agent, profiles)
     last_command = " ".join((pane["last_command"] or "").split()) or None
@@ -153,7 +153,7 @@ def _live_pane(window: KittyWindow, profiles: AppProfiles) -> PanePreview:
     if not program:
         program = window.get("title", "").strip() or "shell"
     matched = profiles.match(program)
-    agent = matched.name if matched is not None and matched.agent else None
+    agent = matched.name if matched is not None and matched.kind == "agent" else None
     label, icon = _presentation(program, agent, profiles)
     return PanePreview(
         program=program,

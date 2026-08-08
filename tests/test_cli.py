@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
-from kisesh.agent_hooks import claude_hook_enabled, codex_hook_enabled
+from kisesh import agent_hooks
+from kisesh.agent_hooks import AgentHookState, agent_hook_state, user_agent_hooks
 from kisesh.app_profiles import DEFAULT_APP_PROFILES
 from kisesh.cli import (
     INVALID_CLOSE_MESSAGE,
@@ -19,6 +20,7 @@ from kisesh.cli import (
     INVALID_PAYLOAD_MESSAGE,
     AddTab,
     AgentHook,
+    AgentManagementAction,
     Agents,
     ArchiveSession,
     AutosaveSession,
@@ -31,6 +33,7 @@ from kisesh.cli import (
     Doctor,
     InstallIntegration,
     ListSessions,
+    MaintenanceCommand,
     Manager,
     OpenSession,
     PrintLastOutput,
@@ -152,6 +155,14 @@ class CliTests(unittest.TestCase):
         promoted = parse_arguments(["close", "project", "--promote-os-window", "41"])
         integration = parse_arguments(["install", "--kitty-config", "/tmp/kitty.conf"])
         hook = parse_arguments(["agent-hook", "claude"])
+        direct_hook = parse_arguments(
+            [
+                "agent-hook",
+                "pi",
+                "--session-id",
+                "b624c385-95da-4626-9aeb-8b4f54e31dc2",
+            ]
+        )
         agent_actions = [
             parse_arguments(["agents", action]) for action in ("enable", "status", "disable")
         ]
@@ -177,10 +188,17 @@ class CliTests(unittest.TestCase):
             Path("/tmp/kitty.conf"),
         )
         self.assertEqual(cast(AgentHook, hook.command).adapter, "claude")
+        self.assertEqual(cast(AgentHook, direct_hook.command).adapter, "pi")
+        self.assertEqual(
+            cast(AgentHook, direct_hook.command).session_id,
+            "b624c385-95da-4626-9aeb-8b4f54e31dc2",
+        )
         self.assertEqual(
             [cast(Agents, config.command).action for config in agent_actions],
             ["enable", "status", "disable"],
         )
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_arguments(["agent-hook", "unknown"])
 
     def test_only_live_operations_construct_an_eager_kitty_client(self) -> None:
         """Keep stored-context reads offline unless a connection override is explicit."""
@@ -221,21 +239,21 @@ class CliTests(unittest.TestCase):
         self.assertIs(live_service.kitty, client.return_value)
         self.assertEqual(client.call_count, 2)
 
-    def test_agent_management_operates_both_user_configs_without_kitty(self) -> None:
-        """Exercise enable, status, and disable over real isolated config files."""
+    def test_agent_management_operates_all_user_integrations_without_kitty(self) -> None:
+        """Exercise enable, status, and disable over three isolated native integrations."""
         with tempfile.TemporaryDirectory() as temporary:
             environment = {"HOME": temporary}
-            claude_path = Path(temporary) / ".claude" / "settings.json"
-            codex_path = Path(temporary) / ".codex" / "hooks.json"
+            hooks = user_agent_hooks(environment)
 
             enabled_output = io.StringIO()
             with redirect_stdout(enabled_output):
                 self.assertEqual(_run_agents(Agents("enable"), environment), 0)
-            self.assertTrue(claude_hook_enabled(claude_path))
-            self.assertTrue(codex_hook_enabled(codex_path))
+            self.assertTrue(
+                all(agent_hook_state(hook) is AgentHookState.CONFIGURED for hook in hooks)
+            )
             self.assertEqual(
                 enabled_output.getvalue(),
-                "claude: configured\ncodex: configured (review with /hooks)\n",
+                "claude: configured\ncodex: configured (review with /hooks)\npi: configured\n",
             )
 
             status_output = io.StringIO()
@@ -246,11 +264,12 @@ class CliTests(unittest.TestCase):
             disabled_output = io.StringIO()
             with redirect_stdout(disabled_output):
                 self.assertEqual(_run_agents(Agents("disable"), environment), 0)
-            self.assertFalse(claude_hook_enabled(claude_path))
-            self.assertFalse(codex_hook_enabled(codex_path))
+            self.assertTrue(
+                all(agent_hook_state(hook) is AgentHookState.NOT_CONFIGURED for hook in hooks)
+            )
             self.assertEqual(
                 disabled_output.getvalue(),
-                "claude: not configured\ncodex: not configured\n",
+                "claude: not configured\ncodex: not configured\npi: not configured\n",
             )
 
     def test_agent_management_rolls_back_a_half_applied_enable(self) -> None:
@@ -282,11 +301,18 @@ class CliTests(unittest.TestCase):
             claude_path.parent.mkdir()
             old_backup = claude_path.with_name("settings.json.kisesh.bak")
             old_backup.write_text("older settings\n", encoding="utf-8")
+            real_enable = agent_hooks.enable_agent_hook
+
+            def fail_codex(hook: agent_hooks.AgentHookSpec) -> bool:
+                """Fail after Claude creation so transaction cleanup is observable."""
+                if hook.adapter == "codex":
+                    raise OSError("codex disk full")
+                return real_enable(hook)
 
             with (
                 mock.patch(
-                    "kisesh.agent_hooks.enable_codex_hook",
-                    side_effect=OSError("codex disk full"),
+                    "kisesh.agent_hooks.enable_agent_hook",
+                    side_effect=fail_codex,
                 ),
                 self.assertRaisesRegex(OSError, "codex disk full"),
             ):
@@ -294,6 +320,7 @@ class CliTests(unittest.TestCase):
 
             self.assertFalse(claude_path.exists())
             self.assertFalse(codex_path.exists())
+            self.assertFalse(Path(temporary, ".pi", "agent", "extensions", "kisesh.ts").exists())
             self.assertEqual(old_backup.read_text(encoding="utf-8"), "older settings\n")
 
     def test_read_commands_render_text_json_context_output_and_shell(self) -> None:
@@ -525,12 +552,37 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(hook_output.getvalue(), "")
 
+        raw.record_agent_session_id.reset_mock()
+        with mock.patch.dict("os.environ", {"KITTY_WINDOW_ID": "18"}, clear=True):
+            self.assertEqual(
+                _run_maintenance(
+                    AgentHook("pi", "b624c385-95da-4626-9aeb-8b4f54e31dc2"),
+                    service,
+                ),
+                0,
+            )
+        raw.record_agent_session_id.assert_called_once_with(
+            "pi",
+            "b624c385-95da-4626-9aeb-8b4f54e31dc2",
+            18,
+        )
+
         for findings, expected in ((["OK storage"], 0), (["ERROR broken"], 1)):
             raw.doctor.return_value = findings
             stream = io.StringIO()
             with self.subTest(findings=findings), redirect_stdout(stream):
                 self.assertEqual(_run_maintenance(Doctor(), service), expected)
             self.assertEqual(stream.getvalue(), "\n".join(findings) + "\n")
+
+    def test_closed_cli_command_types_reject_unrecognized_runtime_variants(self) -> None:
+        """Fail closed when runtime values violate typed command unions."""
+        service, _ = _service_mock()
+        with self.assertRaises(AssertionError):
+            _run_maintenance(cast(MaintenanceCommand, object()), service)
+
+        action = cast(AgentManagementAction, "unknown")
+        with self.assertRaises(AssertionError):
+            _run_agents(Agents(action), {"HOME": "/tmp/kisesh-invalid-action"})
 
     def test_dispatch_selects_each_cohesive_command_family(self) -> None:
         """Keep the top-level dispatcher exhaustive over the typed command union."""

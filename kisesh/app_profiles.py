@@ -1,4 +1,4 @@
-"""Load validated application display and restoration profiles from TOML."""
+"""Load typed application and agent profiles from TOML."""
 
 from __future__ import annotations
 
@@ -9,54 +9,88 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, assert_never, cast
 
-APP_PROFILE_SCHEMA_VERSION = 1
+APP_PROFILE_SCHEMA_VERSION = 2
+ResumeAdapter = Literal["claude", "codex", "pi"]
+ProfileKind = Literal["app", "agent"]
 RestoreMode = Literal["resume", "captured", "configured", "prefill", "ignore"]
-ResumeAdapter = Literal["claude", "codex"]
-DefaultRestoreMode = Literal["prefill", "ignore"]
 ProfileSignature = tuple[Path, int, int]
 
+_SUPPORTED_SCHEMA_VERSIONS = frozenset((1, APP_PROFILE_SCHEMA_VERSION))
 _RESTORE_MODES = frozenset(("resume", "captured", "configured", "prefill", "ignore"))
-_RESUME_ADAPTERS = frozenset(("claude", "codex"))
-_DEFAULT_RESTORE_MODES = frozenset(("prefill", "ignore"))
+_RESUME_ADAPTERS = frozenset(("claude", "codex", "pi"))
 _DEFAULT_FIELDS = frozenset(("restore", "label", "icon"))
-_APP_FIELDS = frozenset(("match", "restore", "adapter", "argv", "label", "icon", "agent"))
+_PROFILE_FIELDS = frozenset(("match", "restore", "label", "icon"))
+_APP_FIELDS = _PROFILE_FIELDS | frozenset(("argv",))
+_AGENT_FIELDS = _PROFILE_FIELDS | frozenset(("adapter",))
+_V1_APP_FIELDS = _PROFILE_FIELDS | frozenset(("adapter", "argv", "agent"))
 
 
 class AppProfileError(ValueError):
-    """Report a malformed or unreadable application-profile configuration."""
+    """Report a malformed or unreadable profile configuration."""
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeRestore:
+    """Resume one exact external agent session through a built-in adapter."""
+
+    adapter: ResumeAdapter
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedRestore:
+    """Run the command arguments captured from a recognized application."""
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredRestore:
+    """Run one deterministic command declared by the user."""
+
+    argv: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PrefillRestore:
+    """Type captured command arguments without submitting them."""
+
+
+@dataclass(frozen=True, slots=True)
+class IgnoreRestore:
+    """Restore no foreground application command."""
+
+
+RestorePolicy = ResumeRestore | CapturedRestore | ConfiguredRestore | PrefillRestore | IgnoreRestore
+DefaultRestorePolicy = PrefillRestore | IgnoreRestore
 
 
 @dataclass(frozen=True, slots=True)
 class DefaultAppProfile:
     """Safe presentation and restore behavior for unmatched applications."""
 
-    restore: DefaultRestoreMode
+    restore: DefaultRestorePolicy
     label: str
     icon: str
 
 
 @dataclass(frozen=True, slots=True)
 class AppProfile:
-    """One matched application's display metadata and restore strategy."""
+    """One matched foreground program and its validated behavior."""
 
     name: str
+    kind: ProfileKind
     match: tuple[str, ...]
-    restore: RestoreMode
+    restore: RestorePolicy
     label: str
     icon: str
-    agent: bool = False
-    adapter: ResumeAdapter | None = None
-    argv: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class AppProfiles:
-    """Ordered application rules paired with one safe unmatched default."""
+    """Ordered program rules paired with one safe unmatched default."""
 
     defaults: DefaultAppProfile
-    apps: tuple[AppProfile, ...]
+    profiles: tuple[AppProfile, ...]
 
     def match(self, command: str | None) -> AppProfile | None:
         """Return the first profile matching an executable basename."""
@@ -66,7 +100,7 @@ class AppProfiles:
         return next(
             (
                 profile
-                for profile in self.apps
+                for profile in self.profiles
                 if any(fnmatchcase(executable, pattern.casefold()) for pattern in profile.match)
             ),
             None,
@@ -75,11 +109,38 @@ class AppProfiles:
     def named(self, name: str | None) -> AppProfile | None:
         """Return a profile by its stable TOML table name."""
         normalized = str(name or "").casefold()
-        return next((profile for profile in self.apps if profile.name == normalized), None)
+        return next((profile for profile in self.profiles if profile.name == normalized), None)
+
+
+@dataclass(frozen=True, slots=True)
+class _SchemaV1:
+    """Represent the installed version-one document without losing user choices."""
+
+    defaults: Mapping[str, object]
+    apps: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _SchemaV2:
+    """Represent the semantically separated application and agent document."""
+
+    defaults: Mapping[str, object]
+    apps: Mapping[str, object]
+    agents: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProfileIdentity:
+    """Hold fields shared by every validated app and agent profile."""
+
+    name: str
+    match: tuple[str, ...]
+    label: str
+    icon: str
 
 
 def app_config_path(override: str | os.PathLike[str] | None = None) -> Path:
-    """Resolve an explicit, environment, or standard XDG application config path."""
+    """Resolve an explicit, environment, or standard XDG profile path."""
     if override is not None:
         return Path(override).expanduser()
     if configured := os.environ.get("KISESH_APP_CONFIG"):
@@ -89,7 +150,7 @@ def app_config_path(override: str | os.PathLike[str] | None = None) -> Path:
 
 
 def bundled_app_config_path() -> Path:
-    """Resolve the package-owned default profile only when it is needed."""
+    """Resolve the package-owned default profile."""
     return Path(__file__).with_name("default_apps.toml")
 
 
@@ -143,21 +204,32 @@ def _string_sequence(
 
 
 def _restore_mode(value: object, location: str) -> RestoreMode:
-    """Validate one application restore-mode enum value."""
+    """Validate one restore-mode enum value."""
     if not isinstance(value, str) or value not in _RESTORE_MODES:
         raise AppProfileError(f"{location} must be one of {', '.join(sorted(_RESTORE_MODES))}")
     return cast(RestoreMode, value)
+
+
+def _resume_adapter(value: object, location: str) -> ResumeAdapter:
+    """Validate one built-in session-resume adapter name."""
+    if not isinstance(value, str) or value not in _RESUME_ADAPTERS:
+        raise AppProfileError(f"{location} must be claude, codex, or pi")
+    return cast(ResumeAdapter, value)
 
 
 def _default_profile(raw: object) -> DefaultAppProfile:
     """Parse the safe behavior used for applications without a matching table."""
     table = _table(raw, "defaults")
     _known_fields(table, _DEFAULT_FIELDS, "defaults")
-    restore = table.get("restore")
-    if not isinstance(restore, str) or restore not in _DEFAULT_RESTORE_MODES:
-        raise AppProfileError("defaults.restore must be prefill or ignore")
+    match table.get("restore"):
+        case "prefill":
+            restore: DefaultRestorePolicy = PrefillRestore()
+        case "ignore":
+            restore = IgnoreRestore()
+        case _:
+            raise AppProfileError("defaults.restore must be prefill or ignore")
     return DefaultAppProfile(
-        cast(DefaultRestoreMode, restore),
+        restore,
         _display_text(table.get("label"), "defaults.label", maximum=64),
         _display_text(table.get("icon"), "defaults.icon", maximum=8),
     )
@@ -177,72 +249,231 @@ def _match_patterns(value: object, location: str) -> tuple[str, ...]:
     return patterns
 
 
-def _app_profile(name: str, raw: object, defaults: DefaultAppProfile) -> AppProfile:
-    """Parse one named profile and enforce its mode-specific fields."""
+def _profile_identity(
+    name: str,
+    table: Mapping[str, object],
+    defaults: DefaultAppProfile,
+    *,
+    kind: ProfileKind,
+    location: str,
+) -> _ProfileIdentity:
+    """Parse the name, matching, and presentation shared by apps and agents."""
     if (
         not name
         or name != name.casefold()
         or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for character in name)
     ):
-        raise AppProfileError(f"invalid app profile name: {name!r}")
-    table = _table(raw, f"apps.{name}")
-    _known_fields(table, _APP_FIELDS, f"apps.{name}")
-    restore = _restore_mode(table.get("restore"), f"apps.{name}.restore")
-    adapter_value = table.get("adapter")
-    if adapter_value is not None and (
-        not isinstance(adapter_value, str) or adapter_value not in _RESUME_ADAPTERS
-    ):
-        raise AppProfileError(f"apps.{name}.adapter must be claude or codex")
-    adapter = cast(ResumeAdapter | None, adapter_value)
-    argv = (
-        _string_sequence(table["argv"], f"apps.{name}.argv", maximum_items=64, maximum_length=2048)
-        if "argv" in table
-        else ()
-    )
-    if restore == "resume" and adapter is None:
-        raise AppProfileError(f"apps.{name}.adapter is required for resume")
-    if restore != "resume" and adapter is not None:
-        raise AppProfileError(f"apps.{name}.adapter is only valid with resume")
-    if restore == "configured" and not argv:
-        raise AppProfileError(f"apps.{name}.argv is required for configured restore")
-    if restore != "configured" and argv:
-        raise AppProfileError(f"apps.{name}.argv is only valid with configured restore")
-    agent = table.get("agent", False)
-    if not isinstance(agent, bool):
-        raise AppProfileError(f"apps.{name}.agent must be true or false")
-    return AppProfile(
+        raise AppProfileError(f"invalid {kind} profile name: {name!r}")
+    return _ProfileIdentity(
         name,
-        _match_patterns(table.get("match"), f"apps.{name}.match"),
-        restore,
-        _display_text(table.get("label", name), f"apps.{name}.label", maximum=64),
-        _display_text(table.get("icon", defaults.icon), f"apps.{name}.icon", maximum=8),
-        agent,
-        adapter,
-        argv,
+        _match_patterns(table.get("match"), f"{location}.match"),
+        _display_text(table.get("label", name), f"{location}.label", maximum=64),
+        _display_text(table.get("icon", defaults.icon), f"{location}.icon", maximum=8),
     )
 
 
-def parse_app_profiles(text: str, *, source: str = "apps.toml") -> AppProfiles:
-    """Parse and validate one complete application-profile TOML document."""
+def _app_restore(table: Mapping[str, object], location: str) -> RestorePolicy:
+    """Build a restore policy that cannot contain agent-only state."""
+    mode = _restore_mode(table.get("restore"), f"{location}.restore")
+    match mode:
+        case "configured" if "argv" not in table:
+            raise AppProfileError(f"{location}.argv is required for configured restore")
+        case "configured":
+            return ConfiguredRestore(
+                _string_sequence(
+                    table.get("argv"),
+                    f"{location}.argv",
+                    maximum_items=64,
+                    maximum_length=2048,
+                )
+            )
+        case _ if "argv" in table:
+            raise AppProfileError(f"{location}.argv is only valid with configured restore")
+        case "captured":
+            return CapturedRestore()
+        case "prefill":
+            return PrefillRestore()
+        case "ignore":
+            return IgnoreRestore()
+        case "resume":
+            raise AppProfileError(f"{location}.restore cannot be resume")
+        case _ as unknown:
+            assert_never(unknown)
+
+
+def _agent_restore(table: Mapping[str, object], location: str) -> RestorePolicy:
+    """Build an agent restore policy with adapter state only for exact resume."""
+    mode = _restore_mode(table.get("restore"), f"{location}.restore")
+    match mode:
+        case "resume" if "adapter" not in table:
+            raise AppProfileError(f"{location}.adapter is required for resume")
+        case "resume":
+            return ResumeRestore(_resume_adapter(table.get("adapter"), f"{location}.adapter"))
+        case _ if "adapter" in table:
+            raise AppProfileError(f"{location}.adapter is only valid with resume")
+        case "captured":
+            return CapturedRestore()
+        case "prefill":
+            return PrefillRestore()
+        case "ignore":
+            return IgnoreRestore()
+        case "configured":
+            raise AppProfileError(f"{location}.restore cannot be configured")
+        case _ as unknown:
+            assert_never(unknown)
+
+
+def _v1_restore(table: Mapping[str, object], location: str) -> RestorePolicy:
+    """Normalize a version-one restore tuple into one typed policy."""
+    mode = _restore_mode(table.get("restore"), f"{location}.restore")
+    match mode:
+        case "resume" if "argv" in table:
+            raise AppProfileError(f"{location}.argv is only valid with configured restore")
+        case "resume" if "adapter" not in table:
+            raise AppProfileError(f"{location}.adapter is required for resume")
+        case "resume":
+            return ResumeRestore(_resume_adapter(table.get("adapter"), f"{location}.adapter"))
+        case "configured" if "adapter" in table:
+            raise AppProfileError(f"{location}.adapter is only valid with resume")
+        case "configured" if "argv" not in table:
+            raise AppProfileError(f"{location}.argv is required for configured restore")
+        case "configured":
+            return ConfiguredRestore(
+                _string_sequence(
+                    table.get("argv"),
+                    f"{location}.argv",
+                    maximum_items=64,
+                    maximum_length=2048,
+                )
+            )
+        case _ if "adapter" in table:
+            raise AppProfileError(f"{location}.adapter is only valid with resume")
+        case _ if "argv" in table:
+            raise AppProfileError(f"{location}.argv is only valid with configured restore")
+        case "captured":
+            return CapturedRestore()
+        case "prefill":
+            return PrefillRestore()
+        case "ignore":
+            return IgnoreRestore()
+        case _ as unknown:
+            assert_never(unknown)
+
+
+def _v1_profile(name: str, raw: object, defaults: DefaultAppProfile) -> AppProfile:
+    """Normalize one version-one app table into the typed profile model."""
+    location = f"apps.{name}"
+    table = _table(raw, location)
+    _known_fields(table, _V1_APP_FIELDS, location)
+    match table.get("agent", False):
+        case bool() as is_agent:
+            kind: ProfileKind = "agent" if is_agent else "app"
+        case _:
+            raise AppProfileError(f"{location}.agent must be true or false")
+    identity = _profile_identity(name, table, defaults, kind=kind, location=location)
+    return AppProfile(
+        identity.name,
+        kind,
+        identity.match,
+        _v1_restore(table, location),
+        identity.label,
+        identity.icon,
+    )
+
+
+def _v2_app_profile(name: str, raw: object, defaults: DefaultAppProfile) -> AppProfile:
+    """Parse one regular application table from a version-two document."""
+    location = f"apps.{name}"
+    table = _table(raw, location)
+    _known_fields(table, _APP_FIELDS, location)
+    identity = _profile_identity(name, table, defaults, kind="app", location=location)
+    return AppProfile(
+        identity.name,
+        "app",
+        identity.match,
+        _app_restore(table, location),
+        identity.label,
+        identity.icon,
+    )
+
+
+def _v2_agent_profile(name: str, raw: object, defaults: DefaultAppProfile) -> AppProfile:
+    """Parse one AI-agent table from a version-two document."""
+    location = f"agents.{name}"
+    table = _table(raw, location)
+    _known_fields(table, _AGENT_FIELDS, location)
+    identity = _profile_identity(name, table, defaults, kind="agent", location=location)
+    return AppProfile(
+        identity.name,
+        "agent",
+        identity.match,
+        _agent_restore(table, location),
+        identity.label,
+        identity.icon,
+    )
+
+
+def _schema_document(text: str, source: str) -> _SchemaV1 | _SchemaV2:
+    """Decode TOML into one version-discriminated document model."""
     try:
         document = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise AppProfileError(f"{source}: invalid TOML: {error}") from error
     version = document.get("version")
-    if isinstance(version, bool) or version != APP_PROFILE_SCHEMA_VERSION:
-        raise AppProfileError(f"{source}: version must be {APP_PROFILE_SCHEMA_VERSION}")
-    _known_fields(document, frozenset(("version", "defaults", "apps")), source)
-    defaults = _default_profile(document.get("defaults"))
-    raw_apps = _table(document.get("apps"), "apps")
-    apps = tuple(_app_profile(name, raw, defaults) for name, raw in raw_apps.items())
+    match version:
+        case 1 if not isinstance(version, bool):
+            _known_fields(document, frozenset(("version", "defaults", "apps")), source)
+            return _SchemaV1(
+                _table(document.get("defaults"), "defaults"),
+                _table(document.get("apps", {}), "apps"),
+            )
+        case 2 if not isinstance(version, bool):
+            _known_fields(
+                document,
+                frozenset(("version", "defaults", "apps", "agents")),
+                source,
+            )
+            return _SchemaV2(
+                _table(document.get("defaults"), "defaults"),
+                _table(document.get("apps", {}), "apps"),
+                _table(document.get("agents", {}), "agents"),
+            )
+        case _:
+            supported = " or ".join(str(item) for item in sorted(_SUPPORTED_SCHEMA_VERSIONS))
+            raise AppProfileError(f"{source}: version must be {supported}")
+
+
+def _validate_unique_profiles(profiles: tuple[AppProfile, ...]) -> None:
+    """Reject names or executable patterns that would make matching ambiguous."""
+    names: set[str] = set()
     patterns: set[str] = set()
-    for profile in apps:
+    for profile in profiles:
+        if profile.name in names:
+            raise AppProfileError(f"duplicate profile name: {profile.name}")
+        names.add(profile.name)
         for pattern in profile.match:
             normalized = pattern.casefold()
             if normalized in patterns:
-                raise AppProfileError(f"duplicate app match pattern: {pattern}")
+                raise AppProfileError(f"duplicate match pattern: {pattern}")
             patterns.add(normalized)
-    return AppProfiles(defaults, apps)
+
+
+def parse_app_profiles(text: str, *, source: str = "apps.toml") -> AppProfiles:
+    """Parse and validate one complete versioned profile document."""
+    document = _schema_document(text, source)
+    defaults = _default_profile(document.defaults)
+    match document:
+        case _SchemaV1(apps=apps):
+            profiles = tuple(_v1_profile(name, raw, defaults) for name, raw in apps.items())
+        case _SchemaV2(apps=apps, agents=agents):
+            profiles = (
+                *(_v2_agent_profile(name, raw, defaults) for name, raw in agents.items()),
+                *(_v2_app_profile(name, raw, defaults) for name, raw in apps.items()),
+            )
+        case _ as unknown:
+            assert_never(unknown)
+    _validate_unique_profiles(profiles)
+    return AppProfiles(defaults, profiles)
 
 
 def load_app_profiles(path: str | os.PathLike[str] | None = None) -> AppProfiles:

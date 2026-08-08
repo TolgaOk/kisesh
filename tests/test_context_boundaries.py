@@ -6,11 +6,17 @@ from datetime import UTC, datetime
 from typing import cast
 from unittest import mock
 
-from kisesh.app_profiles import DEFAULT_APP_PROFILES
+from kisesh.app_profiles import (
+    DEFAULT_APP_PROFILES,
+    AppProfile,
+    RestorePolicy,
+    ResumeAdapter,
+)
 from kisesh.context import (
     ARGUMENT_COUNT_LIMIT,
     ARGUMENT_LENGTH_LIMIT,
     TERMINAL_HISTORY_CHARACTER_LIMIT,
+    _agent_resume_fallback,
     _append_history,
     _bounded_terminal_history,
     _claude_resume,
@@ -61,6 +67,27 @@ def _shell(window_id: int = 11) -> dict[str, object]:
 
 
 class ContextBoundaryTests(unittest.TestCase):
+    def test_unknown_adapter_and_restore_policy_fail_closed(self) -> None:
+        """Reject runtime values outside the closed configuration unions."""
+        unknown_adapter = cast(ResumeAdapter, "unknown")
+        with self.assertRaises(AssertionError):
+            _agent_resume_fallback(unknown_adapter, ["unknown"])
+
+        profile = AppProfile(
+            "invalid",
+            "app",
+            ("invalid",),
+            cast(RestorePolicy, object()),
+            "Invalid",
+            "?",
+        )
+        with self.assertRaises(AssertionError):
+            _restore_command(
+                ["invalid"],
+                profile=profile,
+                default_restore=DEFAULT_APP_PROFILES.defaults.restore,
+            )
+
     def test_untrusted_command_arguments_are_bounded_and_never_raise(self) -> None:
         oversized = "x" * (ARGUMENT_LENGTH_LIMIT + 10)
         sequence = ["command", "", oversized, *[str(index) for index in range(100)]]
@@ -152,7 +179,7 @@ class ContextBoundaryTests(unittest.TestCase):
     def test_agent_resume_variants_reduce_to_stable_safe_commands(self) -> None:
         claude = DEFAULT_APP_PROFILES.match("claude-nightly")
         self.assertIsNotNone(claude)
-        self.assertTrue(claude.agent if claude is not None else False)
+        self.assertEqual(claude.kind if claude is not None else None, "agent")
         self.assertIsNone(DEFAULT_APP_PROFILES.match("python"))
         self.assertEqual(_claude_resume(["claude", "--resume=abc"]), ["claude", "--resume", "abc"])
         self.assertEqual(_claude_resume(["claude", "-r", "abc"]), ["claude", "--resume", "abc"])
@@ -191,6 +218,18 @@ class ContextBoundaryTests(unittest.TestCase):
         self.assertIsNotNone(unknown)
         assert unknown is not None
         self.assertFalse(unknown["auto_run"])
+
+        pi = DEFAULT_APP_PROFILES.named("pi")
+        self.assertIsNotNone(pi)
+        pi_restore = _restore_command(
+            ["pi", "--model", "anthropic/claude-sonnet-4"],
+            profile=pi,
+            default_restore=DEFAULT_APP_PROFILES.defaults.restore,
+        )
+        self.assertIsNotNone(pi_restore)
+        assert pi_restore is not None
+        self.assertEqual(pi_restore["argv"], ["pi", "--model", "anthropic/claude-sonnet-4"])
+        self.assertTrue(pi_restore["auto_run"])
 
     def test_terminal_capture_enforces_character_limit_with_and_without_newline(self) -> None:
         with_newline = "x" * 600_000 + "\n" + "y" * 600_000

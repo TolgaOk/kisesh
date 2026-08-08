@@ -10,18 +10,23 @@ import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 from kisesh.agent_resume import (
     _claude_root_session,
     _codex_root_session,
+    _explicit_session_id,
+    _pi_root_session,
     _proc_open_files,
+    _resume_argv,
+    _session_from_open_files,
     exact_resume_argv,
     process_open_files,
     resolve_agent_resumes,
     resume_argv_for_session,
 )
-from kisesh.app_profiles import DEFAULT_APP_PROFILES
+from kisesh.app_profiles import DEFAULT_APP_PROFILES, ResumeAdapter
 from kisesh.kitty_client import LiveTab
 from kisesh.model import KittyProcess, KittyWindow
 
@@ -29,6 +34,7 @@ CODEX_ID = "019fd808-918d-7481-b526-c4da01513c42"
 CODEX_OTHER_ID = "019fd767-cf0f-7ce2-9e0a-855046828fc6"
 CODEX_SUBAGENT_ID = "019fd808-91c5-7a83-8a50-16e72394cbe2"
 CLAUDE_ID = "7f676817-c49e-459c-86de-17382e2170ef"
+PI_ID = "b624c385-95da-4626-9aeb-8b4f54e31dc2"
 
 
 def _tab(*windows: KittyWindow) -> LiveTab:
@@ -61,6 +67,21 @@ def _write_codex(path: Path, session_id: str, source: object = "cli") -> None:
 
 
 class AgentResumeTests(unittest.TestCase):
+    def test_unknown_adapter_is_rejected_by_every_resume_dispatcher(self) -> None:
+        """Fail closed when runtime input violates the closed adapter type."""
+        unknown = cast(ResumeAdapter, "unknown")
+        operations = (
+            lambda: _resume_argv(unknown, CLAUDE_ID),
+            lambda: resume_argv_for_session(unknown, CLAUDE_ID),
+            lambda: exact_resume_argv(unknown, ["unknown", CLAUDE_ID]),
+            lambda: _explicit_session_id(unknown, ["unknown", CLAUDE_ID]),
+            lambda: _session_from_open_files(unknown, ()),
+        )
+
+        for operation in operations:
+            with self.subTest(operation=operation), self.assertRaises(AssertionError):
+                operation()
+
     def test_hook_session_ids_become_only_exact_validated_resume_commands(self) -> None:
         self.assertEqual(
             resume_argv_for_session("claude", CLAUDE_ID.upper()),
@@ -69,6 +90,10 @@ class AgentResumeTests(unittest.TestCase):
         self.assertEqual(
             resume_argv_for_session("codex", CODEX_ID.upper()),
             ["codex", "resume", CODEX_ID],
+        )
+        self.assertEqual(
+            resume_argv_for_session("pi", PI_ID.upper()),
+            ["pi", "--session", PI_ID],
         )
         for value in (None, "", "not-a-session", True, 123):
             with self.subTest(value=value):
@@ -116,6 +141,10 @@ class AgentResumeTests(unittest.TestCase):
             _window(5, True, "codex"),
             _window(6, 16, "claude", f"--resume={CLAUDE_ID}"),
             _window(7, 17, "claude", f"--session-id={CLAUDE_ID}"),
+            _window(8, 18, "pi", "--session", PI_ID.upper()),
+            _window(9, 19, "pi", f"--session={PI_ID}"),
+            _window(10, 20, "claude", "--resume", "invalid", "--session-id", CLAUDE_ID),
+            _window(11, 21, "claude", "--resume=invalid", "--session-id", CLAUDE_ID),
         )
 
         def unexpected(_pids: Sequence[int]) -> dict[int, list[Path]]:
@@ -130,6 +159,10 @@ class AgentResumeTests(unittest.TestCase):
         self.assertNotIn(5, resumes)
         self.assertEqual(resumes[6], ["claude", "--resume", CLAUDE_ID])
         self.assertEqual(resumes[7], ["claude", "--resume", CLAUDE_ID])
+        self.assertEqual(resumes[8], ["pi", "--session", PI_ID])
+        self.assertEqual(resumes[9], ["pi", "--session", PI_ID])
+        self.assertEqual(resumes[10], ["claude", "--resume", CLAUDE_ID])
+        self.assertEqual(resumes[11], ["claude", "--resume", CLAUDE_ID])
         self.assertEqual(
             exact_resume_argv("claude", ["claude", "--resume", CLAUDE_ID]),
             ["claude", "--resume", CLAUDE_ID],
@@ -138,6 +171,35 @@ class AgentResumeTests(unittest.TestCase):
             exact_resume_argv("codex", ["codex", "resume", CODEX_ID]),
             ["codex", "resume", CODEX_ID],
         )
+        self.assertEqual(
+            exact_resume_argv("pi", ["pi", "--session", PI_ID]),
+            ["pi", "--session", PI_ID],
+        )
+
+    def test_plain_pi_process_resolves_its_open_persisted_session(self) -> None:
+        """Recover an exact Pi UUID without selecting the most recent project session."""
+        with tempfile.TemporaryDirectory() as temporary:
+            session = Path(temporary) / "sessions" / f"2026-08-08_{PI_ID}.jsonl"
+            session.parent.mkdir()
+            session.write_text(
+                json.dumps(
+                    {
+                        "type": "session",
+                        "version": 3,
+                        "id": PI_ID,
+                        "cwd": "/tmp/project",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            resumes = resolve_agent_resumes(
+                [_tab(_window(21, 301, "pi"))],
+                DEFAULT_APP_PROFILES,
+                lambda _pids: {301: [session]},
+            )
+
+        self.assertEqual(resumes, {21: ["pi", "--session", PI_ID]})
 
     def test_ambiguous_or_unavailable_process_state_keeps_safe_fallbacks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -168,8 +230,16 @@ class AgentResumeTests(unittest.TestCase):
             ["claude", "--resume", "not-a-uuid"],
             ["codex", "resume", "not-a-uuid"],
             ["codex", "resume", CODEX_ID, "extra"],
+            ["pi", "--session", "not-a-uuid"],
+            ["pi", "--session", PI_ID, "extra"],
         )
-        self.assertTrue(all(exact_resume_argv("codex", argv) is None for argv in invalid))
+        adapters: tuple[ResumeAdapter, ...] = ("claude", "codex", "codex", "pi", "pi")
+        self.assertTrue(
+            all(
+                exact_resume_argv(adapter, argv) is None
+                for adapter, argv in zip(adapters, invalid, strict=True)
+            )
+        )
 
     def test_transcript_validation_rejects_non_root_and_corrupt_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -210,6 +280,18 @@ class AgentResumeTests(unittest.TestCase):
             self.assertEqual(_claude_root_session(claude), CLAUDE_ID)
             self.assertIsNone(_claude_root_session(nested))
             self.assertIsNone(_claude_root_session(root / "invalid.jsonl"))
+
+            pi = root / "sessions" / f"2026-08-08_{PI_ID}.jsonl"
+            pi.write_text(
+                json.dumps({"type": "session", "version": 3, "id": PI_ID}) + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(_pi_root_session(pi), PI_ID)
+            self.assertIsNone(_pi_root_session(root / "outside.jsonl"))
+            pi.write_text('{"type":"message"}\n', encoding="utf-8")
+            self.assertIsNone(_pi_root_session(pi))
+            pi.write_bytes(b"\xff\n")
+            self.assertIsNone(_pi_root_session(pi))
 
 
 class ProcessOpenFilesTests(unittest.TestCase):

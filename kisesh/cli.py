@@ -8,16 +8,17 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, assert_never, cast
 
 import tyro
 
 from .agent_hooks import (
-    claude_hook_enabled,
-    codex_hook_enabled,
+    AgentHookState,
+    agent_hook_state,
+    agent_session_start,
     configure_user_agent_hooks,
     read_session_start,
-    user_agent_hook_paths,
+    user_agent_hooks,
 )
 from .app_profiles import ResumeAdapter, load_app_profiles
 from .context import normalize_command_event, pane_last_command_output
@@ -214,10 +215,13 @@ class AutosaveSession:
 
 @dataclass(frozen=True, slots=True)
 class AgentHook:
-    """Record an internal Claude or Codex SessionStart hook event."""
+    """Record an internal agent SessionStart hook event."""
 
     adapter: PositionalResumeAdapter
     """Agent provider that emitted the standard-input payload."""
+
+    session_id: str | None = None
+    """Direct session UUID supplied by an extension without JSON standard input."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,7 +229,7 @@ class Agents:
     """Enable, inspect, or disable native agent session-ID hooks."""
 
     action: PositionalAgentManagementAction
-    """Configuration action to apply to both Claude and Codex."""
+    """Configuration action to apply to every supported agent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,44 +513,58 @@ def _autosave_payload_from_stdin(
 
 def _run_maintenance(command: MaintenanceCommand, service: KiSeshService) -> int:
     """Execute watcher autosave or diagnostic maintenance."""
-    if isinstance(command, AgentHook):
-        event = read_session_start(command.adapter, sys.stdin, os.environ)
-        service.record_agent_session_id(
-            event.adapter,
-            event.external_session_id,
-            event.window_id,
-        )
-        return 0
-    if isinstance(command, AutosaveSession):
-        events, closing_pane = _autosave_payload_from_stdin(command.payload_stdin)
-        if closing_pane is None:
-            service.save(command.session_id, events)
-        else:
-            service.save_closing_pane(command.session_id, closing_pane)
-        return 0
-    findings = service.doctor()
-    print("\n".join(findings))
-    return int(any(finding.startswith("ERROR") for finding in findings))
+    match command:
+        case AgentHook(adapter=adapter, session_id=str() as session_id):
+            event = agent_session_start(adapter, session_id, os.environ)
+            service.record_agent_session_id(
+                event.adapter,
+                event.external_session_id,
+                event.window_id,
+            )
+            return 0
+        case AgentHook(adapter=adapter):
+            event = read_session_start(adapter, sys.stdin, os.environ)
+            service.record_agent_session_id(
+                event.adapter,
+                event.external_session_id,
+                event.window_id,
+            )
+            return 0
+        case AutosaveSession(session_id=session_id, payload_stdin=payload_stdin):
+            events, closing_pane = _autosave_payload_from_stdin(payload_stdin)
+            if closing_pane is None:
+                service.save(session_id, events)
+            else:
+                service.save_closing_pane(session_id, closing_pane)
+            return 0
+        case Doctor():
+            findings = service.doctor()
+            print("\n".join(findings))
+            return int(any(finding.startswith("ERROR") for finding in findings))
+        case _ as unknown:
+            assert_never(unknown)
 
 
 def _run_agents(
     command: Agents,
     environment: Mapping[str, str] | None = None,
 ) -> int:
-    """Manage both user-level agent hook files without connecting to Kitty."""
-    paths = user_agent_hook_paths(os.environ if environment is None else environment)
-    if command.action == "enable":
-        configure_user_agent_hooks(paths, enabled=True)
-        claude_enabled = codex_enabled = True
-    elif command.action == "disable":
-        configure_user_agent_hooks(paths, enabled=False)
-        claude_enabled = codex_enabled = False
-    else:
-        claude_enabled = claude_hook_enabled(paths.claude)
-        codex_enabled = codex_hook_enabled(paths.codex)
-    print(f"claude: {'configured' if claude_enabled else 'not configured'}")
-    codex_state = "configured (review with /hooks)" if codex_enabled else "not configured"
-    print(f"codex: {codex_state}")
+    """Manage every typed user-level agent hook without connecting to Kitty."""
+    hooks = user_agent_hooks(os.environ if environment is None else environment)
+    match command.action:
+        case "enable":
+            configure_user_agent_hooks(hooks, enabled=True)
+            states = (AgentHookState.CONFIGURED,) * len(hooks)
+        case "disable":
+            configure_user_agent_hooks(hooks, enabled=False)
+            states = (AgentHookState.NOT_CONFIGURED,) * len(hooks)
+        case "status":
+            states = tuple(agent_hook_state(hook) for hook in hooks)
+        case _ as unknown:
+            assert_never(unknown)
+    for hook, state in zip(hooks, states, strict=True):
+        suffix = hook.status_suffix if state is AgentHookState.CONFIGURED else ""
+        print(f"{hook.adapter}: {state.value}{suffix}")
     return 0
 
 

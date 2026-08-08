@@ -8,14 +8,20 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import assert_never, cast
 
 from .agent_resume import exact_resume_argv, resume_argv_for_session
 from .app_profiles import (
     DEFAULT_APP_PROFILES,
     AppProfile,
     AppProfiles,
-    DefaultRestoreMode,
+    CapturedRestore,
+    ConfiguredRestore,
+    DefaultRestorePolicy,
+    IgnoreRestore,
+    PrefillRestore,
+    ResumeAdapter,
+    ResumeRestore,
 )
 from .kitty_client import LiveTab
 from .model import (
@@ -198,10 +204,11 @@ def _foreground_argv(window: KittyWindow, profiles: AppProfiles) -> list[str]:
     candidates: list[list[str]] = []
     for process in reversed(window.get("foreground_processes", [])):
         argv = _command_argv(process.get("cmdline"))
-        if argv:
-            candidates.append(argv)
-            profile = profiles.match(_command_name(argv))
-            if profile is not None and profile.agent:
+        if not argv:
+            continue
+        candidates.append(argv)
+        match profiles.match(_command_name(argv)):
+            case AppProfile(kind="agent"):
                 return argv
     if candidates:
         return candidates[0]
@@ -339,42 +346,77 @@ def _codex_resume(argv: Sequence[str]) -> list[str]:
     return ["codex", "resume", session] if session else ["codex", "resume"]
 
 
+def _agent_resume_fallback(adapter: ResumeAdapter, argv: Sequence[str]) -> list[str]:
+    """Normalize a live agent invocation when no exact hook identity is available."""
+    match adapter:
+        case "claude":
+            return _claude_resume(argv)
+        case "codex":
+            return _codex_resume(argv)
+        case "pi":
+            return list(argv)
+        case _ as unknown:
+            assert_never(unknown)
+
+
 def _restore_command(
     argv: Sequence[str],
     *,
     profile: AppProfile | None,
-    default_restore: DefaultRestoreMode,
+    default_restore: DefaultRestorePolicy,
     resolved_resume: Sequence[str] = (),
 ) -> RestoreSpec | None:
     """Apply one configured app policy to captured foreground process metadata."""
     program = _command_name(argv)
     if not argv or not program or program.casefold() in _SHELLS:
         return None
-    restore = profile.restore if profile is not None else default_restore
-    if restore == "ignore":
-        return None
-    exact_resume = (
-        exact_resume_argv(profile.adapter, resolved_resume)
-        if profile is not None and profile.adapter is not None
-        else None
-    )
-    if exact_resume is not None:
-        restore_argv = exact_resume
-    elif profile is not None and profile.adapter == "claude":
-        restore_argv = _claude_resume(argv)
-    elif profile is not None and profile.adapter == "codex":
-        restore_argv = _codex_resume(argv)
-    elif profile is not None and restore == "configured":
-        restore_argv = list(profile.argv)
-    else:
-        restore_argv = list(argv)
-    kind: RestoreKind = "agent" if profile is not None and profile.agent else "foreground"
+    policy = profile.restore if profile is not None else default_restore
+    match policy:
+        case IgnoreRestore():
+            return None
+        case ResumeRestore(adapter=adapter):
+            restore_argv = exact_resume_argv(adapter, resolved_resume) or _agent_resume_fallback(
+                adapter, argv
+            )
+            auto_run = True
+        case ConfiguredRestore(argv=configured_argv):
+            restore_argv = list(configured_argv)
+            auto_run = True
+        case CapturedRestore():
+            restore_argv = list(argv)
+            auto_run = True
+        case PrefillRestore():
+            restore_argv = list(argv)
+            auto_run = False
+        case _ as unknown:
+            assert_never(unknown)
+    kind: RestoreKind = "agent" if profile is not None and profile.kind == "agent" else "foreground"
     return {
         "argv": restore_argv,
         "command": shlex.join(restore_argv),
         "kind": kind,
-        "auto_run": restore in {"resume", "captured", "configured"},
+        "auto_run": auto_run,
     }
+
+
+def _resolved_resume_command(
+    adapter: ResumeAdapter,
+    window: KittyWindow,
+    previous: Mapping[str, object],
+    discovered: Sequence[str],
+) -> Sequence[str]:
+    """Choose a pane marker, live discovery, or prior exact resume in that order."""
+    marker = resume_argv_for_session(
+        adapter,
+        window.get("user_vars", {}).get(AGENT_SESSION_VAR),
+    )
+    if marker is not None:
+        return marker
+    if discovered:
+        return discovered
+    prior_restore = _mapping(previous.get("restore"))
+    prior_argv = _command_argv(prior_restore.get("argv") if prior_restore is not None else None)
+    return exact_resume_argv(adapter, prior_argv) or ()
 
 
 @dataclass(slots=True)
@@ -500,23 +542,17 @@ class _ContextBuilder:
         argv = _foreground_argv(window, self.profiles)
         program = _command_name(argv)
         profile = self.profiles.match(program)
-        agent = profile.name if profile is not None and profile.agent else None
-        resolved_resume: Sequence[str] = self.agent_resumes.get(window_id, ())
-        if profile is not None and profile.adapter is not None:
-            marker_resume = resume_argv_for_session(
-                profile.adapter,
-                window.get("user_vars", {}).get(AGENT_SESSION_VAR),
-            )
-            if marker_resume is not None:
-                resolved_resume = marker_resume
-            elif not resolved_resume:
-                prior_restore = _mapping(old.get("restore"))
-                prior_argv = _command_argv(
-                    prior_restore.get("argv") if prior_restore is not None else None
+        agent = profile.name if profile is not None and profile.kind == "agent" else None
+        match profile:
+            case AppProfile(restore=ResumeRestore(adapter=adapter)):
+                resolved_resume = _resolved_resume_command(
+                    adapter,
+                    window,
+                    old,
+                    self.agent_resumes.get(window_id, ()),
                 )
-                prior_resume = exact_resume_argv(profile.adapter, prior_argv)
-                if prior_resume is not None:
-                    resolved_resume = prior_resume
+            case _:
+                resolved_resume = ()
         alternate_screen = bool(window.get("in_alternate_screen"))
         output, output_command = self._last_output(window, old, events, history)
         screens = self._screens(window_id, old, alternate_screen)
