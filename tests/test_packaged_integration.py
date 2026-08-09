@@ -135,6 +135,12 @@ class PackagedIntegrationTests(unittest.TestCase):
             )
             close.assert_called_once_with(9, "boss")
 
+        with mock.patch.object(actions, "reload_config_preserving_session") as reload_config:
+            self.assertIsNone(
+                call(actions, "handle_result", ["kitten", "reload-config"], None, 9, "boss")
+            )
+            reload_config.assert_called_once_with("boss", actions.get_options)
+
         with mock.patch.dict(sys.modules, fake_modules):
             assert_session_close_handler(actions, options)
 
@@ -156,7 +162,12 @@ class PackagedIntegrationTests(unittest.TestCase):
             )
             set_filter.assert_called_once_with("var:kisesh_session=one", "boss", options)
 
-        for arguments in (["kitten"], ["kitten", "unknown"], ["kitten", "safe-close", "extra"]):
+        for arguments in (
+            ["kitten"],
+            ["kitten", "unknown"],
+            ["kitten", "safe-close", "extra"],
+            ["kitten", "reload-config", "extra"],
+        ):
             with (
                 self.subTest(arguments=arguments),
                 self.assertRaisesRegex(ValueError, "unknown KiSesh action"),

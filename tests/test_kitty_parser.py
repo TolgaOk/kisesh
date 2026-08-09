@@ -286,6 +286,57 @@ print(json.dumps({"mods": key.mods, "key": key.key, "resolved": resolved}))
         )
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
+    def test_reload_shortcuts_resolve_to_the_session_preserving_action(self) -> None:
+        """Resolve both native reload chords through Kitty's real key parser."""
+
+        integration = Path(__file__).parents[1] / "kisesh" / "integration" / "kisesh.conf"
+        program = """
+import json
+import sys
+from kitty.config import load_config
+from kitty.keys import Mappings
+from kitty.options.utils import parse_shortcut
+
+options = load_config(sys.argv[1])
+
+class FocusScenario(Mappings):
+    def __init__(self):
+        self.window = object()
+
+    def get_active_window(self):
+        return self.window
+
+    def match_windows(self, expression):
+        del expression
+        return iter(())
+
+resolved = {
+    shortcut: [
+        definition.definition
+        for definition in FocusScenario().matching_key_actions(
+            options.keyboard_modes[""].keymap[parse_shortcut(shortcut)]
+        )
+    ]
+    for shortcut in ("ctrl+cmd+,", "ctrl+shift+f5")
+}
+print(json.dumps(resolved))
+"""
+        result = subprocess.run(
+            [shutil.which("kitty") or "kitty", "+runpy", program, str(integration)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        action = "kitten ~/.local/lib/kisesh/integration/actions.py reload-config"
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"ctrl+cmd+,": [action], "ctrl+shift+f5": [action]},
+        )
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_layout_fallback_is_scoped_to_tracked_sessions_by_real_kitty(self) -> None:
         """Resolve the Alt-Z condition through Kitty's real key engine."""
 

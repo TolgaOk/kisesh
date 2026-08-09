@@ -135,6 +135,23 @@ class IsolatedKitty:
         )
         return self.remote("kitten", str(probe)).stdout.strip()
 
+    def configured_font_size(self) -> float:
+        """Read the font size from the isolated process's current options."""
+        probe = self.root / "font_size_probe.py"
+        probe.write_text(
+            '"""Report Kitty\'s configured font size."""\n'
+            "from kittens.tui.handler import result_handler\n"
+            "from kitty.fast_data_types import get_options\n"
+            "def main(args):\n"
+            "    del args\n"
+            "@result_handler(no_ui=True)\n"
+            "def handle_result(args, answer, target_window_id, boss):\n"
+            "    del args, answer, target_window_id, boss\n"
+            "    return str(get_options().font_size)\n",
+            encoding="utf-8",
+        )
+        return float(self.remote("kitten", str(probe)).stdout.strip())
+
     def wait_for(
         self,
         predicate: StatePredicate,
@@ -233,6 +250,17 @@ def _mapped_manager_close_action() -> list[str]:
         line.split(maxsplit=4)[4]
         for line in integration.splitlines()
         if line.startswith("map --when-focus-on var:kisesh_ui alt+s ")
+    )
+    return shlex.split(definition)
+
+
+def _mapped_reload_action() -> list[str]:
+    """Read the exact action attached to Kitty's macOS reload chord."""
+    integration = (PROJECT / "kisesh/integration/kisesh.conf").read_text(encoding="utf-8")
+    definition = next(
+        line.split(maxsplit=2)[2]
+        for line in integration.splitlines()
+        if line.startswith("map ctrl+cmd+, ")
     )
     return shlex.split(definition)
 
@@ -550,6 +578,66 @@ class LiveKittyFilterTests(unittest.TestCase):
                 self.assertEqual(before, "21.0")
                 self.assertEqual(after, before)
                 self.assertNotEqual(after, "13.0")
+            finally:
+                server.stop()
+
+    def test_config_reload_keeps_other_live_session_tabs_filtered(self) -> None:
+        """Reload changed options without exposing another live session's tab."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            server = IsolatedKitty(Path(temporary))
+            try:
+                server.start()
+                server.remote(
+                    "set-user-vars",
+                    "--match",
+                    "all",
+                    f"{SESSION_ID_VAR}=focused",
+                    f"{SESSION_SLUG_VAR}=focused",
+                )
+                server.remote(
+                    "launch",
+                    "--type=tab",
+                    "--tab-title=Hidden session",
+                    f"--var={SESSION_ID_VAR}=hidden",
+                    f"--var={SESSION_SLUG_VAR}=hidden",
+                    "/bin/sh",
+                    "-c",
+                    "while :; do sleep 1; done",
+                )
+                state = server.wait_for(lambda current: len(_tabs(current)) == 2)
+                client = KittyClient(executable=server.kitty, socket=server.socket)
+                focused = next(tab for tab in client.tabs(state) if tab.session_id() == "focused")
+                client.activate_session("focused", focused)
+                focused_window_id = _focus_session(server, "focused")
+                expected_filter = (
+                    f"var:{SESSION_ID_VAR}=focused or "
+                    f"not var:{SESSION_SCOPE_VAR}={focused.os_window_id}"
+                )
+                self.assertEqual(server.tab_filter(), expected_filter)
+                server.config.write_text(
+                    server.config.read_text(encoding="utf-8").replace(
+                        "font_size 13",
+                        "font_size 17",
+                    ),
+                    encoding="utf-8",
+                )
+
+                server.remote(
+                    "action",
+                    "--match",
+                    f"id:{focused_window_id}",
+                    *_mapped_reload_action(),
+                )
+
+                reloaded = server.wait_for(
+                    lambda current: (
+                        len(_session_tabs(current, "focused")) == 1
+                        and len(_session_tabs(current, "hidden")) == 1
+                    )
+                )
+                self.assertEqual(server.configured_font_size(), 17.0)
+                self.assertEqual(server.tab_filter(), expected_filter)
+                self.assertEqual(len(_tabs(reloaded)), 2)
             finally:
                 server.stop()
 

@@ -63,7 +63,7 @@ class LauncherTests(unittest.TestCase):
         mappings = [line for line in integration.splitlines() if line.startswith("map ")]
 
         launch_mappings = [line for line in mappings if " launch " in line]
-        self.assertEqual(len(mappings), 5)
+        self.assertEqual(len(mappings), 7)
         for mapping in launch_mappings:
             self.assertIn("~/.local/lib/kisesh/bin/kisesh", mapping)
             self.assertNotIn(" python3 ", mapping)
@@ -95,6 +95,16 @@ class LauncherTests(unittest.TestCase):
         self.assertLess(launch_index, close_index)
         close_mapping = "map cmd+w kitten ~/.local/lib/kisesh/integration/actions.py safe-close"
         self.assertIn(close_mapping, mappings)
+        reload_mappings = [
+            line for line in mappings if line.startswith(("map ctrl+cmd+, ", "map ctrl+shift+f5 "))
+        ]
+        self.assertEqual(
+            reload_mappings,
+            [
+                "map ctrl+cmd+, kitten ~/.local/lib/kisesh/integration/actions.py reload-config",
+                "map ctrl+shift+f5 kitten ~/.local/lib/kisesh/integration/actions.py reload-config",
+            ],
+        )
         overlay_close = (
             "map --when-focus-on var:kisesh_ui cmd+w combine : last_used_layout : close_window"
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from importlib import import_module, reload
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
         SessionCloseBoss,
         SessionFilterBoss,
         SessionFilterOptions,
+        SessionReloadBoss,
     )
 
 
@@ -58,6 +60,17 @@ class SessionFilterHandler(Protocol):
         """Apply one filter without reloading unrelated Kitty options."""
 
 
+class ReloadConfigHandler(Protocol):
+    """Callable contract for reloading Kitty without exposing hidden sessions."""
+
+    def __call__(
+        self,
+        boss: SessionReloadBoss,
+        options_provider: Callable[[], SessionFilterOptions],
+    ) -> None:
+        """Reload configured options and restore active session isolation."""
+
+
 def _add_runtime_import_path() -> None:
     """Expose the runtime package before importing shared KiSesh behavior."""
     runtime = str(Path(os.environ.get("KISESH_INSTALL_ROOT", "~/.local/lib/kisesh")).expanduser())
@@ -73,6 +86,10 @@ kitty_actions = reload(import_module("kisesh.kitty_actions"))
 toggle_session_layout = cast(LayoutToggleHandler, kitty_actions.toggle_session_layout)
 close_live_session = cast(SessionCloseHandler, kitty_actions.close_live_session)
 set_session_filter = cast(SessionFilterHandler, kitty_actions.set_session_filter)
+reload_config_preserving_session = cast(
+    ReloadConfigHandler,
+    kitty_actions.reload_config_preserving_session,
+)
 request_tab_close = cast(
     CloseHandler,
     import_module("kisesh.close_guard").request_tab_close,
@@ -100,6 +117,12 @@ def handle_result(
         return
     if action == "safe-close" and not payload:
         request_tab_close(target_window_id, boss)
+        return
+    if action == "reload-config" and not payload:
+        reload_config_preserving_session(
+            cast("SessionReloadBoss", boss),
+            cast("Callable[[], SessionFilterOptions]", get_options),
+        )
         return
     if action == "session-filter":
         if len(payload) != 1:

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from typing import Protocol
 
-from .model import SESSION_ID_VAR, SESSION_SCOPE_VAR
+from .model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SCOPE_VAR
 
 
 class CurrentLayout(Protocol):
@@ -83,6 +84,71 @@ def set_session_filter(
     for manager in boss.all_tab_managers:
         manager.mark_tab_bar_dirty()
         manager.update_tab_bar_data()
+
+
+@dataclass(frozen=True, slots=True)
+class SessionFilterTarget:
+    """Stable session identity captured before Kitty replaces its options."""
+
+    session_id: str
+    scope: str
+
+    @property
+    def expression(self) -> str:
+        """Return the scoped Kitty query that isolates this session."""
+        return f"var:{SESSION_ID_VAR}={self.session_id} or not var:{SESSION_SCOPE_VAR}={self.scope}"
+
+
+class SessionReloadWindow(Protocol):
+    """Pane variables required to identify a focused KiSesh session."""
+
+    user_vars: dict[str, str]
+
+
+class SessionReloadTab(Protocol):
+    """Native tab contents inspected before a config reload."""
+
+    def __iter__(self) -> Iterator[SessionReloadWindow]:
+        """Yield every pane, including any transient KiSesh overlay."""
+
+
+class SessionReloadBoss(SessionFilterBoss, Protocol):
+    """Kitty controller operations required for a session-safe reload."""
+
+    @property
+    def active_tab(self) -> SessionReloadTab | None:
+        """Return the focused native tab before options are replaced."""
+
+    def load_config_file(self) -> None:
+        """Reload and apply Kitty's configured options."""
+
+
+def _session_filter_target(tab: SessionReloadTab | None) -> SessionFilterTarget | None:
+    """Return one complete session identity shared by all content panes."""
+    if tab is None:
+        return None
+    targets: set[SessionFilterTarget] = set()
+    for window in tab:
+        variables = window.user_vars
+        if variables.get(KISESH_UI_VAR) == "yes":
+            continue
+        session_id = variables.get(SESSION_ID_VAR)
+        scope = variables.get(SESSION_SCOPE_VAR)
+        if not session_id or not scope:
+            return None
+        targets.add(SessionFilterTarget(session_id, scope))
+    return next(iter(targets)) if len(targets) == 1 else None
+
+
+def reload_config_preserving_session(
+    boss: SessionReloadBoss,
+    options_provider: Callable[[], SessionFilterOptions],
+) -> None:
+    """Reload Kitty normally and restore a uniquely focused session filter."""
+    target = _session_filter_target(boss.active_tab)
+    boss.load_config_file()
+    if target is not None:
+        set_session_filter(target.expression, boss, options_provider())
 
 
 class SessionCloseWindow(Protocol):
