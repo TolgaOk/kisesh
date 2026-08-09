@@ -268,9 +268,14 @@ def _render_fixture(width: int) -> str:
         ):
             icon, name = session_bar._session_descriptor(tab)
             session_label = f"{icon} {name}"
+            maximum_session_width = (
+                width
+                - session_bar.MIN_SPLIT_SEGMENT_CELLS
+                - session_bar._cell_width(session_bar.TAB_START_CAP)
+            )
             session_width = max(
                 session_bar.MIN_SPLIT_SEGMENT_CELLS,
-                min(session_bar._cell_width(session_label) + 2, width // 2),
+                min(session_bar._cell_width(session_label) + 2, maximum_session_width),
             )
             content_width = (
                 width - session_width - session_bar._cell_width(session_bar.TAB_START_CAP)
@@ -415,6 +420,39 @@ class SessionBarRenderingTests(unittest.TestCase):
 
 
 class SessionBarAdapterTests(unittest.TestCase):
+    def test_full_session_name_precedes_extra_focused_tab_width(self) -> None:
+        datum = Datum("Shell", 1, is_active=True)
+        variables = {SESSION_ID_VAR: "session-id", SESSION_NAME_VAR: "Dotfiles"}
+        boss = Boss({1: NativeTab(Window(variables, title="Shell"))})
+        drawer = RecordingDrawer()
+        screen = Screen(Cursor(x=0))
+
+        with (
+            mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
+            mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
+            mock.patch(
+                "kisesh.session_bar.importlib.import_module",
+                return_value=SimpleNamespace(as_rgb=lambda color: color),
+            ),
+        ):
+            result = session_bar.draw_tab(
+                DrawData("top"),
+                screen,
+                datum,
+                0,
+                19,
+                1,
+                True,
+                ExtraData(None),
+            )
+
+        self.assertEqual(result, 19)
+        self.assertEqual(
+            [cast(Datum, call[2]).title for call in drawer.calls],
+            [" Dotfiles", " S…"],
+        )
+        self.assertEqual([call[4] for call in drawer.calls], [12, 6])
+
     def test_pane_position_tracks_focus_close_and_manager_overlay(self) -> None:
         datum = Datum("Codex", 1, is_active=True)
         following = Datum("Editor", 2)

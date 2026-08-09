@@ -479,7 +479,7 @@ def _segment_plan(
     resolved: _ResolvedTabs,
     max_title_length: int,
 ) -> _SegmentPlan | None:
-    """Build two native segments with facing round caps when space permits."""
+    """Build two native segments while preserving useful content for each."""
     current = resolved.current
     replacement = cast(Callable[..., object] | None, getattr(tab, "_replace", None))
     session_draw_data = _rounded_draw_data(draw_data)
@@ -493,9 +493,10 @@ def _segment_plan(
         return None
     icon, session_name = _session_descriptor(current)
     session_label = f"{icon} {session_name}"
+    maximum_session_width = max_title_length - MIN_SPLIT_SEGMENT_CELLS - _cell_width(TAB_START_CAP)
     session_width = max(
         MIN_SPLIT_SEGMENT_CELLS,
-        min(_cell_width(session_label) + 2, max_title_length // 2),
+        min(_cell_width(session_label) + 2, maximum_session_width),
     )
     content_width = max_title_length - session_width - _cell_width(TAB_START_CAP)
     try:
