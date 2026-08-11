@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import os
+import shutil
+import subprocess
 import sys
 import unittest
 from collections.abc import Callable
@@ -80,6 +82,34 @@ def assert_session_close_handler(module: ModuleType, options: object) -> None:
 
 class PackagedIntegrationTests(unittest.TestCase):
     """Exercise the exact Python resources shipped inside the wheel."""
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
+    def test_no_ui_actions_load_with_pre_filter_model_cached_by_kitty(self) -> None:
+        actions = Path(__file__).parents[1] / "kisesh" / "integration" / "actions.py"
+        project = Path(__file__).parents[1]
+        script = (
+            "import runpy,sys; "
+            f"sys.path.insert(0,{str(project)!r}); "
+            "import kisesh.model as model; "
+            "model.__dict__.pop('SessionFilterTarget',None); "
+            "model.__dict__.pop('session_filter_expression',None); "
+            "sys.modules.pop('kisesh.kitty_actions',None); "
+            "loaded=runpy.run_path(sys.argv[1]); "
+            "print(callable(loaded['handle_result']))"
+        )
+
+        result = subprocess.run(
+            [shutil.which("kitty") or "kitty", "+runpy", script, str(actions)],
+            cwd=project,
+            env={**os.environ, "KISESH_INSTALL_ROOT": str(project)},
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "True")
 
     def test_packaged_kittens_load_from_a_runtime_and_forward_exact_calls(self) -> None:
         handler_module = ModuleType("kittens.tui.handler")

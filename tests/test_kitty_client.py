@@ -203,6 +203,74 @@ class KittyClientTests(unittest.TestCase):
             f"var:{SESSION_ID_VAR}=session-id or not var:{SESSION_SCOPE_VAR}=10",
         )
 
+    def test_activation_preserves_selected_sessions_in_every_os_window(self) -> None:
+        state: list[KittyOsWindowState] = [
+            {
+                "id": 10,
+                "tabs": [
+                    {
+                        "id": 2,
+                        "is_active": True,
+                        "windows": [
+                            {
+                                "id": 3,
+                                "user_vars": {
+                                    SESSION_ID_VAR: "left",
+                                    SESSION_SCOPE_VAR: "10",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "id": 4,
+                        "windows": [
+                            {
+                                "id": 5,
+                                "user_vars": {
+                                    SESSION_ID_VAR: "left-hidden",
+                                    SESSION_SCOPE_VAR: "10",
+                                },
+                            }
+                        ],
+                    },
+                ],
+            },
+            {
+                "id": 20,
+                "is_focused": True,
+                "tabs": [
+                    {
+                        "id": 6,
+                        "is_active": True,
+                        "is_focused": True,
+                        "windows": [{"id": 7, "user_vars": {SESSION_ID_VAR: "right"}}],
+                    },
+                    {
+                        "id": 8,
+                        "windows": [{"id": 9, "user_vars": {SESSION_ID_VAR: "right-hidden"}}],
+                    },
+                ],
+            },
+        ]
+        runner = RecordingCommandRunner(stdout=json.dumps(state))
+        client = KittyClient(executable="/kitty", socket="unix:/tmp/test.sock", runner=runner)
+        target = next(tab for tab in client.tabs(state) if tab.session_id() == "right")
+
+        client.activate_session("right", target)
+
+        scope_commands = [
+            command
+            for command in runner.commands
+            if "set-user-vars" in command and SESSION_SCOPE_VAR in " ".join(command)
+        ]
+        self.assertEqual(len(scope_commands), 1)
+        self.assertEqual(scope_commands[0][-2:], ["id:7 or id:9", f"{SESSION_SCOPE_VAR}=20"])
+        self.assertEqual(
+            runner.commands[-1][-1],
+            "(var:kisesh_session=left or not var:kisesh_scope=10) and "
+            "(var:kisesh_session=right or not var:kisesh_scope=20)",
+        )
+
     def test_focused_tab_skips_a_standalone_manager_os_window(self) -> None:
         state: list[KittyOsWindowState] = [
             {

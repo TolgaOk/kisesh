@@ -68,6 +68,43 @@ print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
         self.assertEqual(json.loads(result.stdout), ["other-os-window", "target"])
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
+    def test_multi_window_filter_isolates_each_window_with_real_query_parser(self) -> None:
+        """Validate combined window selections through Kitty's query engine."""
+
+        program = """
+import json
+from kitty.search_query_parser import search
+
+query = (
+    "(var:kisesh_session=left or not var:kisesh_scope=10) and "
+    "(var:kisesh_session=right or not var:kisesh_scope=20)"
+)
+universal = {"left", "left-hidden", "right", "right-hidden", "unmanaged"}
+
+def get_matches(location, value, candidates):
+    assert location == "var"
+    matches = {
+        "kisesh_session=left": {"left"},
+        "kisesh_scope=10": {"left", "left-hidden"},
+        "kisesh_session=right": {"right"},
+        "kisesh_scope=20": {"right", "right-hidden"},
+    }
+    return matches.get(value, set()) & candidates
+
+print(json.dumps(sorted(search(query, ("var",), universal, get_matches))))
+"""
+        result = subprocess.run(
+            [shutil.which("kitty") or "kitty", "+runpy", program],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["left", "right", "unmanaged"])
+
+    @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_safe_multi_tab_snapshot_is_accepted_by_installed_kitty(self) -> None:
         """Exercise Kitty's real parser, not a kisesh imitation of it."""
 
