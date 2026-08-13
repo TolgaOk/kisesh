@@ -268,12 +268,9 @@ def _render_fixture(width: int) -> str:
         ):
             icon, name = session_bar._session_descriptor(tab)
             session_label = f"{icon} {name}"
-            session_width = max(
-                session_bar.MIN_SPLIT_SEGMENT_CELLS,
-                min(session_bar._cell_width(session_label) + 2, width // 2),
-            )
-            content_width = (
-                width - session_width - session_bar._cell_width(session_bar.TAB_START_CAP)
+            session_width, content_width = session_bar._allocate_segment_widths(
+                session_label,
+                width,
             )
             session_text = session_bar._ellipsize(session_label, session_width - 2)
             tab_text = render_tab_label(tab, tab, content_width - 2)
@@ -415,6 +412,45 @@ class SessionBarRenderingTests(unittest.TestCase):
 
 
 class SessionBarAdapterTests(unittest.TestCase):
+    def test_full_session_name_precedes_extra_focused_tab_width(self) -> None:
+        datum = Datum("Shell", 1, is_active=True)
+        variables = {SESSION_ID_VAR: "session-id", SESSION_NAME_VAR: "Dotfiles"}
+        boss = Boss({1: NativeTab(Window(variables, title="Shell"))})
+        cases = (
+            (19, [" Dotfiles", " S…"], [12, 6]),
+            (17, [" Dotfiles", "…"], [12, 4]),
+        )
+
+        for width, titles, segment_widths in cases:
+            drawer = RecordingDrawer()
+            screen = Screen(Cursor(x=0))
+            with (
+                self.subTest(width=width),
+                mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
+                mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
+                mock.patch(
+                    "kisesh.session_bar.importlib.import_module",
+                    return_value=SimpleNamespace(as_rgb=lambda color: color),
+                ),
+            ):
+                result = session_bar.draw_tab(
+                    DrawData("top"),
+                    screen,
+                    datum,
+                    0,
+                    width,
+                    1,
+                    True,
+                    ExtraData(None),
+                )
+
+            self.assertEqual(result, width)
+            self.assertEqual(
+                [cast(Datum, call[2]).title for call in drawer.calls],
+                titles,
+            )
+            self.assertEqual([call[4] for call in drawer.calls], segment_widths)
+
     def test_pane_position_tracks_focus_close_and_manager_overlay(self) -> None:
         datum = Datum("Codex", 1, is_active=True)
         following = Datum("Editor", 2)
@@ -1046,40 +1082,31 @@ class SessionBarAdapterTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "True True")
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
-    def test_real_kitty_first_tab_keeps_session_segment_inactive(self) -> None:
+    def test_real_kitty_narrow_first_tab_keeps_full_inactive_session_name(self) -> None:
         script = (
             "import sys; "
             f"sys.path.insert(0,{str(PROJECT)!r}); "
-            "from collections import namedtuple; "
             "from types import SimpleNamespace as N; "
-            "from kitty.tab_bar import ExtraData,TabBarData; "
+            "from kitty.fast_data_types import Color,Screen; "
+            "import kitty.tab_bar as tb; "
             "import kisesh.session_bar as s; "
-            f"v={{'{SESSION_ID_VAR}':'id','{SESSION_NAME_VAR}':'Research'}}; "
-            "w=N(user_vars=v,child=N(cmdline=('-zsh',)),title='Shell'); "
-            "boss=N(tab_for_id={1:[w],2:[w]}.get); "
+            "tb.apply_title_template=lambda draw,tab,index,maximum:tab.title; "
+            f"v={{'{SESSION_ID_VAR}':'id','{SESSION_NAME_VAR}':'dotfiles'}}; "
+            "child=N(cmdline=('-zsh',),foreground_cmdline=(),foreground_processes=()); "
+            "w=N(user_vars=v,child=child,title='Shell'); "
+            "boss=N(tab_for_id={1:[w]}.get); "
             "s._kitty_boss=lambda boss=boss:boss; "
-            "current=TabBarData('Shell',is_active=True,tab_id=1); "
-            "following=TabBarData('Tests',tab_id=2); "
-            "extra=ExtraData(); extra.prev_tab=None; extra.next_tab=following; "
+            "s._kitty_drawer=lambda drawer=tb.draw_tab_with_powerline:drawer; "
+            "current=tb.TabBarData('Shell',is_active=True,tab_id=1); "
+            "extra=tb.ExtraData(); extra.prev_tab=None; extra.next_tab=None; "
             "extra.for_layout=False; "
-            "D=namedtuple('D','tab_bg tab_fg default_bg powerline_style'); "
-            "draw=D(lambda t:0x101010 if t.is_active else 0x202020,"
-            "lambda t:0xf0f0f0 if t.is_active else 0x808080,0x303030,'slanted'); "
-            "screen=N(cursor=N(x=7,bg=0,fg=0)); seen=[]; painted=[]; "
-            "screen.draw=lambda text,screen=screen,painted=painted:"
-            "(painted.append((text,screen.cursor.bg,screen.cursor.fg)),"
-            "setattr(screen.cursor,'x',screen.cursor.x+len(text)),None)[-1]; "
-            "drawer=lambda d,sc,t,b,m,i,last,e,seen=seen:"
-            "(seen.append((t.title,t.is_active,sc.cursor.bg,sc.cursor.fg,"
-            "d.powerline_style,e.next_tab)),"
-            "setattr(sc.cursor,'x',b+m),b+m)[-1]; "
-            "s._kitty_drawer=lambda drawer=drawer:drawer; "
-            "result=s.draw_tab(draw,screen,current,7,60,1,False,extra); "
-            "cap_bg=s._default_bar_background(draw); "
-            "tab_bg=s._native_tab_colors(draw,current).background; "
-            "print(result==67,len(seen)==2,seen[0][1] is False,seen[1][1] is True,"
-            "seen[0][4]=='round',seen[1][4]=='slanted',seen[0][5] is None,"
-            "painted==[('',cap_bg,tab_bg)])"
+            "draw=tb.DrawData(0,'',0,'',(1,),Color(255,255,255),Color(1,2,3),"
+            "Color(200,200,200),Color(4,5,6),Color(0,0,0),'{title}',None,'',"
+            "'slanted','top',0,1); "
+            "screen=Screen(None,1,80,0,0,0); "
+            "result=s.draw_tab(draw,screen,current,0,17,1,True,extra); "
+            "rendered=str(screen.line(0)); "
+            "print(result==19,rendered.startswith('  dotfiles  …  '))"
         )
         result = subprocess.run(
             ["kitty", "+runpy", script],
@@ -1091,19 +1118,20 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "True True True True True True True True")
+        self.assertEqual(result.stdout.strip(), "True True")
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
-    def test_real_entrypoint_loads_with_pre_feature_model_cached_in_kitty(self) -> None:
+    def test_real_entrypoint_refreshes_a_cached_renderer_with_an_older_model(self) -> None:
         entrypoint = PROJECT / "kisesh" / "integration" / "tab_bar.py"
         script = (
             "import runpy,sys; "
             f"sys.path.insert(0,{str(PROJECT)!r}); "
             "import kisesh.model as model; "
             "del model.AGENT_VAR; del model.SESSION_NAME_VAR; "
-            "sys.modules.pop('kisesh.session_bar',None); "
+            "import kisesh.session_bar as cached; "
+            "stale=lambda *args:0; cached.draw_tab=stale; "
             "loaded=runpy.run_path(sys.argv[1]); "
-            "print(loaded['draw_tab'].__module__)"
+            "print(loaded['draw_tab'].__module__,loaded['draw_tab'] is stale)"
         )
         result = subprocess.run(
             ["kitty", "+runpy", script, str(entrypoint)],
@@ -1115,7 +1143,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "kisesh.session_bar")
+        self.assertEqual(result.stdout.strip(), "kisesh.session_bar False")
 
 
 if __name__ == "__main__":

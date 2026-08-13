@@ -31,7 +31,7 @@ from kisesh.cli import (
     DetachTab,
     DisableIntegration,
     Doctor,
-    InstallIntegration,
+    EnableIntegration,
     ListSessions,
     MaintenanceCommand,
     Manager,
@@ -153,7 +153,7 @@ class CliTests(unittest.TestCase):
         )
         discard = parse_arguments(["open", "project", "--unowned-tabs", "discard"])
         promoted = parse_arguments(["close", "project", "--promote-os-window", "41"])
-        integration = parse_arguments(["install", "--kitty-config", "/tmp/kitty.conf"])
+        integration = parse_arguments(["enable", "--kitty-config", "/tmp/kitty.conf"])
         hook = parse_arguments(["agent-hook", "claude"])
         direct_hook = parse_arguments(
             [
@@ -184,7 +184,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(cast(CloseSession, promoted.command).promote_os_window, 41)
         self.assertEqual(
-            cast(InstallIntegration, integration.command).kitty_config,
+            cast(EnableIntegration, integration.command).kitty_config,
             Path("/tmp/kitty.conf"),
         )
         self.assertEqual(cast(AgentHook, hook.command).adapter, "claude")
@@ -199,6 +199,8 @@ class CliTests(unittest.TestCase):
         )
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_arguments(["agent-hook", "unknown"])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_arguments(["install"])
 
     def test_only_live_operations_construct_an_eager_kitty_client(self) -> None:
         """Keep stored-context reads offline unless a connection override is explicit."""
@@ -593,7 +595,7 @@ class CliTests(unittest.TestCase):
             (CreateSession("Project"), "_run_membership", 13),
             (ArchiveSession("project"), "_run_lifecycle", 14),
             (Doctor(), "_run_maintenance", 15),
-            (InstallIntegration(), "_run_integration", 16),
+            (EnableIntegration(), "_run_integration", 16),
             (Agents("status"), "_run_agents", 17),
         )
         for command, function_name, result in cases:
@@ -608,16 +610,16 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(_dispatch(config, service), result)
             if isinstance(command, Manager):
                 runner.assert_called_once_with(service)
-            elif isinstance(command, (InstallIntegration, Agents)):
+            elif isinstance(command, (EnableIntegration, Agents)):
                 runner.assert_called_once_with(command)
             else:
                 runner.assert_called_once_with(command, service)
 
-    def test_integration_commands_map_to_reversible_typed_installer_actions(self) -> None:
-        """Keep install, disable, uninstall, and purge available from packaged wheels."""
+    def test_integration_commands_map_to_reversible_typed_actions(self) -> None:
+        """Keep enable, disable, uninstall, and purge available from packaged wheels."""
         config = Path("/tmp/kitty.conf")
         cases = (
-            (InstallIntegration(config), {"enable": True}),
+            (EnableIntegration(config), {"enable": True}),
             (DisableIntegration(config), {"disable": True}),
             (UninstallIntegration(config), {"uninstall": True, "purge": False}),
             (UninstallIntegration(config, purge=True), {"uninstall": False, "purge": True}),
@@ -625,7 +627,7 @@ class CliTests(unittest.TestCase):
         for command, expected in cases:
             with (
                 self.subTest(command=command),
-                mock.patch("kisesh.installer.run", return_value=19) as install,
+                mock.patch("kisesh.kitty_integration.run", return_value=19) as install,
             ):
                 self.assertEqual(_run_integration(command), 19)
             arguments = install.call_args.args[0]
@@ -690,7 +692,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(main([]), 1)
         self.assertEqual(stderr.getvalue(), "kisesh: not live\n")
 
-        integration = CliConfig(InstallIntegration())
+        integration = CliConfig(EnableIntegration())
         with (
             mock.patch("kisesh.cli.parse_arguments", return_value=integration),
             mock.patch("kisesh.cli._run_integration", return_value=8) as install,

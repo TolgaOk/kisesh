@@ -11,7 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from kisesh.installer import (
+from kisesh.kitty_integration import (
     COMPAT_MANAGED_BEGIN,
     COMPAT_MANAGED_END,
     DEFAULT_LISTEN_ON,
@@ -19,9 +19,9 @@ from kisesh.installer import (
     MANAGED_BEGIN,
     MANAGED_END,
     ConfigProbe,
-    InstallArguments,
-    InstallError,
-    InstallPaths,
+    IntegrationArguments,
+    IntegrationError,
+    IntegrationPaths,
     _app_config_content,
     _backup_once,
     _check_install_target,
@@ -46,7 +46,7 @@ from kisesh.tab_bar_install import install_tab_bar, tab_bar_paths
 PROJECT = Path(__file__).parents[1]
 
 
-class InstallerBoundaryTests(unittest.TestCase):
+class KittyIntegrationBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -56,8 +56,8 @@ class InstallerBoundaryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def paths(self, *, source: Path = PROJECT) -> InstallPaths:
-        return InstallPaths(
+    def paths(self, *, source: Path = PROJECT) -> IntegrationPaths:
+        return IntegrationPaths(
             home=self.home,
             source=source,
             launcher=PROJECT / ".venv" / "bin" / "kisesh",
@@ -75,7 +75,7 @@ class InstallerBoundaryTests(unittest.TestCase):
 
         with (
             mock.patch.dict("os.environ", {}, clear=True),
-            self.assertRaisesRegex(InstallError, "HOME is unavailable"),
+            self.assertRaisesRegex(IntegrationError, "HOME is unavailable"),
         ):
             _home()
 
@@ -118,17 +118,17 @@ class InstallerBoundaryTests(unittest.TestCase):
     def test_source_and_target_checks_fail_closed_without_replacing_foreign_files(self) -> None:
         incomplete = self.root / "incomplete"
         incomplete.mkdir()
-        with self.assertRaisesRegex(InstallError, "package is incomplete"):
+        with self.assertRaisesRegex(IntegrationError, "package is incomplete"):
             _validate_source(self.paths(source=incomplete))
 
         with (
-            mock.patch("kisesh.installer.validate_runtime_source"),
-            self.assertRaisesRegex(InstallError, "default_apps.toml"),
+            mock.patch("kisesh.kitty_integration.validate_runtime_source"),
+            self.assertRaisesRegex(IntegrationError, "default_apps.toml"),
         ):
             _validate_source(self.paths(source=incomplete))
 
         in_place = self.paths(source=PROJECT)
-        in_place = InstallPaths(
+        in_place = IntegrationPaths(
             home=in_place.home,
             source=PROJECT,
             launcher=in_place.launcher,
@@ -142,7 +142,7 @@ class InstallerBoundaryTests(unittest.TestCase):
 
         app_directory = self.paths().app_config
         app_directory.mkdir(parents=True)
-        with self.assertRaisesRegex(InstallError, "app config is not a file"):
+        with self.assertRaisesRegex(IntegrationError, "app config is not a file"):
             paths = self.paths()
             _app_config_content(paths)
 
@@ -182,7 +182,7 @@ class InstallerBoundaryTests(unittest.TestCase):
             mock.patch.dict("os.environ", {"KISESH_CLI": str(unavailable)}, clear=True),
             mock.patch.object(sys, "argv", ["test-runner"]),
             mock.patch.object(sys, "executable", str(self.root / "missing-python")),
-            self.assertRaisesRegex(InstallError, "launcher was not found"),
+            self.assertRaisesRegex(IntegrationError, "launcher was not found"),
         ):
             _console_launcher(self.root / "missing-source", "kisesh", "KISESH_CLI")
 
@@ -193,7 +193,7 @@ class InstallerBoundaryTests(unittest.TestCase):
             (f"{MANAGED_END}\n", "unmatched"),
         )
         for content, message in cases:
-            with self.subTest(message=message), self.assertRaisesRegex(InstallError, message):
+            with self.subTest(message=message), self.assertRaisesRegex(IntegrationError, message):
                 _strip_kisesh_config(content, paths)
 
         absolute = f"include {paths.target / 'integration' / 'kisesh.conf'}\n"
@@ -218,12 +218,12 @@ class InstallerBoundaryTests(unittest.TestCase):
 
         broken = self.root / "broken.conf"
         broken.symlink_to(self.root / "absent")
-        with self.assertRaisesRegex(InstallError, "cannot resolve Kitty config symlink"):
+        with self.assertRaisesRegex(IntegrationError, "cannot resolve Kitty config symlink"):
             _editable_config(broken)
 
         with (
             mock.patch.object(Path, "read_text", side_effect=OSError("permission denied")),
-            self.assertRaisesRegex(InstallError, "cannot read Kitty config"),
+            self.assertRaisesRegex(IntegrationError, "cannot read Kitty config"),
         ):
             _read_config(target)
 
@@ -241,7 +241,7 @@ class InstallerBoundaryTests(unittest.TestCase):
         backup.unlink()
         with (
             mock.patch.object(shutil, "copy2", side_effect=OSError("disk full")),
-            self.assertRaisesRegex(InstallError, "cannot back up"),
+            self.assertRaisesRegex(IntegrationError, "cannot back up"),
         ):
             _backup_once(config)
 
@@ -254,7 +254,7 @@ class InstallerBoundaryTests(unittest.TestCase):
 
         with (
             mock.patch.dict("os.environ", {"TEST_KITTY": "/missing"}, clear=True),
-            self.assertRaisesRegex(InstallError, "is not executable"),
+            self.assertRaisesRegex(IntegrationError, "is not executable"),
         ):
             _find_executable("TEST_KITTY", "kitty", "/app/kitty")
 
@@ -278,7 +278,7 @@ class InstallerBoundaryTests(unittest.TestCase):
             mock.patch.dict("os.environ", {}, clear=True),
             mock.patch.object(shutil, "which", return_value=None),
             mock.patch.object(Path, "is_file", return_value=False),
-            self.assertRaisesRegex(InstallError, "kitty was not found"),
+            self.assertRaisesRegex(IntegrationError, "kitty was not found"),
         ):
             _find_executable("TEST_KITTY", "kitty", "/app/kitty")
 
@@ -297,7 +297,7 @@ class InstallerBoundaryTests(unittest.TestCase):
             with (
                 self.subTest(message=message),
                 mock.patch.object(subprocess, "run", return_value=result),
-                self.assertRaisesRegex(InstallError, message),
+                self.assertRaisesRegex(IntegrationError, message),
             ):
                 _probe_config("/kitty", config, "font_size 14\n")
         with (
@@ -306,7 +306,7 @@ class InstallerBoundaryTests(unittest.TestCase):
                 "run",
                 side_effect=OSError("spawn failed"),
             ),
-            self.assertRaisesRegex(InstallError, "cannot validate"),
+            self.assertRaisesRegex(IntegrationError, "cannot validate"),
         ):
             _probe_config("/kitty", config, "")
 
@@ -320,13 +320,13 @@ class InstallerBoundaryTests(unittest.TestCase):
         for final, message in invalid_finals:
             with (
                 self.subTest(message=message),
-                mock.patch("kisesh.installer._validate_source"),
-                mock.patch("kisesh.installer._check_install_target"),
-                mock.patch("kisesh.installer._find_executable", return_value="/binary"),
-                mock.patch("kisesh.installer.deploy_runtime") as deploy,
-                mock.patch("kisesh.installer.rollback_runtime"),
-                mock.patch("kisesh.installer._probe_config", side_effect=(valid, final)),
-                self.assertRaisesRegex(InstallError, message),
+                mock.patch("kisesh.kitty_integration._validate_source"),
+                mock.patch("kisesh.kitty_integration._check_install_target"),
+                mock.patch("kisesh.kitty_integration._find_executable", return_value="/binary"),
+                mock.patch("kisesh.kitty_integration.deploy_runtime") as deploy,
+                mock.patch("kisesh.kitty_integration.rollback_runtime"),
+                mock.patch("kisesh.kitty_integration._probe_config", side_effect=(valid, final)),
+                self.assertRaisesRegex(IntegrationError, message),
             ):
                 deploy.return_value = mock.MagicMock(changed=False)
                 _enable(paths)
@@ -342,13 +342,13 @@ class InstallerBoundaryTests(unittest.TestCase):
         invalid = ConfigProbe((), "no", DEFAULT_LISTEN_ON)
 
         with (
-            mock.patch("kisesh.installer._validate_source"),
-            mock.patch("kisesh.installer._check_install_target"),
-            mock.patch("kisesh.installer._find_executable", return_value="/binary"),
-            mock.patch("kisesh.installer.deploy_runtime") as deploy,
-            mock.patch("kisesh.installer.rollback_runtime"),
-            mock.patch("kisesh.installer._probe_config", side_effect=(valid, invalid)),
-            self.assertRaisesRegex(InstallError, "remote control"),
+            mock.patch("kisesh.kitty_integration._validate_source"),
+            mock.patch("kisesh.kitty_integration._check_install_target"),
+            mock.patch("kisesh.kitty_integration._find_executable", return_value="/binary"),
+            mock.patch("kisesh.kitty_integration.deploy_runtime") as deploy,
+            mock.patch("kisesh.kitty_integration.rollback_runtime"),
+            mock.patch("kisesh.kitty_integration._probe_config", side_effect=(valid, invalid)),
+            self.assertRaisesRegex(IntegrationError, "remote control"),
         ):
             deploy.return_value = mock.MagicMock(changed=False)
             _enable(paths)
@@ -363,9 +363,9 @@ class InstallerBoundaryTests(unittest.TestCase):
         output = io.StringIO()
 
         with (
-            mock.patch("kisesh.installer._find_executable", return_value="/binary"),
-            mock.patch("kisesh.installer._probe_config", side_effect=(valid, valid)),
-            mock.patch("kisesh.installer.finish_runtime", side_effect=OSError("busy")),
+            mock.patch("kisesh.kitty_integration._find_executable", return_value="/binary"),
+            mock.patch("kisesh.kitty_integration._probe_config", side_effect=(valid, valid)),
+            mock.patch("kisesh.kitty_integration.finish_runtime", side_effect=OSError("busy")),
             redirect_stdout(output),
             redirect_stderr(errors),
         ):
@@ -387,9 +387,9 @@ class InstallerBoundaryTests(unittest.TestCase):
         valid = ConfigProbe((), "socket-only", DEFAULT_LISTEN_ON)
 
         with (
-            mock.patch("kisesh.installer._find_executable", return_value="/binary"),
-            mock.patch("kisesh.installer._probe_config", side_effect=(valid, valid)),
-            mock.patch("kisesh.installer._atomic_write", side_effect=OSError("disk full")),
+            mock.patch("kisesh.kitty_integration._find_executable", return_value="/binary"),
+            mock.patch("kisesh.kitty_integration._probe_config", side_effect=(valid, valid)),
+            mock.patch("kisesh.kitty_integration._atomic_write", side_effect=OSError("disk full")),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             _enable(paths)
@@ -407,9 +407,9 @@ class InstallerBoundaryTests(unittest.TestCase):
         valid = ConfigProbe((), "socket-only", DEFAULT_LISTEN_ON)
 
         with (
-            mock.patch("kisesh.installer._find_executable", return_value="/binary"),
-            mock.patch("kisesh.installer._probe_config", side_effect=(valid, valid)),
-            mock.patch("kisesh.installer._atomic_write", side_effect=OSError("disk full")),
+            mock.patch("kisesh.kitty_integration._find_executable", return_value="/binary"),
+            mock.patch("kisesh.kitty_integration._probe_config", side_effect=(valid, valid)),
+            mock.patch("kisesh.kitty_integration._atomic_write", side_effect=OSError("disk full")),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             _enable(paths)
@@ -434,7 +434,7 @@ class InstallerBoundaryTests(unittest.TestCase):
         install_tab_bar(bar_paths)
 
         with (
-            mock.patch("kisesh.installer._atomic_write", side_effect=OSError("disk full")),
+            mock.patch("kisesh.kitty_integration._atomic_write", side_effect=OSError("disk full")),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             _disable(paths)
@@ -454,8 +454,8 @@ class InstallerBoundaryTests(unittest.TestCase):
         )
 
         with (
-            mock.patch("kisesh.installer._atomic_write", side_effect=OSError("disk full")),
-            mock.patch("kisesh.installer.install_tab_bar") as reinstall,
+            mock.patch("kisesh.kitty_integration._atomic_write", side_effect=OSError("disk full")),
+            mock.patch("kisesh.kitty_integration.install_tab_bar") as reinstall,
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             _disable(paths)
@@ -464,7 +464,7 @@ class InstallerBoundaryTests(unittest.TestCase):
 
     def test_purge_guards_scope_unlinks_symlinks_and_reports_already_absent_data(self) -> None:
         paths = self.paths()
-        with self.assertRaisesRegex(InstallError, "unsafe purge path"):
+        with self.assertRaisesRegex(IntegrationError, "unsafe purge path"):
             _remove_product_data(self.root / "other", self.root)
 
         paths.data.parent.mkdir(parents=True)
@@ -486,7 +486,7 @@ class InstallerBoundaryTests(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch(
-                "kisesh.installer._read_config",
+                "kisesh.kitty_integration._read_config",
                 return_value=f"{INTEGRATION_INCLUDE}\n",
             ),
             redirect_stdout(output),
@@ -499,15 +499,15 @@ class InstallerBoundaryTests(unittest.TestCase):
         stderr = io.StringIO()
         with (
             mock.patch(
-                "kisesh.installer.parse_arguments",
-                return_value=InstallArguments(),
+                "kisesh.kitty_integration.parse_arguments",
+                return_value=IntegrationArguments(),
             ),
-            mock.patch("kisesh.installer.install_paths", return_value=self.paths()),
-            mock.patch("kisesh.installer._enable", side_effect=OSError("disk failed")),
+            mock.patch("kisesh.kitty_integration.integration_paths", return_value=self.paths()),
+            mock.patch("kisesh.kitty_integration._enable", side_effect=OSError("disk failed")),
             redirect_stderr(stderr),
         ):
             self.assertEqual(main([]), 1)
-        self.assertEqual(stderr.getvalue(), "kisesh installer: disk failed\n")
+        self.assertEqual(stderr.getvalue(), "kisesh integration: disk failed\n")
 
 
 if __name__ == "__main__":

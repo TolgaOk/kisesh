@@ -3,7 +3,7 @@
 
 set -eu
 
-default_package_url=https://github.com/TolgaOk/kisesh/archive/refs/tags/v0.1.2-alpha.tar.gz
+default_package_url=https://github.com/TolgaOk/kisesh/releases/latest/download/kisesh.tar.gz
 python_version=${KISESH_PYTHON:-3.11}
 uv_installer_url=${KISESH_UV_INSTALLER_URL:-https://astral.sh/uv/0.11.32/install.sh}
 data_home=${XDG_DATA_HOME:-"$HOME/.local/share"}
@@ -91,6 +91,6 @@ if [ ! -x "$kisesh_cli" ]; then
     printf '%s\n' "kisesh installer: installed command is missing: $kisesh_cli" >&2
     exit 1
 fi
-KISESH_CLI="$kisesh_cli" "$kisesh_cli" install "$@"
+KISESH_CLI="$kisesh_cli" "$kisesh_cli" enable "$@"
 
 printf '%s\n' "KiSesh installed. Kitty was left running; reload its configuration when convenient."

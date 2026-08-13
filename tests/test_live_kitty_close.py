@@ -135,6 +135,51 @@ class IsolatedKitty:
         )
         return self.remote("kitten", str(probe)).stdout.strip()
 
+    def configured_font_size(self) -> float:
+        """Read the font size from the isolated process's current options."""
+        probe = self.root / "font_size_probe.py"
+        probe.write_text(
+            '"""Report Kitty\'s configured font size."""\n'
+            "from kittens.tui.handler import result_handler\n"
+            "from kitty.fast_data_types import get_options\n"
+            "def main(args):\n"
+            "    del args\n"
+            "@result_handler(no_ui=True)\n"
+            "def handle_result(args, answer, target_window_id, boss):\n"
+            "    del args, answer, target_window_id, boss\n"
+            "    return str(get_options().font_size)\n",
+            encoding="utf-8",
+        )
+        return float(self.remote("kitten", str(probe)).stdout.strip())
+
+    def visible_session_ids(self) -> dict[str, list[str]]:
+        """Return the session identities each native OS-window bar exposes."""
+        probe = self.root / "visible_tabs_probe.py"
+        probe.write_text(
+            '"""Report each native tab bar\'s filtered sessions."""\n'
+            "import json\n"
+            "from kittens.tui.handler import result_handler\n"
+            "def main(args):\n"
+            "    del args\n"
+            "@result_handler(no_ui=True)\n"
+            "def handle_result(args, answer, target_window_id, boss):\n"
+            "    del args, answer, target_window_id\n"
+            "    return json.dumps({\n"
+            "        str(manager.os_window_id): [\n"
+            "            next((\n"
+            "                window.user_vars.get('kisesh_session', '')\n"
+            "                for window in tab\n"
+            "                if window.user_vars.get('kisesh_session')\n"
+            "            ), '')\n"
+            "            for tab in manager.tabs_to_be_shown_in_tab_bar\n"
+            "        ]\n"
+            "        for manager in boss.all_tab_managers\n"
+            "    })\n",
+            encoding="utf-8",
+        )
+        result = json.loads(self.remote("kitten", str(probe)).stdout)
+        return cast(dict[str, list[str]], result)
+
     def wait_for(
         self,
         predicate: StatePredicate,
@@ -233,6 +278,17 @@ def _mapped_manager_close_action() -> list[str]:
         line.split(maxsplit=4)[4]
         for line in integration.splitlines()
         if line.startswith("map --when-focus-on var:kisesh_ui alt+s ")
+    )
+    return shlex.split(definition)
+
+
+def _mapped_reload_action() -> list[str]:
+    """Read the exact action attached to Kitty's macOS reload chord."""
+    integration = (PROJECT / "kisesh/integration/kisesh.conf").read_text(encoding="utf-8")
+    definition = next(
+        line.split(maxsplit=2)[2]
+        for line in integration.splitlines()
+        if line.startswith("map ctrl+cmd+, ")
     )
     return shlex.split(definition)
 
@@ -550,6 +606,196 @@ class LiveKittyFilterTests(unittest.TestCase):
                 self.assertEqual(before, "21.0")
                 self.assertEqual(after, before)
                 self.assertNotEqual(after, "13.0")
+            finally:
+                server.stop()
+
+    def test_each_os_window_keeps_its_selected_session_after_another_opens(self) -> None:
+        """Keep both native tab bars isolated while all four sessions remain live."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            server = IsolatedKitty(Path(temporary))
+            left_session = "11111111-1111-4111-8111-111111111111"
+            left_hidden_session = "22222222-2222-4222-8222-222222222222"
+            right_session = "33333333-3333-4333-8333-333333333333"
+            right_hidden_session = "44444444-4444-4444-8444-444444444444"
+            try:
+                server.start()
+                initial = server.state()
+                left_window_id = _tabs(initial)[0]["windows"][0]["id"]
+                server.remote(
+                    "set-tab-title",
+                    "--match",
+                    f"id:{left_window_id}",
+                    "Left selected",
+                )
+                server.remote(
+                    "set-user-vars",
+                    "--match",
+                    f"id:{left_window_id}",
+                    f"{SESSION_ID_VAR}={left_session}",
+                )
+                child = ["/bin/sh", "-c", "while :; do sleep 1; done"]
+                server.remote(
+                    "launch",
+                    "--match",
+                    f"id:{left_window_id}",
+                    "--type=tab",
+                    "--tab-title=Left hidden",
+                    f"--var={SESSION_ID_VAR}={left_hidden_session}",
+                    *child,
+                )
+                left_state = server.wait_for(lambda current: len(_tabs(current)) == 2)
+                client = KittyClient(executable=server.kitty, socket=server.socket)
+                left = next(
+                    tab
+                    for tab in client.tabs(left_state)
+                    if any(window["id"] == left_window_id for window in tab.windows)
+                )
+                left_hidden = next(
+                    tab
+                    for tab in client.tabs(left_state)
+                    if tab.os_window_id == left.os_window_id and tab.tab_id != left.tab_id
+                )
+                server.remote(
+                    "set-user-vars",
+                    "--match",
+                    f"id:{left_hidden.representative_window_id}",
+                    f"{SESSION_ID_VAR}={left_hidden_session}",
+                )
+                client.activate_session(left_session, left)
+
+                server.remote(
+                    "launch",
+                    "--type=os-window",
+                    "--tab-title=Right selected",
+                    f"--var={SESSION_ID_VAR}={right_session}",
+                    *child,
+                )
+                two_windows = server.wait_for(lambda current: len(current) == 2)
+                right_window = _session_windows(two_windows, right_session)[0]
+                server.remote(
+                    "launch",
+                    "--match",
+                    f"id:{right_window['id']}",
+                    "--type=tab",
+                    "--tab-title=Right hidden",
+                    f"--var={SESSION_ID_VAR}={right_hidden_session}",
+                    *child,
+                )
+                four_sessions = server.wait_for(lambda current: len(_tabs(current)) == 4)
+                right = next(
+                    tab for tab in client.tabs(four_sessions) if tab.session_id() == right_session
+                )
+                right_hidden = next(
+                    tab
+                    for tab in client.tabs(four_sessions)
+                    if tab.os_window_id == right.os_window_id and tab.tab_id != right.tab_id
+                )
+                server.remote(
+                    "set-user-vars",
+                    "--match",
+                    f"id:{right_hidden.representative_window_id}",
+                    f"{SESSION_ID_VAR}={right_hidden_session}",
+                )
+
+                client.activate_session(right_session, right)
+
+                expected_filter = (
+                    f"(var:{SESSION_ID_VAR}={left_session} or "
+                    f"not var:{SESSION_SCOPE_VAR}={left.os_window_id}) and "
+                    f"(var:{SESSION_ID_VAR}={right_session} or "
+                    f"not var:{SESSION_SCOPE_VAR}={right.os_window_id})"
+                )
+                visible = server.visible_session_ids()
+                self.assertEqual(server.tab_filter(), expected_filter)
+                self.assertEqual(visible[str(left.os_window_id)], [left_session])
+                self.assertEqual(visible[str(right.os_window_id)], [right_session])
+                self.assertEqual(len(_tabs(server.state())), 4)
+            finally:
+                server.stop()
+
+    def test_config_reload_keeps_other_live_session_tabs_filtered(self) -> None:
+        """Recover a lost filter while applying changed native options."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            server = IsolatedKitty(Path(temporary))
+            try:
+                server.start()
+                server.remote(
+                    "set-user-vars",
+                    "--match",
+                    "all",
+                    f"{SESSION_ID_VAR}=focused",
+                    f"{SESSION_SLUG_VAR}=focused",
+                )
+                server.remote(
+                    "launch",
+                    "--type=tab",
+                    "--tab-title=Hidden session",
+                    f"--var={SESSION_ID_VAR}=hidden",
+                    f"--var={SESSION_SLUG_VAR}=hidden",
+                    "/bin/sh",
+                    "-c",
+                    "while :; do sleep 1; done",
+                )
+                state = server.wait_for(lambda current: len(_tabs(current)) == 2)
+                client = KittyClient(executable=server.kitty, socket=server.socket)
+                focused = next(tab for tab in client.tabs(state) if tab.session_id() == "focused")
+                client.activate_session("focused", focused)
+                focused_window_id = _focus_session(server, "focused")
+                expected_filter = (
+                    f"var:{SESSION_ID_VAR}=focused or "
+                    f"not var:{SESSION_SCOPE_VAR}={focused.os_window_id}"
+                )
+                self.assertEqual(server.tab_filter(), expected_filter)
+                server.remote(
+                    "set-user-vars",
+                    "--match",
+                    f"id:{focused_window_id}",
+                    SESSION_SCOPE_VAR,
+                )
+                server.wait_for(
+                    lambda current: all(
+                        SESSION_SCOPE_VAR not in window.get("user_vars", {})
+                        for window in _session_windows(current, "focused")
+                    )
+                )
+                server.remote(
+                    "kitten",
+                    str(server.home / ".local/lib/kisesh/integration/actions.py"),
+                    "session-filter",
+                    "all",
+                )
+                self.assertCountEqual(
+                    server.visible_session_ids()[str(focused.os_window_id)],
+                    ["focused", "hidden"],
+                )
+                server.config.write_text(
+                    server.config.read_text(encoding="utf-8").replace(
+                        "font_size 13",
+                        "font_size 17",
+                    ),
+                    encoding="utf-8",
+                )
+
+                server.remote(
+                    "action",
+                    "--match",
+                    f"id:{focused_window_id}",
+                    *_mapped_reload_action(),
+                )
+
+                reloaded = server.wait_for(
+                    lambda current: (
+                        len(_session_tabs(current, "focused")) == 1
+                        and len(_session_tabs(current, "hidden")) == 1
+                    )
+                )
+                self.assertEqual(server.configured_font_size(), 17.0)
+                self.assertEqual(server.tab_filter(), expected_filter)
+                self.assertEqual(
+                    server.visible_session_ids()[str(focused.os_window_id)],
+                    ["focused"],
+                )
+                self.assertEqual(len(_tabs(reloaded)), 2)
             finally:
                 server.stop()
 

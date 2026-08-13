@@ -43,6 +43,8 @@ class Tab:
 @dataclass(slots=True)
 class Manager:
     events: list[Event]
+    os_window_id: int = 0
+    active_tab: Tab | None = None
 
     def mark_tab_bar_dirty(self) -> None:
         self.events.append(("bar", "dirty"))
@@ -100,6 +102,51 @@ def session_tab(
 
 
 class SessionCloseTests(unittest.TestCase):
+    def test_close_preserves_the_selected_session_in_another_os_window(self) -> None:
+        events: list[Event] = []
+        closing = session_tab(1, 7, "closing", events)
+        successor = session_tab(2, 7, "successor", events)
+        hidden = session_tab(3, 7, "hidden", events)
+        other = session_tab(4, 8, "other", events)
+        other_hidden = session_tab(5, 8, "other-hidden", events)
+        unmanaged = session_tab(6, 9, "unmanaged", events)
+        for tab in (closing, successor, hidden):
+            tab.windows[0].user_vars[SESSION_SCOPE_VAR] = "7"
+        for tab in (other, other_hidden):
+            tab.windows[0].user_vars[SESSION_SCOPE_VAR] = "8"
+        managers = [
+            Manager(events, 7, closing),
+            Manager(events, 8, other),
+            Manager(events, 9, unmanaged),
+        ]
+        boss = Boss(
+            [closing, successor, hidden, other, other_hidden, unmanaged],
+            events,
+            managers,
+        )
+        options = Options(
+            "(var:kisesh_session=closing or not var:kisesh_scope=7) and "
+            "(var:kisesh_session=other or not var:kisesh_scope=8)",
+            13.0,
+            "theme",
+        )
+
+        close_live_session("closing", "successor", 2, cast(SessionCloseBoss, boss), options)
+
+        self.assertEqual(
+            options.tab_bar_filter,
+            "(var:kisesh_session=successor or not var:kisesh_scope=7) and "
+            "(var:kisesh_session=other or not var:kisesh_scope=8)",
+        )
+        self.assertTrue(
+            all(
+                window.user_vars.get(SESSION_SCOPE_VAR) == "8"
+                for tab in (other, other_hidden)
+                for window in tab
+            )
+        )
+        self.assertNotIn(SESSION_SCOPE_VAR, unmanaged.windows[0].user_vars)
+
     def test_filter_and_focus_finish_before_closing_the_manager_host_session(self) -> None:
         events: list[Event] = []
         closing = session_tab(1, 7, "closing", events, overlay=True)

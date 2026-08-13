@@ -87,6 +87,7 @@ class PackagingTests(unittest.TestCase):
                 "install.sh",
                 "justfile",
                 "kisesh/default_apps.toml",
+                "kisesh/kitty_integration.py",
                 "kisesh/integration/actions.py",
                 "kisesh/integration/kisesh.conf",
                 "kisesh/integration/tab_bar.py",
@@ -108,6 +109,7 @@ class PackagingTests(unittest.TestCase):
                 (PROJECT / "LICENSE").read_text(encoding="utf-8"),
             )
             for resource in (
+                "kisesh/kitty_integration.py",
                 "kisesh/integration/actions.py",
                 "kisesh/integration/kisesh.conf",
                 "kisesh/integration/kitty_api.py",
@@ -166,7 +168,8 @@ class PackagingTests(unittest.TestCase):
             )
             self.assertEqual(invoked.returncode, 0, invoked.stderr)
             self.assertIn("usage: kisesh", invoked.stdout)
-            self.assertIn("install", invoked.stdout)
+            self.assertIn("enable", invoked.stdout)
+            self.assertNotIn("• install ", invoked.stdout)
             imported = subprocess.run(
                 [sys.executable, "-c", "import kisesh; print(kisesh.__file__)"],
                 cwd=temporary,
@@ -210,7 +213,7 @@ class PackagingTests(unittest.TestCase):
                 }
             )
             enabled = subprocess.run(
-                [str(installed / "bin" / "kisesh"), "install"],
+                [str(installed / "bin" / "kisesh"), "enable"],
                 cwd=temporary,
                 env=wheel_environment,
                 check=False,

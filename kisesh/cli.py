@@ -238,8 +238,8 @@ class Doctor:
 
 
 @dataclass(frozen=True, slots=True)
-class InstallIntegration:
-    """Install and enable the packaged Kitty integration."""
+class EnableIntegration:
+    """Enable the packaged Kitty integration."""
 
     kitty_config: Path | None = None
     """Override the automatically detected kitty.conf path."""
@@ -293,7 +293,7 @@ Command = (
     | Annotated[AgentHook, tyro.conf.subcommand(name="agent-hook")]
     | Annotated[Agents, tyro.conf.subcommand(name="agents")]
     | Annotated[Doctor, tyro.conf.subcommand(name="doctor")]
-    | Annotated[InstallIntegration, tyro.conf.subcommand(name="install")]
+    | Annotated[EnableIntegration, tyro.conf.subcommand(name="enable")]
     | Annotated[DisableIntegration, tyro.conf.subcommand(name="disable")]
     | Annotated[UninstallIntegration, tyro.conf.subcommand(name="uninstall")]
 )
@@ -302,7 +302,7 @@ ReadCommand = ListSessions | ShowContext | PrintLastOutput | RestoreShell
 MembershipCommand = CreateSession | AddTab | DetachTab | CopyTab | OpenSession | CloseSession
 LifecycleCommand = RenameSession | ArchiveSession | UnarchiveSession | RemoveSession
 MaintenanceCommand = AutosaveSession | AgentHook | Doctor
-IntegrationCommand = InstallIntegration | DisableIntegration | UninstallIntegration
+IntegrationCommand = EnableIntegration | DisableIntegration | UninstallIntegration
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,7 +347,7 @@ def _needs_kitty(command: Command) -> bool:
         PrintLastOutput,
         RestoreShell,
         Agents,
-        InstallIntegration,
+        EnableIntegration,
         DisableIntegration,
         UninstallIntegration,
     )
@@ -569,15 +569,15 @@ def _run_agents(
 
 
 def _run_integration(command: IntegrationCommand) -> int:
-    """Translate public lifecycle commands into the reversible installer contract."""
-    from .installer import InstallArguments, run
+    """Translate public lifecycle commands into the reversible integration contract."""
+    from .kitty_integration import IntegrationArguments, run
 
-    if isinstance(command, InstallIntegration):
-        arguments = InstallArguments(enable=True, kitty_config=command.kitty_config)
+    if isinstance(command, EnableIntegration):
+        arguments = IntegrationArguments(enable=True, kitty_config=command.kitty_config)
     elif isinstance(command, DisableIntegration):
-        arguments = InstallArguments(disable=True, kitty_config=command.kitty_config)
+        arguments = IntegrationArguments(disable=True, kitty_config=command.kitty_config)
     else:
-        arguments = InstallArguments(
+        arguments = IntegrationArguments(
             uninstall=not command.purge,
             purge=command.purge,
             kitty_config=command.kitty_config,
@@ -588,7 +588,7 @@ def _run_integration(command: IntegrationCommand) -> int:
 def _dispatch(config: CliConfig, service: KiSeshService) -> int:
     """Route one typed command to its cohesive operation family."""
     command = config.command
-    if isinstance(command, (InstallIntegration, DisableIntegration, UninstallIntegration)):
+    if isinstance(command, (EnableIntegration, DisableIntegration, UninstallIntegration)):
         return _run_integration(command)
     if isinstance(command, Agents):
         return _run_agents(command)
@@ -620,7 +620,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if isinstance(
             config.command,
-            (InstallIntegration, DisableIntegration, UninstallIntegration),
+            (EnableIntegration, DisableIntegration, UninstallIntegration),
         ):
             return _run_integration(config.command)
         return _dispatch(config, _service(config))

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
+from .kitty_actions import SessionFilterTarget, session_filter_expression
 from .model import (
     CAPTURE_VAR,
     KISESH_UI_VAR,
@@ -117,6 +118,27 @@ class LiveTab:
             if window.get("cwd"):
                 return str(window["cwd"])
         return str(Path.cwd())
+
+
+def _session_filter_targets(
+    tabs: Iterable[LiveTab],
+    selected: SessionFilterTarget,
+) -> tuple[SessionFilterTarget, ...]:
+    """Retain one active selection for every already-managed OS window."""
+    candidates: dict[str, list[tuple[LiveTab, str]]] = {}
+    for tab in tabs:
+        scope = str(tab.os_window_id)
+        session_id = tab.session_id()
+        if scope != selected.scope and tab.session_scope() == scope and session_id is not None:
+            candidates.setdefault(scope, []).append((tab, session_id))
+    retained: list[SessionFilterTarget] = []
+    for retained_scope, scoped_tabs in candidates.items():
+        _, session_id = max(
+            scoped_tabs,
+            key=lambda item: (item[0].is_active, item[0].is_focused, -item[0].index),
+        )
+        retained.append(SessionFilterTarget(session_id, retained_scope))
+    return (selected, *retained)
 
 
 def _first_user_var(windows: Iterable[KittyWindow], name: str) -> str | None:
@@ -484,41 +506,34 @@ class KittyClient:
         self.command("set-tab-title", "--match", f"id:{tab_id}", title)
 
     def activate_session(self, session_id: str, tab: LiveTab) -> None:
-        """Focus one session while leaving unrelated OS windows unfiltered."""
+        """Focus one session while retaining selections in other OS windows."""
         scope = str(tab.os_window_id)
         tabs = self.tabs()
-        scope_variables = {SESSION_SCOPE_VAR: scope}
-        scoped_windows = [
+        targets = _session_filter_targets(tabs, SessionFilterTarget(session_id, scope))
+        managed_scopes = {target.scope for target in targets}
+        for managed_scope in sorted(managed_scopes):
+            scoped_windows = [
+                window["id"]
+                for candidate in tabs
+                if str(candidate.os_window_id) == managed_scope
+                for window in candidate.windows
+                if window.get("user_vars", {}).get(SESSION_SCOPE_VAR) != managed_scope
+            ]
+            self.set_user_vars(scoped_windows, {SESSION_SCOPE_VAR: managed_scope})
+        stale_windows = [
             window["id"]
             for candidate in tabs
-            if candidate.os_window_id == tab.os_window_id
-            for window in candidate.windows
-            if any(
-                window.get("user_vars", {}).get(name) != value
-                for name, value in scope_variables.items()
-            )
-        ]
-        outside_windows = [
-            window["id"]
-            for candidate in tabs
-            if candidate.os_window_id != tab.os_window_id
+            if str(candidate.os_window_id) not in managed_scopes
             for window in candidate.windows
             if window.get("user_vars", {}).get(SESSION_SCOPE_VAR) is not None
         ]
-        self.set_user_vars(
-            scoped_windows,
-            scope_variables,
-        )
-        self.set_user_vars(
-            outside_windows,
-            {SESSION_SCOPE_VAR: None},
-        )
+        self.set_user_vars(stale_windows, {SESSION_SCOPE_VAR: None})
         self.focus_tab(tab.tab_id)
         self.command(
             "kitten",
             str(self.runtime / "integration" / "actions.py"),
             "session-filter",
-            f"var:{SESSION_ID_VAR}={session_id} or not var:{SESSION_SCOPE_VAR}={scope}",
+            session_filter_expression(targets),
         )
 
     def close_session_tabs(self, session_id: str, successor: LiveTab | None = None) -> None:
