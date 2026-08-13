@@ -23,6 +23,7 @@ AGENT_VAR = "kisesh_agent"
 APP_VAR = "kisesh_app"
 KISESH_UI_VAR = "kisesh_ui"
 MIN_SPLIT_SEGMENT_CELLS = 6
+MIN_COMPACT_CONTENT_CELLS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +187,21 @@ def _ellipsize(value: str, max_cells: int) -> str:
         character for character, used in zip(value, widths, strict=True) if used <= max_cells - 1
     )
     return "".join(visible) + ELLIPSIS
+
+
+def _allocate_segment_widths(session_label: str, max_title_length: int) -> tuple[int, int]:
+    """Prioritize full session identity before compacting the pane segment."""
+    cap_width = _cell_width(TAB_START_CAP)
+    full_session_width = _cell_width(session_label) + 2
+    remaining_content_width = max_title_length - full_session_width - cap_width
+    if remaining_content_width >= MIN_COMPACT_CONTENT_CELLS:
+        return full_session_width, remaining_content_width
+    maximum_session_width = max_title_length - MIN_SPLIT_SEGMENT_CELLS - cap_width
+    session_width = max(
+        MIN_SPLIT_SEGMENT_CELLS,
+        min(full_session_width, maximum_session_width),
+    )
+    return session_width, max_title_length - session_width - cap_width
 
 
 def _pane_descriptor(tab: SessionBarTab) -> tuple[str, str]:
@@ -493,12 +509,7 @@ def _segment_plan(
         return None
     icon, session_name = _session_descriptor(current)
     session_label = f"{icon} {session_name}"
-    maximum_session_width = max_title_length - MIN_SPLIT_SEGMENT_CELLS - _cell_width(TAB_START_CAP)
-    session_width = max(
-        MIN_SPLIT_SEGMENT_CELLS,
-        min(_cell_width(session_label) + 2, maximum_session_width),
-    )
-    content_width = max_title_length - session_width - _cell_width(TAB_START_CAP)
+    session_width, content_width = _allocate_segment_widths(session_label, max_title_length)
     try:
         session_tab = replacement(
             title=_ellipsize(session_label, session_width - 2),

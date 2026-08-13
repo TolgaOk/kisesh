@@ -20,6 +20,7 @@ def _add_runtime_import_path() -> None:
 _add_runtime_import_path()
 
 DrawTab = Callable[[object, object, object, int, int, int, bool, object], int]
-draw_tab = cast(DrawTab, importlib.import_module("kisesh.session_bar").draw_tab)
+renderer = importlib.reload(importlib.import_module("kisesh.session_bar"))
+draw_tab = cast(DrawTab, renderer.draw_tab)
 
 __all__ = ["draw_tab"]
