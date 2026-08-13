@@ -9,10 +9,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kisesh.installer import (
+from kisesh.kitty_integration import (
     COMPAT_MANAGED_BEGIN,
     COMPAT_MANAGED_END,
     INTEGRATION_INCLUDE,
+    LEGACY_MANAGED_BEGIN,
+    LEGACY_MANAGED_END,
     MANAGED_BEGIN,
     MANAGED_END,
 )
@@ -20,7 +22,7 @@ from kisesh.installer import (
 PROJECT = Path(__file__).parents[1]
 
 
-class InstallerTests(unittest.TestCase):
+class KittyIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -79,13 +81,13 @@ class InstallerTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def run_installer(
+    def run_integration(
         self,
         *arguments: str,
         environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, "-m", "kisesh.installer", *arguments],
+            [sys.executable, "-m", "kisesh.kitty_integration", *arguments],
             cwd=PROJECT,
             env=environment or self.environment,
             check=False,
@@ -116,11 +118,11 @@ class InstallerTests(unittest.TestCase):
             (PROJECT / ".venv" / "bin" / "kisesh-panel").resolve(),
         )
 
-    def test_installer_module_help_is_available_with_a_gui_style_path(self) -> None:
+    def test_integration_module_help_is_available_with_a_gui_style_path(self) -> None:
         environment = dict(self.environment)
         environment["PATH"] = "/usr/bin:/bin"
 
-        result = self.run_installer("--help", environment=environment)
+        result = self.run_integration("--help", environment=environment)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--disable", result.stdout)
@@ -137,9 +139,9 @@ class InstallerTests(unittest.TestCase):
         )
         self.write_config(original)
 
-        first = self.run_installer()
+        first = self.run_integration()
         enabled = self.config.read_text(encoding="utf-8")
-        second = self.run_installer("--enable")
+        second = self.run_integration("--enable")
 
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
@@ -162,7 +164,7 @@ class InstallerTests(unittest.TestCase):
         environment = dict(self.environment)
         environment["KISESH_FAKE_KITTY_LOG"] = str(invocation_log)
 
-        result = self.run_installer(environment=environment)
+        result = self.run_integration(environment=environment)
         invocations = [
             json.loads(line) for line in invocation_log.read_text(encoding="utf-8").splitlines()
         ]
@@ -174,26 +176,32 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("Kitty was left running", result.stdout)
         self.assertNotIn("restart", result.stdout.casefold())
 
-    def test_enable_replaces_the_previous_kisesh_marker_without_duplicates(self) -> None:
-        self.write_config(
-            "font_size 15\n"
-            f"{COMPAT_MANAGED_BEGIN}\n"
-            "allow_remote_control socket-only\n"
-            "listen_on unix:/tmp/previous-main\n"
-            f"{INTEGRATION_INCLUDE}\n"
-            f"{COMPAT_MANAGED_END}\n"
+    def test_enable_replaces_previous_kisesh_markers_without_duplicates(self) -> None:
+        markers = (
+            (COMPAT_MANAGED_BEGIN, COMPAT_MANAGED_END),
+            (LEGACY_MANAGED_BEGIN, LEGACY_MANAGED_END),
         )
+        for old_begin, old_end in markers:
+            with self.subTest(old_begin=old_begin):
+                self.write_config(
+                    "font_size 15\n"
+                    f"{old_begin}\n"
+                    "allow_remote_control socket-only\n"
+                    "listen_on unix:/tmp/previous-main\n"
+                    f"{INTEGRATION_INCLUDE}\n"
+                    f"{old_end}\n"
+                )
 
-        enabled = self.run_installer()
-        configured = self.config.read_text(encoding="utf-8")
+                enabled = self.run_integration()
+                configured = self.config.read_text(encoding="utf-8")
 
-        self.assertEqual(enabled.returncode, 0, enabled.stderr)
-        self.assertEqual(configured.count(MANAGED_BEGIN), 1)
-        self.assertEqual(configured.count(INTEGRATION_INCLUDE), 1)
-        self.assertNotIn(COMPAT_MANAGED_BEGIN, configured)
-        self.assertNotIn(COMPAT_MANAGED_END, configured)
-        self.assert_runtime()
-        self.assertTrue(self.tab_bar.is_symlink())
+                self.assertEqual(enabled.returncode, 0, enabled.stderr)
+                self.assertEqual(configured.count(MANAGED_BEGIN), 1)
+                self.assertEqual(configured.count(INTEGRATION_INCLUDE), 1)
+                self.assertNotIn(old_begin, configured)
+                self.assertNotIn(old_end, configured)
+                self.assert_runtime()
+                self.assertTrue(self.tab_bar.is_symlink())
 
     def test_existing_custom_tab_bar_is_restored_exactly_on_disable(self) -> None:
         self.write_config("font_size 14\n")
@@ -201,7 +209,7 @@ class InstallerTests(unittest.TestCase):
         self.tab_bar.write_text(original, encoding="utf-8")
         self.tab_bar.chmod(0o640)
 
-        enabled = self.run_installer()
+        enabled = self.run_integration()
 
         self.assertEqual(enabled.returncode, 0, enabled.stderr)
         self.assertTrue(self.tab_bar.is_symlink())
@@ -211,7 +219,7 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertFalse(self.tab_bar.with_suffix(".py.kisesh.bak").exists())
 
-        disabled = self.run_installer("--disable")
+        disabled = self.run_integration("--disable")
 
         self.assertEqual(disabled.returncode, 0, disabled.stderr)
         self.assertFalse(self.tab_bar.is_symlink())
@@ -222,12 +230,12 @@ class InstallerTests(unittest.TestCase):
     def test_disable_refuses_a_user_modified_tab_bar_without_touching_config(self) -> None:
         self.write_config("font_size 14\n")
         self.tab_bar.write_text("original = True\n", encoding="utf-8")
-        self.assertEqual(self.run_installer().returncode, 0)
+        self.assertEqual(self.run_integration().returncode, 0)
         enabled_config = self.config.read_text(encoding="utf-8")
         self.tab_bar.unlink()
         self.tab_bar.write_text("new_user_bar = True\n", encoding="utf-8")
 
-        disabled = self.run_installer("--disable")
+        disabled = self.run_integration("--disable")
 
         self.assertNotEqual(disabled.returncode, 0)
         self.assertIn("modified custom tab bar", disabled.stderr)
@@ -237,13 +245,13 @@ class InstallerTests(unittest.TestCase):
     def test_enable_warns_when_it_takes_over_native_tab_close(self) -> None:
         self.write_config("map cmd+w close_tab\n")
 
-        result = self.run_installer()
+        result = self.run_integration()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("takes precedence over existing mappings for cmd+w", result.stderr)
 
     def test_fresh_config_gets_only_the_required_remote_control_defaults(self) -> None:
-        result = self.run_installer()
+        result = self.run_integration()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         configured = self.config.read_text(encoding="utf-8")
@@ -271,8 +279,8 @@ class InstallerTests(unittest.TestCase):
         self.app_config.parent.mkdir(parents=True)
         self.app_config.write_text(custom, encoding="utf-8")
 
-        first = self.run_installer()
-        second = self.run_installer("--enable")
+        first = self.run_integration()
+        second = self.run_integration("--enable")
 
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
@@ -288,7 +296,7 @@ class InstallerTests(unittest.TestCase):
             'version = 1\n[defaults]\nrestore = "run-anything"\n', encoding="utf-8"
         )
 
-        result = self.run_installer()
+        result = self.run_integration()
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("cannot use app config", result.stderr)
@@ -309,7 +317,7 @@ class InstallerTests(unittest.TestCase):
         environment.pop("KISESH_KITTY", None)
         environment.pop("KISESH_KITTEN", None)
 
-        result = self.run_installer(environment=environment)
+        result = self.run_integration(environment=environment)
         config = self.home / "real-config" / "kitty" / "kitty.conf"
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -335,7 +343,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(loaded.stdout.strip(), "kisesh.session_bar")
 
     def test_disable_uninstall_and_purge_have_distinct_data_boundaries(self) -> None:
-        self.assertEqual(self.run_installer().returncode, 0)
+        self.assertEqual(self.run_integration().returncode, 0)
         self.app_config.write_text(
             self.app_config.read_text(encoding="utf-8") + "\n# keep my profiles\n",
             encoding="utf-8",
@@ -347,7 +355,7 @@ class InstallerTests(unittest.TestCase):
         with self.config.open("a", encoding="utf-8") as handle:
             handle.write("font_size 17\n")
 
-        disabled = self.run_installer("--disable")
+        disabled = self.run_integration("--disable")
         disabled_config = self.config.read_text(encoding="utf-8")
 
         self.assertEqual(disabled.returncode, 0, disabled.stderr)
@@ -359,8 +367,8 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.tab_bar.exists())
         self.assertFalse(self.tab_bar.is_symlink())
 
-        self.assertEqual(self.run_installer("--enable").returncode, 0)
-        uninstalled = self.run_installer("--uninstall")
+        self.assertEqual(self.run_integration("--enable").returncode, 0)
+        uninstalled = self.run_integration("--uninstall")
 
         self.assertEqual(uninstalled.returncode, 0, uninstalled.stderr)
         self.assertFalse(self.target.exists())
@@ -368,7 +376,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.data / "session.json").is_file())
         self.assertIn("sessions preserved", uninstalled.stdout)
 
-        purged = self.run_installer("--purge")
+        purged = self.run_integration("--purge")
 
         self.assertEqual(purged.returncode, 0, purged.stderr)
         self.assertFalse(self.data.exists())
@@ -386,7 +394,7 @@ class InstallerTests(unittest.TestCase):
         saved = self.data / "session.json"
         saved.write_text("saved", encoding="utf-8")
 
-        result = self.run_installer("--disable", "--purge")
+        result = self.run_integration("--disable", "--purge")
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("choose only one", result.stderr)
@@ -400,7 +408,7 @@ class InstallerTests(unittest.TestCase):
         environment = dict(self.environment)
         environment["KISESH_FAKE_REJECT_MANAGED"] = "1"
 
-        result = self.run_installer(environment=environment)
+        result = self.run_integration(environment=environment)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("KiSesh-enabled kitty.conf", result.stderr)
@@ -413,7 +421,7 @@ class InstallerTests(unittest.TestCase):
         original = "FAKE_INVALID_KITTY_SETTING yes\n"
         self.write_config(original)
 
-        result = self.run_installer()
+        result = self.run_integration()
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Existing kitty.conf contains Kitty configuration errors", result.stderr)
@@ -428,7 +436,7 @@ class InstallerTests(unittest.TestCase):
         original = f"font_size 16\n{MANAGED_BEGIN}\n{INTEGRATION_INCLUDE}\n{MANAGED_END}\n"
         self.write_config(original)
 
-        result = self.run_installer("--uninstall")
+        result = self.run_integration("--uninstall")
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("refusing to replace foreign runtime link", result.stderr)
@@ -440,7 +448,7 @@ class InstallerTests(unittest.TestCase):
         original = f"font_size 16\n{MANAGED_BEGIN}\n{INTEGRATION_INCLUDE}\n"
         self.write_config(original)
 
-        result = self.run_installer("--disable")
+        result = self.run_integration("--disable")
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unterminated", result.stderr)

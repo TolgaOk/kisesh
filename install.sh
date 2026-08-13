@@ -91,6 +91,6 @@ if [ ! -x "$kisesh_cli" ]; then
     printf '%s\n' "kisesh installer: installed command is missing: $kisesh_cli" >&2
     exit 1
 fi
-KISESH_CLI="$kisesh_cli" "$kisesh_cli" install "$@"
+KISESH_CLI="$kisesh_cli" "$kisesh_cli" enable "$@"
 
 printf '%s\n' "KiSesh installed. Kitty was left running; reload its configuration when convenient."

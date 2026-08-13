@@ -9,11 +9,12 @@
 [![macOS](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Kitty-native, recoverable sessions **without** a terminal multiplexer.
+KiSesh is an extension for the
+<img src="https://raw.githubusercontent.com/kovidgoyal/kitty/v0.48.0/logo/kitty.svg" alt="Kitty icon" width="20">
+[Kitty](https://sw.kovidgoyal.net/kitty/) terminal emulator providing lightweight session redesign.
+It uses Kitty's native tabs, panes, overlays, watchers, and remote control, with **no** terminal multiplexer.
 
 <img src="docs/kisesh.png" alt="KiSesh session manager" width="650">
-
-KiSesh groups native Kitty tabs and panes into named sessions.
 
 > [!NOTE]
 > KiSesh does **not** preserve the in-memory state of running processes.
@@ -21,18 +22,20 @@ KiSesh groups native Kitty tabs and panes into named sessions.
 
 ### Features
 
-- Provide `live`, `saved`, `archived` session states
-- Autosave: layout, terminal context, and commands
+Below is the list of features KiSesh provides.
+
 - Session recovery (see `apps.toml` for configuring)
-  - bring back history up to 2000 lines
+  - bring back history up to 2000 lines for each pane
   - rerun **recognized** last running command
   - prefill **unrecognized** commands and arguments without executing them
-  - auto resume `claude`, `codex`, and `pi` sessions
+  - auto resume `claude`, `codex`, and `pi` sessions (if enabled)
+- `● live`, `○ saved`, and `○ archived` session states
+- Autosave when change in: layout, terminal context, or command execution
 
 
 ## Install
 
-**requirements**
+**Requirements**
 
 - [Kitty](https://sw.kovidgoyal.net/kitty/) >= 0.47.2
 - Nerd Font
@@ -44,11 +47,13 @@ curl -LsSf https://github.com/TolgaOk/kisesh/releases/latest/download/install.sh
 Using `uv`:
 
 ```sh
-uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/releases/latest/download/kisesh.tar.gz
-kisesh install
+uv tool install --python 3.11 \
+  https://github.com/TolgaOk/kisesh/releases/latest/download/kisesh.tar.gz &&
+  kisesh enable
 ```
 
-Restart Kitty after either installation method, then press `Alt+S` to open the KiSesh session manager.
+Restart `Kitty` after either installation method, then press `Alt+S` to open the
+KiSesh session manager.
 
 > [!IMPORTANT]
 >
@@ -60,12 +65,21 @@ Restart Kitty after either installation method, then press `Alt+S` to open the K
 >
 > Inspect them with `kisesh agents status`; remove them with `kisesh agents disable`.
 
+Manage the Kisesh from the same CLI:
+
+```sh
+kisesh enable
+kisesh disable
+kisesh uninstall
+kisesh uninstall --purge
+```
+
+`enable/disable` enables or disable KiSesh.
+`uninstall` removes the KiSesh (`--purge` for removing the session data).
+
 ## Configuration
 
 Session data is stored locally in `~/.local/share/kisesh/` by default.
-
-`kisesh install` creates `~/.config/kisesh/apps.toml` from the
-[bundled defaults](kisesh/default_apps.toml). Existing configuration is kept.
 
 ```toml
 version = 2
@@ -88,5 +102,5 @@ restore = "captured"
 label = "Vim"
 icon = ""
 
-# Additional profiles follow the same section-specific fields.
+# ...
 ```

@@ -1,4 +1,4 @@
-"""Reversible, single-command installation for KiSesh."""
+"""Reversible Kitty integration lifecycle for KiSesh."""
 
 from __future__ import annotations
 
@@ -38,23 +38,25 @@ from .tab_bar_install import (
     tab_bar_paths,
 )
 
-MANAGED_BEGIN = "# BEGIN kisesh (managed by kisesh install)"
-MANAGED_END = "# END kisesh (managed by kisesh install)"
+MANAGED_BEGIN = "# BEGIN kisesh (managed by kisesh enable)"
+MANAGED_END = "# END kisesh (managed by kisesh enable)"
+LEGACY_MANAGED_BEGIN = "# BEGIN kisesh (managed by kisesh install)"
+LEGACY_MANAGED_END = "# END kisesh (managed by kisesh install)"
 COMPAT_MANAGED_BEGIN = "# BEGIN kisesh (managed by ./install)"
 COMPAT_MANAGED_END = "# END kisesh (managed by ./install)"
 INTEGRATION_INCLUDE = "include ~/.local/lib/kisesh/integration/kisesh.conf"
 DEFAULT_LISTEN_ON = "unix:/tmp/kisesh-main"
 MANAGED_KEYS = ("alt+s", "cmd+w")
 
-InstallAction = Literal["enable", "disable", "uninstall", "purge"]
+IntegrationAction = Literal["enable", "disable", "uninstall", "purge"]
 
 
-class InstallError(RuntimeError):
-    """An installation problem that should be reported without a traceback."""
+class IntegrationError(RuntimeError):
+    """An integration lifecycle failure reported without a traceback."""
 
 
 @dataclass(frozen=True, slots=True)
-class InstallPaths:
+class IntegrationPaths:
     """Resolved source, target, configuration, and session-data paths."""
 
     home: Path
@@ -77,11 +79,11 @@ class ConfigProbe:
 
 
 @dataclass(frozen=True, slots=True)
-class InstallArguments:
-    """Typed installer flags with a validated mutually exclusive action."""
+class IntegrationArguments:
+    """Typed lifecycle flags with a validated mutually exclusive action."""
 
     enable: bool = False
-    """Install and enable KiSesh, which is also the default action."""
+    """Enable KiSesh in Kitty, which is also the default action."""
 
     disable: bool = False
     """Remove Kitty integration while retaining code and sessions."""
@@ -95,17 +97,19 @@ class InstallArguments:
     kitty_config: Path | None = None
     """Override the automatically detected kitty.conf path."""
 
-    def action(self) -> InstallAction:
+    def action(self) -> IntegrationAction:
         """Resolve one selected action and reject ambiguous destructive flags."""
-        options: tuple[tuple[InstallAction, bool], ...] = (
+        options: tuple[tuple[IntegrationAction, bool], ...] = (
             ("enable", self.enable),
             ("disable", self.disable),
             ("uninstall", self.uninstall),
             ("purge", self.purge),
         )
-        selected: list[InstallAction] = [action for action, enabled in options if enabled]
+        selected: list[IntegrationAction] = [action for action, enabled in options if enabled]
         if len(selected) > 1:
-            raise InstallError("choose only one of --enable, --disable, --uninstall, or --purge")
+            raise IntegrationError(
+                "choose only one of --enable, --disable, --uninstall, or --purge"
+            )
         return selected[0] if selected else "enable"
 
 
@@ -123,7 +127,7 @@ def _home() -> Path:
     """Resolve HOME or fail before considering any filesystem mutation."""
     configured = os.environ.get("HOME")
     if not configured:
-        raise InstallError("HOME is unavailable")
+        raise IntegrationError("HOME is unavailable")
     return Path(configured).expanduser().resolve()
 
 
@@ -166,16 +170,16 @@ def _console_launcher(source: Path, name: str, environment_name: str) -> Path:
         absolute = candidate.absolute()
         if absolute.is_file() and os.access(absolute, os.X_OK):
             return absolute
-    raise InstallError(f"the {name} launcher was not found")
+    raise IntegrationError(f"the {name} launcher was not found")
 
 
-def install_paths(*, kitty_config: Path | None = None) -> InstallPaths:
+def integration_paths(*, kitty_config: Path | None = None) -> IntegrationPaths:
     """Resolve every path used by an install, disable, uninstall, or purge."""
     home = _home()
     source = Path(__file__).resolve().parents[1]
     config_base = _expand_home(os.environ.get("XDG_CONFIG_HOME", "~/.config"), home)
     data_base = _expand_home(os.environ.get("XDG_DATA_HOME", "~/.local/share"), home)
-    return InstallPaths(
+    return IntegrationPaths(
         home=home,
         source=source,
         launcher=_console_launcher(source, "kisesh", "KISESH_CLI"),
@@ -187,32 +191,32 @@ def install_paths(*, kitty_config: Path | None = None) -> InstallPaths:
     )
 
 
-def _validate_source(paths: InstallPaths) -> None:
+def _validate_source(paths: IntegrationPaths) -> None:
     """Require all packaged runtime and application-profile resources."""
     try:
         validate_runtime_source(_runtime_paths(paths))
     except RuntimeInstallError as error:
-        raise InstallError(str(error)) from error
+        raise IntegrationError(str(error)) from error
     profile = paths.source / "kisesh" / "default_apps.toml"
     if not profile.is_file():
-        raise InstallError(f"package is incomplete; missing: {profile}")
+        raise IntegrationError(f"package is incomplete; missing: {profile}")
 
 
-def _runtime_paths(paths: InstallPaths) -> RuntimePaths:
+def _runtime_paths(paths: IntegrationPaths) -> RuntimePaths:
     """Translate installer locations into one runtime deployment contract."""
     return runtime_paths(paths.source, paths.launcher, paths.panel_launcher, paths.target)
 
 
-def _check_install_target(paths: InstallPaths, *, removing: bool = False) -> None:
+def _check_install_target(paths: IntegrationPaths, *, removing: bool = False) -> None:
     """Reject foreign runtime targets before an install or removal transaction."""
     del removing
     try:
         check_runtime_target(_runtime_paths(paths))
     except RuntimeInstallError as error:
-        raise InstallError(str(error)) from error
+        raise IntegrationError(str(error)) from error
 
 
-def _strip_kisesh_config(text: str, paths: InstallPaths) -> tuple[str, bool]:
+def _strip_kisesh_config(text: str, paths: IntegrationPaths) -> tuple[str, bool]:
     """Remove managed blocks and direct KiSesh includes."""
     lines = text.splitlines(keepends=True)
     output: list[str] = []
@@ -225,6 +229,7 @@ def _strip_kisesh_config(text: str, paths: InstallPaths) -> tuple[str, bool]:
     }
     managed_blocks = {
         MANAGED_BEGIN: MANAGED_END,
+        LEGACY_MANAGED_BEGIN: LEGACY_MANAGED_END,
         COMPAT_MANAGED_BEGIN: COMPAT_MANAGED_END,
     }
     managed_ends = frozenset(managed_blocks.values())
@@ -232,13 +237,13 @@ def _strip_kisesh_config(text: str, paths: InstallPaths) -> tuple[str, bool]:
         marker = line.rstrip("\r\n")
         if marker in managed_blocks:
             if active_end is not None:
-                raise InstallError("kitty.conf contains a nested KiSesh managed block")
+                raise IntegrationError("kitty.conf contains a nested KiSesh managed block")
             active_end = managed_blocks[marker]
             changed = True
             continue
         if marker in managed_ends:
             if marker != active_end:
-                raise InstallError("kitty.conf contains an unmatched KiSesh end marker")
+                raise IntegrationError("kitty.conf contains an unmatched KiSesh end marker")
             active_end = None
             continue
         if active_end is not None:
@@ -248,7 +253,7 @@ def _strip_kisesh_config(text: str, paths: InstallPaths) -> tuple[str, bool]:
             continue
         output.append(line)
     if active_end is not None:
-        raise InstallError("kitty.conf contains an unterminated KiSesh managed block")
+        raise IntegrationError("kitty.conf contains an unterminated KiSesh managed block")
     stripped = "".join(output).rstrip()
     return (f"{stripped}\n" if stripped else ""), changed
 
@@ -276,7 +281,9 @@ def _editable_config(path: Path) -> Path:
         try:
             return path.resolve(strict=True)
         except OSError as error:
-            raise InstallError(f"cannot resolve Kitty config symlink {path}: {error}") from error
+            raise IntegrationError(
+                f"cannot resolve Kitty config symlink {path}: {error}"
+            ) from error
     return path
 
 
@@ -285,7 +292,7 @@ def _read_config(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8") if path.exists() else ""
     except OSError as error:
-        raise InstallError(f"cannot read Kitty config {path}: {error}") from error
+        raise IntegrationError(f"cannot read Kitty config {path}: {error}") from error
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -294,7 +301,7 @@ def _atomic_write(path: Path, content: str) -> None:
     atomic_write_text(path, content, mode=mode, prefix=".kisesh-config.")
 
 
-def _app_config_content(paths: InstallPaths) -> str | None:
+def _app_config_content(paths: IntegrationPaths) -> str | None:
     """Validate an existing profile file or return bundled first-use content."""
     bundled = paths.source / "kisesh" / "default_apps.toml"
     try:
@@ -302,12 +309,12 @@ def _app_config_content(paths: InstallPaths) -> str | None:
         parse_app_profiles(bundled_content, source=str(bundled))
         if paths.app_config.exists() or paths.app_config.is_symlink():
             if not paths.app_config.is_file():
-                raise InstallError(f"app config is not a file: {paths.app_config}")
+                raise IntegrationError(f"app config is not a file: {paths.app_config}")
             existing = paths.app_config.read_text(encoding="utf-8")
             parse_app_profiles(existing, source=str(paths.app_config))
             return None
     except (AppProfileError, OSError) as error:
-        raise InstallError(f"cannot use app config: {error}") from error
+        raise IntegrationError(f"cannot use app config: {error}") from error
     return bundled_content
 
 
@@ -325,7 +332,7 @@ def _backup_once(path: Path) -> Path | None:
         try:
             shutil.copy2(path, backup)
         except OSError as error:
-            raise InstallError(f"cannot back up Kitty config to {backup}: {error}") from error
+            raise IntegrationError(f"cannot back up Kitty config to {backup}: {error}") from error
     return backup
 
 
@@ -335,13 +342,13 @@ def _find_executable(environment_name: str, command: str, app_path: str) -> str:
         candidate = Path(configured)
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
-        raise InstallError(f"{environment_name} is not executable: {configured}")
+        raise IntegrationError(f"{environment_name} is not executable: {configured}")
     if found := shutil.which(command):
         return found
     candidate = Path(app_path)
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return str(candidate)
-    raise InstallError(f"{command} was not found")
+    raise IntegrationError(f"{command} was not found")
 
 
 _CONFIG_PROBE = (
@@ -372,10 +379,10 @@ def _probe_config(kitty: str, config_path: Path, content: str) -> ConfigProbe:
                 timeout=15,
             )
         except (OSError, subprocess.SubprocessError) as error:
-            raise InstallError(f"cannot validate Kitty config: {error}") from error
+            raise IntegrationError(f"cannot validate Kitty config: {error}") from error
         if result.returncode:
             detail = (result.stderr or result.stdout).strip()
-            raise InstallError(
+            raise IntegrationError(
                 f"Kitty could not validate its config: {detail or result.returncode}"
             )
         payload_line = next(
@@ -384,10 +391,12 @@ def _probe_config(kitty: str, config_path: Path, content: str) -> ConfigProbe:
         try:
             payload = json.loads(payload_line)
         except (json.JSONDecodeError, TypeError) as error:
-            raise InstallError("Kitty returned an unreadable config-validation result") from error
+            raise IntegrationError(
+                "Kitty returned an unreadable config-validation result"
+            ) from error
         bad = payload.get("bad")
         if not isinstance(bad, list):
-            raise InstallError("Kitty returned an invalid config-validation result")
+            raise IntegrationError("Kitty returned an invalid config-validation result")
         return ConfigProbe(
             tuple(str(item) for item in bad),
             str(payload.get("allow") or ""),
@@ -395,10 +404,10 @@ def _probe_config(kitty: str, config_path: Path, content: str) -> ConfigProbe:
         )
 
 
-def _format_bad_config(label: str, probe: ConfigProbe) -> InstallError:
+def _format_bad_config(label: str, probe: ConfigProbe) -> IntegrationError:
     """Format at most ten Kitty parser errors as one safe installer failure."""
     details = "\n".join(f"  - {line}" for line in probe.bad_lines[:10])
-    return InstallError(
+    return IntegrationError(
         f"{label} contains Kitty configuration errors; no changes were made:\n{details}"
     )
 
@@ -438,14 +447,14 @@ def _validated_enabled_config(kitty: str, config: Path, base: str) -> str:
     if final_probe.bad_lines:
         raise _format_bad_config("KiSesh-enabled kitty.conf", final_probe)
     if _remote_control_disabled(final_probe.allow_remote_control):
-        raise InstallError("Kitty remote control is still disabled; no changes were made")
+        raise IntegrationError("Kitty remote control is still disabled; no changes were made")
     if _socket_missing(final_probe.listen_on):
-        raise InstallError("Kitty has no persistent listen_on socket; no changes were made")
+        raise IntegrationError("Kitty has no persistent listen_on socket; no changes were made")
     return desired
 
 
 def _report_enabled(
-    paths: InstallPaths,
+    paths: IntegrationPaths,
     app_config_created: bool,
     bar_paths: TabBarPaths,
     base: str,
@@ -467,7 +476,7 @@ def _report_enabled(
     )
 
 
-def _enable(paths: InstallPaths) -> None:
+def _enable(paths: IntegrationPaths) -> None:
     """Validate, deploy, configure, and report an enabled KiSesh package."""
     _validate_source(paths)
     _check_install_target(paths)
@@ -527,7 +536,7 @@ def _enable(paths: InstallPaths) -> None:
     )
 
 
-def _disable(paths: InstallPaths) -> bool:
+def _disable(paths: IntegrationPaths) -> bool:
     """Remove only KiSesh configuration while preserving code and sessions."""
     config = _editable_config(paths.kitty_config)
     original = _read_config(config)
@@ -556,7 +565,7 @@ def _remove_product_data(path: Path, base: Path) -> bool:
     """Delete only a verified KiSesh data directory during explicit purge."""
     expected = base / "kisesh"
     if path != expected or path.name != "kisesh":
-        raise InstallError(f"refusing unsafe purge path: {path}")
+        raise IntegrationError(f"refusing unsafe purge path: {path}")
     if path.is_symlink():
         path.unlink()
         return True
@@ -566,7 +575,7 @@ def _remove_product_data(path: Path, base: Path) -> bool:
     return False
 
 
-def _uninstall(paths: InstallPaths, *, purge: bool) -> None:
+def _uninstall(paths: IntegrationPaths, *, purge: bool) -> None:
     """Disable integration, remove managed launch paths, and optionally purge data."""
     _check_install_target(paths, removing=True)
     _disable(paths)
@@ -590,22 +599,22 @@ def _uninstall(paths: InstallPaths, *, purge: bool) -> None:
     print("Kitty was left running; reload its configuration when convenient")
 
 
-def parse_arguments(argv: Sequence[str] | None = None) -> InstallArguments:
-    """Parse installer flags with Tyro into a fully typed configuration."""
+def parse_arguments(argv: Sequence[str] | None = None) -> IntegrationArguments:
+    """Parse lifecycle flags with Tyro into a fully typed configuration."""
     return tyro.cli(
-        InstallArguments,
-        prog="kisesh install",
-        description="Install, disable, or remove KiSesh safely.",
+        IntegrationArguments,
+        prog="python -m kisesh.kitty_integration",
+        description="Enable, disable, or remove KiSesh safely.",
         args=list(argv) if argv is not None else None,
         config=(tyro.conf.HelptextFromCommentsOff,),
     )
 
 
-def run(arguments: InstallArguments) -> int:
-    """Execute one typed installer action and translate expected failures."""
+def run(arguments: IntegrationArguments) -> int:
+    """Execute one typed integration action and translate expected failures."""
     try:
         action = arguments.action()
-        paths = install_paths(kitty_config=arguments.kitty_config)
+        paths = integration_paths(kitty_config=arguments.kitty_config)
         if action == "enable":
             _enable(paths)
         elif action == "disable":
@@ -613,17 +622,17 @@ def run(arguments: InstallArguments) -> int:
             print("Kitty was left running; reload its configuration when convenient")
         else:
             _uninstall(paths, purge=action == "purge")
-    except (InstallError, RuntimeInstallError, TabBarInstallError) as error:
-        print(f"kisesh installer: {error}", file=sys.stderr)
+    except (IntegrationError, RuntimeInstallError, TabBarInstallError) as error:
+        print(f"kisesh integration: {error}", file=sys.stderr)
         return 1
     except OSError as error:
-        print(f"kisesh installer: {error}", file=sys.stderr)
+        print(f"kisesh integration: {error}", file=sys.stderr)
         return 1
     return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Parse installer arguments and execute the selected reversible action."""
+    """Parse integration arguments and execute the selected reversible action."""
     return run(parse_arguments(argv))
 
 

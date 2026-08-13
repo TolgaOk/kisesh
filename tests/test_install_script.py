@@ -137,7 +137,7 @@ class InstallScriptTests(unittest.TestCase):
         )
         self.assertEqual(
             commands[1],
-            {"program": "kisesh", "args": ["install"], "cli": str(cli)},
+            {"program": "kisesh", "args": ["enable"], "cli": str(cli)},
         )
         self.assertIn("Kitty was left running", result.stdout)
         self.assertNotIn("restart", result.stdout.casefold())
@@ -169,7 +169,7 @@ class InstallScriptTests(unittest.TestCase):
         )
         self.assertEqual(
             commands[1]["args"],
-            ["install", "--kitty-config", str(kitty_config)],
+            ["enable", "--kitty-config", str(kitty_config)],
         )
 
     def test_curl_style_stdin_uses_the_default_remote_source(self) -> None:
@@ -197,6 +197,50 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("install.sh dist/kisesh.tar.gz", release_workflow)
         self.assertNotIn("refs/heads/main", install_script + readme)
         self.assertNotIn("TolgaOk/kisesh/main/install.sh", readme)
+
+    def test_readme_uv_recipe_installs_then_enables_only_after_success(self) -> None:
+        readme = README.read_text(encoding="utf-8")
+        opening = "Using `uv`:\n\n```sh\n"
+        recipe = readme.split(opening, 1)[1].split("\n```", 1)[0]
+        environment = self.environment()
+        environment["UV_TOOL_BIN_DIR"] = str(self.bin)
+
+        installed = subprocess.run(
+            ["/bin/sh", "-c", recipe],
+            cwd=self.root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertEqual(
+            self.commands(),
+            [
+                {
+                    "program": "uv",
+                    "args": ["tool", "install", "--python", "3.11", DEFAULT_PACKAGE_URL],
+                },
+                {"program": "kisesh", "args": ["enable"], "cli": None},
+            ],
+        )
+
+        self.log.unlink()
+        self.uv.write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+        failed = subprocess.run(
+            ["/bin/sh", "-c", recipe],
+            cwd=self.root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+
+        self.assertEqual(failed.returncode, 9)
+        self.assertFalse(self.log.exists())
 
     def test_missing_uv_uses_a_temporary_pinned_installer(self) -> None:
         curl = self.bin / "curl"
