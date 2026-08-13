@@ -29,15 +29,6 @@ KiSesh groups native Kitty tabs and panes into named sessions.
   - prefill **unrecognized** commands and arguments without executing them
   - auto resume `claude`, `codex`, and `pi` sessions
 
-> [!IMPORTANT]
->
-> Enable agent session recovery hooks:
->
-> ```sh
-> kisesh agents enable
-> ```
->
-> Inspect them with `kisesh agents status`; remove them with `kisesh agents disable`.
 
 ## Install
 
@@ -47,17 +38,27 @@ KiSesh groups native Kitty tabs and panes into named sessions.
 - Nerd Font
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/TolgaOk/kisesh/v0.1.2-alpha/install.sh | sh
+curl -LsSf https://github.com/TolgaOk/kisesh/releases/latest/download/install.sh | sh
 ```
 
 Using `uv`:
 
 ```sh
-uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/archive/refs/tags/v0.1.2-alpha.tar.gz
+uv tool install --python 3.11 https://github.com/TolgaOk/kisesh/releases/latest/download/kisesh.tar.gz
 kisesh install
 ```
 
 Restart Kitty after either installation method, then press `Alt+S` to open the KiSesh session manager.
+
+> [!IMPORTANT]
+>
+> Enable agent session recovery hooks:
+>
+> ```sh
+> kisesh agents enable
+> ```
+>
+> Inspect them with `kisesh agents status`; remove them with `kisesh agents disable`.
 
 ## Configuration
 

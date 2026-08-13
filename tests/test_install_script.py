@@ -5,7 +5,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
@@ -13,8 +12,8 @@ from typing import NotRequired, TypedDict, cast
 PROJECT = Path(__file__).parents[1]
 INSTALL_SCRIPT = PROJECT / "install.sh"
 README = PROJECT / "README.md"
-RELEASE_TAG = "v0.1.2-alpha"
-DEFAULT_PACKAGE_URL = f"https://github.com/TolgaOk/kisesh/archive/refs/tags/{RELEASE_TAG}.tar.gz"
+LATEST_RELEASE = "https://github.com/TolgaOk/kisesh/releases/latest/download"
+DEFAULT_PACKAGE_URL = f"{LATEST_RELEASE}/kisesh.tar.gz"
 
 
 class ObservedCommand(TypedDict):
@@ -184,23 +183,18 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(self.commands()[0]["args"][-1], DEFAULT_PACKAGE_URL)
         self.assertNotIn("--editable", self.commands()[0]["args"])
 
-    def test_public_install_sources_are_pinned_to_the_release_tag(self) -> None:
+    def test_public_install_sources_follow_release_assets(self) -> None:
         install_script = INSTALL_SCRIPT.read_text(encoding="utf-8")
         readme = README.read_text(encoding="utf-8")
-        project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
+        release_workflow = (PROJECT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
 
-        package_version = str(project["project"]["version"])
-        self.assertTrue(package_version.endswith("a0"))
-        self.assertEqual(
-            RELEASE_TAG,
-            f"v{package_version.removesuffix('a0')}-alpha",
-        )
         self.assertIn(f"default_package_url={DEFAULT_PACKAGE_URL}", install_script)
-        self.assertIn(
-            f"https://raw.githubusercontent.com/TolgaOk/kisesh/{RELEASE_TAG}/install.sh",
-            readme,
-        )
+        self.assertIn(f"{LATEST_RELEASE}/install.sh", readme)
         self.assertIn(DEFAULT_PACKAGE_URL, readme)
+        self.assertIn("gh release create", release_workflow)
+        self.assertIn("install.sh dist/kisesh.tar.gz", release_workflow)
         self.assertNotIn("refs/heads/main", install_script + readme)
         self.assertNotIn("TolgaOk/kisesh/main/install.sh", readme)
 
