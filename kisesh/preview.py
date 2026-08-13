@@ -60,7 +60,7 @@ def build_session_preview(
                 title=tab.title.strip() or f"Tab {index + 1}",
                 layout=tab.layout.strip(),
                 focused=tab.is_focused,
-                panes=tuple(_live_pane(window, profiles) for window in tab.windows),
+                panes=_live_panes(tab.windows, profiles),
             )
             for index, tab in enumerate(view.live_tabs)
         )
@@ -136,7 +136,37 @@ def _saved_pane(pane: PaneContext, active: bool, profiles: AppProfiles) -> PaneP
     )
 
 
-def _live_pane(window: KittyWindow, profiles: AppProfiles) -> PanePreview:
+def _live_panes(
+    windows: list[KittyWindow],
+    profiles: AppProfiles,
+) -> tuple[PanePreview, ...]:
+    """Resolve one active real pane even while a transient overlay has focus."""
+    if not windows:
+        return ()
+    active_index = 0
+    active_rank = (False, False, float("-inf"), 0)
+    for index, window in enumerate(windows):
+        focused_at = window.get("last_focused_at")
+        focus_time = (
+            float(focused_at)
+            if isinstance(focused_at, (int, float)) and not isinstance(focused_at, bool)
+            else float("-inf")
+        )
+        rank = (
+            window.get("is_active") is True,
+            window.get("is_focused") is True,
+            focus_time,
+            -index,
+        )
+        if rank > active_rank:
+            active_index = index
+            active_rank = rank
+    return tuple(
+        _live_pane(window, index == active_index, profiles) for index, window in enumerate(windows)
+    )
+
+
+def _live_pane(window: KittyWindow, active: bool, profiles: AppProfiles) -> PanePreview:
     """Derive current foreground identity without consulting stale saved context."""
     argv: list[str] = []
     for process in reversed(window.get("foreground_processes", [])):
@@ -161,7 +191,7 @@ def _live_pane(window: KittyWindow, profiles: AppProfiles) -> PanePreview:
         label=label,
         icon=icon,
         last_command=reported or None,
-        active=bool(window.get("is_active") or window.get("is_focused")),
+        active=active,
         restore_available=False,
         needs_attention=bool(window.get("needs_attention")),
     )

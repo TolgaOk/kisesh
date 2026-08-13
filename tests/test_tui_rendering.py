@@ -221,6 +221,28 @@ class TuiRenderingTests(unittest.TestCase):
         attention_x = lines[attention_row].index("top")
         self.assertEqual(screen.styles[attention_row][attention_x], palette.warning)
 
+    def test_selected_live_tab_marks_the_last_real_pane_behind_the_manager(self) -> None:
+        service = StaticService()
+        agents = service.views()[0]
+        claude, codex = agents.live_tabs[0].windows
+        claude["is_active"] = False
+        claude["is_focused"] = False
+        claude["last_focused_at"] = 10.0
+        codex["is_active"] = False
+        codex["is_focused"] = False
+        codex["last_focused_at"] = 20.0
+        manager = SessionManager(service)
+        manager._refresh()
+        manager.selected = 0
+        manager.palette = rendered_manager()[2]
+        screen = Canvas(18, 100)
+
+        manager._draw(screen)
+
+        agent_line = next(line for line in screen.render().splitlines() if "Claude" in line)
+        self.assertIn("✻ Claude, • 󰋙 Codex", agent_line)
+        self.assertEqual(agent_line.count("•"), 1)
+
     def test_stacked_windows_are_not_described_as_simultaneously_visible_panes(self) -> None:
         service = StaticService()
         stack = service._rows[0].live_tabs[-1]
