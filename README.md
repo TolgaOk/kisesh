@@ -1,10 +1,8 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/kisesh-logo-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/kisesh-logo-light.png">
-  <img alt="KiSesh" src="docs/kisesh-logo-light.png" width="650">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/kisesh-logo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/kisesh-logo-light.svg">
+  <img alt="KiSesh" src="docs/kisesh-logo-light.svg" width="650">
 </picture>
-
----
 
 [![Kitty 0.47.2+](https://img.shields.io/badge/Kitty-0.47.2%2B-7F52FF)](https://sw.kovidgoyal.net/kitty/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
