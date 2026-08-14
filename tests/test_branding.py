@@ -29,6 +29,14 @@ def _png_chunks(data: bytes) -> Iterator[tuple[bytes, bytes]]:
         offset = payload_end + 4
 
 
+def _png_dimensions(path: Path) -> tuple[int, int]:
+    """Read dimensions from a validated PNG header without decoding its pixels."""
+    for chunk_type, payload in _png_chunks(path.read_bytes()):
+        if chunk_type == b"IHDR":
+            return struct.unpack(">II", payload[:8])
+    raise ValueError("PNG has no image header")
+
+
 def _paeth(left: int, above: int, upper_left: int) -> int:
     """Return the PNG Paeth predictor nearest its linear estimate."""
     estimate = left + above - upper_left
@@ -125,6 +133,22 @@ def _logo(variant: str) -> tuple[ElementTree.Element, _RgbaImage]:
 
 
 class BrandingAssetTests(unittest.TestCase):
+    def test_readme_uses_two_x_theme_specific_session_screenshots(self) -> None:
+        readme = (PROJECT / "README.md").read_text(encoding="utf-8")
+        self.assertIn('srcset="docs/kisesh-dark.png"', readme)
+        self.assertIn('srcset="docs/kisesh-light.png"', readme)
+        self.assertIn(
+            '<img alt="KiSesh session manager" src="docs/kisesh-light.png" width="650">',
+            readme,
+        )
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                self.assertEqual(
+                    _png_dimensions(PROJECT / "docs" / f"kisesh-{variant}.png"),
+                    (1300, 816),
+                )
+        self.assertFalse((PROJECT / "docs" / "kisesh.png").exists())
+
     def test_readme_uses_theme_specific_self_contained_svg_animation(self) -> None:
         readme = (PROJECT / "README.md").read_text(encoding="utf-8")
         self.assertIn('media="(prefers-color-scheme: dark)"', readme)

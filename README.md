@@ -14,7 +14,11 @@ KiSesh is an extension for the
 [Kitty](https://sw.kovidgoyal.net/kitty/) terminal emulator providing lightweight session redesign.
 It uses Kitty's native tabs, panes, overlays, watchers, and remote control, with **no** terminal multiplexer.
 
-<img src="docs/kisesh.png" alt="KiSesh session manager" width="650">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/kisesh-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/kisesh-light.png">
+  <img alt="KiSesh session manager" src="docs/kisesh-light.png" width="650">
+</picture>
 
 > [!NOTE]
 > KiSesh does **not** preserve the in-memory state of running processes.
