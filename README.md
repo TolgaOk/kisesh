@@ -20,6 +20,9 @@ It uses Kitty's native tabs, panes, overlays, watchers, and remote control, with
   <img alt="KiSesh session manager" src="docs/kisesh-light.png" width="650">
 </picture>
 
+Above is a screenshot of the KiSesh session panel (press `Alt+s` to open it).
+This is a Kitty overlay panel for managing KiSesh sessions.
+
 > [!NOTE]
 > KiSesh does **not** preserve the in-memory state of running processes.
 
@@ -35,6 +38,7 @@ Below is the list of features KiSesh provides.
   - auto resume `claude`, `codex`, and `pi` sessions (if enabled)
 - `● live`, `○ saved`, and `○ archived` session states
 - Autosave when change in: layout, terminal context, or command execution
+- Attach or detach a tab to/from a session
 
 
 ## Install
@@ -61,25 +65,24 @@ KiSesh session manager.
 
 > [!IMPORTANT]
 >
-> Enable agent session recovery hooks:
+> To enable agent session recovery add hooks with:
 >
 > ```sh
 > kisesh agents enable
 > ```
 >
-> Inspect them with `kisesh agents status`; remove them with `kisesh agents disable`.
+> Inspect the hooks with `kisesh agents status`; remove them with `kisesh agents disable`.
 
-Manage the Kisesh from the same CLI:
+Manage Kisesh from the same CLI:
 
 ```sh
 kisesh enable
 kisesh disable
 kisesh uninstall
-kisesh uninstall --purge
 ```
 
 `enable/disable` enables or disable KiSesh.
-`uninstall` removes the KiSesh (`--purge` for removing the session data).
+`uninstall` removes KiSesh (`--purge` for removing the session data).
 
 ## Configuration
 
