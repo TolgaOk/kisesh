@@ -3,8 +3,11 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from kisesh.kitty_client import LiveTab
+from kisesh.kitty_client import KittyClient, LiveTab
 from kisesh.model import (
+    KISESH_UI_VAR,
+    SESSION_ID_VAR,
+    KittyOsWindowState,
     KittyWindow,
     PaneContext,
     RestoreSpec,
@@ -103,6 +106,53 @@ def _view(
 
 
 class SessionPreviewTests(unittest.TestCase):
+    def test_live_overlay_recovers_the_most_recent_real_pane_focus(self) -> None:
+        state: list[KittyOsWindowState] = [
+            {
+                "id": 10,
+                "tabs": [
+                    {
+                        "id": 20,
+                        "title": "agents",
+                        "layout": "stack",
+                        "is_active": True,
+                        "is_focused": True,
+                        "windows": [
+                            {
+                                "id": 30,
+                                "title": "claude",
+                                "last_focused_at": 10.0,
+                                "foreground_processes": [{"cmdline": ["claude"]}],
+                                "user_vars": {SESSION_ID_VAR: "work"},
+                            },
+                            {
+                                "id": 31,
+                                "title": "codex",
+                                "last_focused_at": 20.0,
+                                "foreground_processes": [{"cmdline": ["codex"]}],
+                                "user_vars": {SESSION_ID_VAR: "work"},
+                            },
+                            {
+                                "id": 32,
+                                "title": "KiSesh",
+                                "is_active": True,
+                                "is_focused": True,
+                                "user_vars": {KISESH_UI_VAR: "yes"},
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+        client = KittyClient(executable="/kitty", socket="unix:/tmp/test.sock")
+
+        tabs = client.tabs(state)
+        preview = build_session_preview(_view(live_tabs=tabs))
+
+        self.assertEqual([window["id"] for window in tabs[0].windows], [30, 31])
+        self.assertEqual([pane.label for pane in preview.tabs[0].panes], ["Claude", "Codex"])
+        self.assertEqual([pane.active for pane in preview.tabs[0].panes], [False, True])
+
     def test_live_kitty_state_wins_over_stale_saved_agent_context(self) -> None:
         stale = _context(
             [
@@ -166,11 +216,34 @@ class SessionPreviewTests(unittest.TestCase):
         )
         self.assertEqual(
             [pane.active for pane in preview.tabs[0].panes],
-            [True, True, False, False],
+            [True, False, False, False],
         )
         self.assertTrue(preview.tabs[0].panes[0].needs_attention)
         self.assertFalse(any(pane.restore_available for pane in preview.tabs[0].panes))
         self.assertNotIn("stale", [tab.title for tab in preview.tabs])
+
+    def test_live_preview_uses_the_first_pane_when_focus_metadata_is_absent(self) -> None:
+        windows: list[KittyWindow] = [
+            {
+                "id": 1,
+                "title": "claude",
+                "foreground_processes": [{"cmdline": ["claude"]}],
+            },
+            {
+                "id": 2,
+                "title": "codex",
+                "foreground_processes": [{"cmdline": ["codex"]}],
+            },
+        ]
+        live = LiveTab(1, 2, 0, "agents", "stack", windows)
+
+        preview = build_session_preview(_view(live_tabs=[live]))
+        transient = build_session_preview(
+            _view(live_tabs=[LiveTab(1, 3, 1, "opening", "splits", [])])
+        )
+
+        self.assertEqual([pane.active for pane in preview.tabs[0].panes], [True, False])
+        self.assertEqual(transient.tabs[0].panes, ())
 
     def test_saved_context_preserves_order_agents_restore_and_one_active_pane(self) -> None:
         tabs: list[TabContext] = [
