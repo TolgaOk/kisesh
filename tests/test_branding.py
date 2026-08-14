@@ -169,7 +169,7 @@ class BrandingAssetTests(unittest.TestCase):
     def test_logo_layers_keep_raster_backgrounds_clear_for_vector_boundaries(self) -> None:
         expected_backgrounds = {
             "light": (255, 255, 255, 255),
-            "dark": (13, 13, 18, 255),
+            "dark": (13, 17, 23, 255),
         }
         expected_paths = (
             "M497 209H756L770 216 756 223H497A7 7 0 0 1 497 209Z",
