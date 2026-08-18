@@ -173,7 +173,7 @@ class TuiRenderingTests(unittest.TestCase):
 
         editor_row = next(index for index, line in enumerate(lines) if "├─ editor" in line)
         shell_row = next(index for index, line in enumerate(lines) if "└─ shell" in line)
-        self.assertEqual(lines[editor_row + 1].strip(), "│  • ✻ Claude ↻,  Vim ↻")
+        self.assertEqual(lines[editor_row + 1].strip(), "│  • ✻ Claude ↻,  Neovim ↻")
         self.assertEqual(lines[shell_row + 1].strip(), " zsh · last: git status")
         self.assertIn("2 panes · splits · focused", lines[editor_row])
         self.assertIn("1 pane · tall", lines[shell_row])
@@ -199,7 +199,7 @@ class TuiRenderingTests(unittest.TestCase):
         self.assertIn("├─ agents · 2 panes · splits · focused", rendered)
         self.assertIn("│  • ✻ Claude, 󰋙 Codex", rendered)
         self.assertIn("├─ editor + tests · 3 panes · tall", rendered)
-        self.assertIn(" Vim,  pytest,  zsh · last: git status", rendered)
+        self.assertIn(" Neovim,  pytest,  zsh · last: git status", rendered)
         self.assertIn("└─ monitor · 1 pane · stack", rendered)
         self.assertIn("󰍛 top !", rendered)
         self.assertNotIn("↻", rendered)

@@ -13,6 +13,7 @@ from typing import NamedTuple, Protocol, cast
 from unittest import mock
 
 from kisesh import session_bar
+from kisesh.app_profiles import DEFAULT_APP_PROFILES
 from kisesh.model import (
     AGENT_VAR,
     APP_VAR,
@@ -157,6 +158,8 @@ class Cursor:
     x: int
     bg: int = 0
     fg: int = 0
+    bold: bool = False
+    italic: bool = False
 
 
 @dataclass(slots=True)
@@ -173,6 +176,7 @@ class RecordingDrawer:
     def __init__(self) -> None:
         self.calls: list[tuple[object, object, object, int, int, int, bool, object]] = []
         self.colors: list[tuple[int, int]] = []
+        self.font_styles: list[tuple[bool, bool]] = []
 
     def __call__(
         self,
@@ -200,6 +204,7 @@ class RecordingDrawer:
         cursor = getattr(screen, "cursor", None)
         if isinstance(cursor, Cursor):
             self.colors.append((cursor.bg, cursor.fg))
+            self.font_styles.append((cursor.bold, cursor.italic))
             cursor.x = before + max_title_length
             return cursor.x
         return 41
@@ -575,7 +580,15 @@ class SessionBarAdapterTests(unittest.TestCase):
                 return_value=SimpleNamespace(as_rgb=lambda color: color),
             ),
         ):
-            active_screen = Screen(Cursor(x=7, bg=draw_data.active_bg, fg=draw_data.active_fg))
+            active_screen = Screen(
+                Cursor(
+                    x=7,
+                    bg=draw_data.active_bg,
+                    fg=draw_data.active_fg,
+                    bold=True,
+                    italic=True,
+                )
+            )
             result = session_bar.draw_tab(
                 draw_data,
                 active_screen,
@@ -602,6 +615,7 @@ class SessionBarAdapterTests(unittest.TestCase):
             )
             switched_screen.cursor.bg = draw_data.active_bg
             switched_screen.cursor.fg = draw_data.active_fg
+            switched_screen.cursor.bold = switched_screen.cursor.italic = True
             session_bar.draw_tab(
                 draw_data,
                 switched_screen,
@@ -628,6 +642,7 @@ class SessionBarAdapterTests(unittest.TestCase):
                 (draw_data.active_bg, draw_data.active_fg),
             ],
         )
+        self.assertEqual(first_drawer.font_styles, [(False, False), (True, True)])
         self.assertEqual(
             "".join(text for text, _, _ in active_screen.drawn),
             "",
@@ -655,6 +670,10 @@ class SessionBarAdapterTests(unittest.TestCase):
                 (draw_data.inactive_bg, draw_data.inactive_fg),
                 (draw_data.active_bg, draw_data.active_fg),
             ],
+        )
+        self.assertEqual(
+            switched_drawer.font_styles,
+            [(False, False), (False, False), (True, True)],
         )
 
     def test_incomplete_native_renderers_fall_back_to_one_decorated_tab(self) -> None:
@@ -782,6 +801,11 @@ class SessionBarAdapterTests(unittest.TestCase):
         extra = ExtraData(first)
 
         with (
+            mock.patch.object(
+                session_bar,
+                "current_app_profiles",
+                return_value=DEFAULT_APP_PROFILES,
+            ),
             mock.patch.object(session_bar, "_kitty_boss", return_value=boss),
             mock.patch.object(session_bar, "_kitty_drawer", return_value=drawer),
             mock.patch.object(builtins, "open", side_effect=AssertionError("render read a file")),
@@ -802,9 +826,9 @@ class SessionBarAdapterTests(unittest.TestCase):
         self.assertEqual(first_call[0], DrawData("bottom"))
         self.assertIs(first_call[1], screen)
         self.assertEqual(cast(Datum, first_call[2]).title, "󰋙 Codex  2/2")
-        self.assertNotIn("Vim", cast(Datum, first_call[2]).title)
+        self.assertNotIn("Neovim", cast(Datum, first_call[2]).title)
         self.assertNotIn("KiSesh", cast(Datum, first_call[2]).title)
-        self.assertEqual(cast(Datum, second_call[2]).title, " Vim  1/2")
+        self.assertEqual(cast(Datum, second_call[2]).title, " Neovim  1/2")
         self.assertNotIn("Codex", cast(Datum, second_call[2]).title)
         self.assertNotIn("KiSesh", cast(Datum, second_call[2]).title)
         self.assertEqual(first_call[3], 17)
@@ -1104,9 +1128,14 @@ class SessionBarAdapterTests(unittest.TestCase):
             "Color(200,200,200),Color(4,5,6),Color(0,0,0),'{title}',None,'',"
             "'slanted','top',0,1); "
             "screen=Screen(None,1,80,0,0,0); "
+            "screen.cursor.bold=True; screen.cursor.italic=True; "
             "result=s.draw_tab(draw,screen,current,0,17,1,True,extra); "
             "rendered=str(screen.line(0)); "
-            "print(result==19,rendered.startswith('  dotfiles  …  '))"
+            "session_style=screen.line(0).cursor_from(3); "
+            "content_style=screen.line(0).cursor_from(rendered.index('')); "
+            "print(result==19,rendered.startswith('  dotfiles  …  '),"
+            "not session_style.bold and not session_style.italic,"
+            "content_style.bold and content_style.italic)"
         )
         result = subprocess.run(
             ["kitty", "+runpy", script],
@@ -1118,7 +1147,7 @@ class SessionBarAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "True True")
+        self.assertEqual(result.stdout.strip(), "True True True True")
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is required")
     def test_real_entrypoint_refreshes_a_cached_renderer_with_an_older_model(self) -> None:

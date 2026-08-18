@@ -4,7 +4,7 @@
     ● JAX Agents                       3      6  2026-07-18  2026-08-04 11:30
   › ○ Dotfiles                         2      3  2026-07-18  2026-08-04 11:30
     ├─ editor · 2 panes · splits · focused
-    │  • ✻ Claude ↻,  Vim ↻
+    │  • ✻ Claude ↻,  Neovim ↻
     └─ shell · 1 pane · tall
         zsh · last: git status
 
