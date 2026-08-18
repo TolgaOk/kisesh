@@ -71,7 +71,13 @@ label = "lazygit"
 icon = ""
 
 [apps.nvim]
-match = ["nvim", "nvim-*", "vim", "vi"]
+match = ["nvim", "nvim-*"]
+restore = "captured"
+label = "Neovim"
+icon = ""
+
+[apps.vim]
+match = ["vim", "vi"]
 restore = "captured"
 label = "Vim"
 icon = ""

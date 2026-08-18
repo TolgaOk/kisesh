@@ -104,10 +104,10 @@ label = "Claude"
 icon = "✻"
 
 [apps.nvim]
-match = ["nvim", "nvim-*", "vim", "vi"]
+match = ["nvim", "nvim-*"]
 restore = "captured"
-label = "Vim"
-icon = ""
+label = "Neovim"
+icon = ""
 
 # ...
 ```

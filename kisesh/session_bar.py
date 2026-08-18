@@ -72,6 +72,8 @@ class _ScreenCursor(Protocol):
     x: int
     bg: int
     fg: int
+    bold: bool
+    italic: bool
 
 
 class _SegmentScreen(Protocol):
@@ -588,8 +590,10 @@ def draw_tab(
         else None
     )
     if plan is not None and cursor is not None:
+        content_font_style = cursor.bold, cursor.italic
         cursor.bg = plan.session_colors.background
         cursor.fg = plan.session_colors.foreground
+        cursor.bold = cursor.italic = False
         segment_neighbors = _SegmentExtraData(
             prev_tab=getattr(neighbors, "prev_tab", None),
             next_tab=None,
@@ -606,6 +610,7 @@ def draw_tab(
             segment_neighbors,
         )
         _draw_tab_start(cast(_SegmentScreen, screen), plan)
+        cursor.bold, cursor.italic = content_font_style
         return drawer(
             draw_data,
             screen,
