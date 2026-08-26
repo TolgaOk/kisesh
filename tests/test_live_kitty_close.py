@@ -18,6 +18,7 @@ from typing import cast
 from kisesh.kitty_client import KittyClient
 from kisesh.model import (
     KISESH_UI_VAR,
+    RESTORE_LAYOUT_VAR,
     SESSION_ID_VAR,
     SESSION_SCOPE_VAR,
     SESSION_SLUG_VAR,
@@ -260,6 +261,25 @@ def _ui_windows(state: list[KittyOsWindowState]) -> list[KittyWindow]:
     ]
 
 
+def _launch_manager(server: IsolatedKitty) -> list[KittyOsWindowState]:
+    """Launch the real manager overlay and wait for its full-tab presentation."""
+    server.remote(
+        "launch",
+        "--type=overlay",
+        "--copy-env",
+        "--env=KISESH_CALLER=overlay",
+        f"--var={KISESH_UI_VAR}=yes",
+        "--title=KiSesh",
+        str(Path(sys.executable).with_name("kisesh")),
+        "--socket",
+        server.socket,
+        "manager",
+    )
+    return server.wait_for(
+        lambda state: len(_ui_windows(state)) == 1 and _tabs(state)[0].get("layout") == "stack"
+    )
+
+
 def _mapped_close_action() -> list[str]:
     """Read the exact action attached to Command-W in the shipped integration."""
     integration = (PROJECT / "kisesh/integration/kisesh.conf").read_text(encoding="utf-8")
@@ -421,17 +441,13 @@ class LiveKittyCloseTests(unittest.TestCase):
                 server.remote("goto-layout", "--match", f"id:{tab_id}", "splits")
                 server.wait_for(lambda state: _tabs(state)[0].get("layout") == "splits")
 
-                server.remote(
-                    "launch",
-                    "--type=overlay",
-                    f"--var={KISESH_UI_VAR}=yes",
-                    "--title=KiSesh",
-                    *child,
+                overlay_state = _launch_manager(server)
+                overlay = _ui_windows(overlay_state)[0]
+                overlay_id = overlay["id"]
+                self.assertEqual(
+                    overlay.get("user_vars", {}).get(RESTORE_LAYOUT_VAR),
+                    "splits",
                 )
-                overlay_state = server.wait_for(lambda state: len(_ui_windows(state)) == 1)
-                overlay_id = _ui_windows(overlay_state)[0]["id"]
-                server.remote("goto-layout", "--match", f"id:{tab_id}", "stack")
-                server.wait_for(lambda state: _tabs(state)[0].get("layout") == "stack")
 
                 server.remote(
                     "action",
@@ -449,6 +465,48 @@ class LiveKittyCloseTests(unittest.TestCase):
 
                 self.assertEqual(_tabs(restored)[0].get("layout"), "splits")
                 self.assertEqual(len(_tabs(restored)[0].get("windows", [])), 2)
+            finally:
+                server.stop()
+
+    def test_manager_close_preserves_a_preexisting_stack_layout(self) -> None:
+        """Dismiss the manager without treating an existing stack as temporary."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            server = IsolatedKitty(Path(temporary))
+            try:
+                server.start()
+                child = ["/bin/sh", "-c", "while :; do sleep 1; done"]
+                server.remote("launch", "--type=window", "--title=Second", *child)
+                split_state = server.wait_for(
+                    lambda state: len(_tabs(state)[0].get("windows", [])) == 2
+                )
+                tab_id = _tabs(split_state)[0]["id"]
+                server.remote("goto-layout", "--match", f"id:{tab_id}", "splits")
+                server.remote("goto-layout", "--match", f"id:{tab_id}", "stack")
+                server.wait_for(lambda state: _tabs(state)[0].get("layout") == "stack")
+
+                overlay_state = _launch_manager(server)
+                overlay_id = _ui_windows(overlay_state)[0]["id"]
+                self.assertNotIn(
+                    RESTORE_LAYOUT_VAR,
+                    _ui_windows(overlay_state)[0].get("user_vars", {}),
+                )
+
+                server.remote(
+                    "action",
+                    "--match",
+                    f"id:{overlay_id}",
+                    *_mapped_manager_close_action(),
+                )
+                preserved = server.wait_for(
+                    lambda state: (
+                        not _ui_windows(state)
+                        and _tabs(state)[0].get("layout") == "stack"
+                        and len(_tabs(state)[0].get("windows", [])) == 2
+                    )
+                )
+
+                self.assertEqual(_tabs(preserved)[0].get("layout"), "stack")
+                self.assertEqual(len(_tabs(preserved)[0].get("windows", [])), 2)
             finally:
                 server.stop()
 

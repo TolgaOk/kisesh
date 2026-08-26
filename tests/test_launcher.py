@@ -83,13 +83,16 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(
             toggle_mappings,
             [
-                "map --when-focus-on var:kisesh_ui alt+s combine : last_used_layout : close_window",
-                "map --when-focus-on var:kisesh_ui cmd+w combine : last_used_layout : close_window",
+                "map --when-focus-on var:kisesh_ui alt+s kitten "
+                "~/.local/lib/kisesh/integration/actions.py manager-close",
+                "map --when-focus-on var:kisesh_ui cmd+w kitten "
+                "~/.local/lib/kisesh/integration/actions.py manager-close",
             ],
         )
         launch_index = mappings.index(manager_mappings[0])
         manager_close = (
-            "map --when-focus-on var:kisesh_ui alt+s combine : last_used_layout : close_window"
+            "map --when-focus-on var:kisesh_ui alt+s kitten "
+            "~/.local/lib/kisesh/integration/actions.py manager-close"
         )
         close_index = mappings.index(manager_close)
         self.assertLess(launch_index, close_index)
@@ -106,7 +109,8 @@ class LauncherTests(unittest.TestCase):
             ],
         )
         overlay_close = (
-            "map --when-focus-on var:kisesh_ui cmd+w combine : last_used_layout : close_window"
+            "map --when-focus-on var:kisesh_ui cmd+w kitten "
+            "~/.local/lib/kisesh/integration/actions.py manager-close"
         )
         self.assertLess(
             mappings.index(close_mapping),

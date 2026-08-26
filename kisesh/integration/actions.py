@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from kisesh.integration.kitty_api import get_options, result_handler
     from kisesh.kitty_actions import (
         LayoutBoss,
+        ManagerCloseBoss,
         SessionCloseBoss,
         SessionFilterBoss,
         SessionFilterOptions,
@@ -32,6 +33,13 @@ class CloseHandler(Protocol):
 
     def __call__(self, target_window_id: int, boss: object) -> None:
         """Route one Kitty close request."""
+
+
+class ManagerCloseHandler(Protocol):
+    """Callable contract for restoring and dismissing the manager overlay."""
+
+    def __call__(self, target_window_id: int, boss: ManagerCloseBoss) -> None:
+        """Restore the target overlay's containing tab and close the overlay."""
 
 
 class SessionCloseHandler(Protocol):
@@ -84,6 +92,7 @@ get_options = kitty_api.get_options
 result_handler = kitty_api.result_handler
 kitty_actions = reload(import_module("kisesh.kitty_actions"))
 toggle_session_layout = cast(LayoutToggleHandler, kitty_actions.toggle_session_layout)
+close_manager_overlay = cast(ManagerCloseHandler, kitty_actions.close_manager_overlay)
 close_live_session = cast(SessionCloseHandler, kitty_actions.close_live_session)
 set_session_filter = cast(SessionFilterHandler, kitty_actions.set_session_filter)
 reload_config_preserving_session = cast(
@@ -117,6 +126,9 @@ def handle_result(
         return
     if action == "safe-close" and not payload:
         request_tab_close(target_window_id, boss)
+        return
+    if action == "manager-close" and not payload:
+        close_manager_overlay(target_window_id, cast("ManagerCloseBoss", boss))
         return
     if action == "reload-config" and not payload:
         reload_config_preserving_session(

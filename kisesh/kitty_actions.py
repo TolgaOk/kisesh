@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 
-from .model import KISESH_UI_VAR, SESSION_ID_VAR, SESSION_SCOPE_VAR
+from .model import KISESH_UI_VAR, RESTORE_LAYOUT_VAR, SESSION_ID_VAR, SESSION_SCOPE_VAR
 
 
 class CurrentLayout(Protocol):
@@ -49,6 +50,57 @@ def toggle_session_layout(boss: LayoutBoss) -> None:
     tab.last_used_layout()
     if tab.current_layout.name == "stack":
         tab.goto_layout("splits")
+
+
+class ManagerWindow(Protocol):
+    """Manager-overlay identity and restoration metadata exposed by Kitty."""
+
+    id: int
+    user_vars: Mapping[str, str]
+
+
+class ManagerTab(LayoutTab, Protocol):
+    """Containing tab whose temporary full-tab layout may need restoration."""
+
+    def __iter__(self) -> Iterator[ManagerWindow]:
+        """Yield every pane, including the focused manager overlay."""
+
+
+class ManagerCloseBoss(Protocol):
+    """Kitty controller state needed for an atomic manager dismissal."""
+
+    active_window: ManagerWindow | None
+    active_tab: ManagerTab | None
+    window_id_map: Mapping[int, ManagerWindow]
+
+    def close_window(self) -> None:
+        """Close the focused manager overlay."""
+
+
+def close_manager_overlay(target_window_id: int, boss: ManagerCloseBoss) -> None:
+    """Restore a temporary manager layout before closing its focused overlay."""
+    try:
+        window = boss.window_id_map.get(target_window_id)
+        active_window = boss.active_window
+        tab = boss.active_tab
+        valid_target = (
+            window is not None
+            and active_window is not None
+            and active_window.id == target_window_id
+            and window.user_vars.get(KISESH_UI_VAR) == "yes"
+            and tab is not None
+            and target_window_id in {candidate.id for candidate in tab}
+        )
+    except Exception:
+        return
+    if not valid_target or window is None or tab is None:
+        return
+    original_layout = window.user_vars.get(RESTORE_LAYOUT_VAR, "").strip()
+    if original_layout:
+        with suppress(Exception):
+            tab.goto_layout(original_layout)
+    with suppress(Exception):
+        boss.close_window()
 
 
 class SessionFilterOptions(Protocol):
