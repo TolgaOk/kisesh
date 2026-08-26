@@ -165,6 +165,12 @@ class PackagedIntegrationTests(unittest.TestCase):
             )
             close.assert_called_once_with(9, "boss")
 
+        with mock.patch.object(actions, "close_manager_overlay") as close_manager:
+            self.assertIsNone(
+                call(actions, "handle_result", ["kitten", "manager-close"], None, 11, "boss")
+            )
+            close_manager.assert_called_once_with(11, "boss")
+
         with mock.patch.object(actions, "reload_config_preserving_session") as reload_config:
             self.assertIsNone(
                 call(actions, "handle_result", ["kitten", "reload-config"], None, 9, "boss")
@@ -196,6 +202,7 @@ class PackagedIntegrationTests(unittest.TestCase):
             ["kitten"],
             ["kitten", "unknown"],
             ["kitten", "safe-close", "extra"],
+            ["kitten", "manager-close", "extra"],
             ["kitten", "reload-config", "extra"],
         ):
             with (

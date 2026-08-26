@@ -260,12 +260,12 @@ print(json.dumps(resolved))
         self.assertIn("launch --type=overlay", resolved["source"][0])
         self.assertEqual(
             resolved["kisesh"],
-            ["combine : last_used_layout : close_window"],
+            ["kitten ~/.local/lib/kisesh/integration/actions.py manager-close"],
         )
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
     def test_command_w_resolves_to_safe_close_or_layout_restoring_close(self) -> None:
-        """Resolve the real Command-W chord through Kitty's conditional key engine."""
+        """Resolve Command-W to safe close or marker-driven manager cleanup."""
 
         integration = Path(__file__).parents[1] / "kisesh" / "integration" / "kisesh.conf"
         program = """
@@ -319,7 +319,7 @@ print(json.dumps({"mods": key.mods, "key": key.key, "resolved": resolved}))
         )
         self.assertEqual(
             parsed["resolved"]["kisesh"],
-            ["combine : last_used_layout : close_window"],
+            ["kitten ~/.local/lib/kisesh/integration/actions.py manager-close"],
         )
 
     @unittest.skipUnless(shutil.which("kitty"), "Kitty is not installed")
