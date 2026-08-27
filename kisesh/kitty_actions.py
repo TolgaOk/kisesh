@@ -107,6 +107,7 @@ class SessionFilterOptions(Protocol):
     """Mutable Kitty option required by the native session filter."""
 
     tab_bar_filter: str
+    config_overrides: tuple[str, ...]
 
 
 class SessionFilterManager(Protocol):
@@ -132,8 +133,16 @@ def set_session_filter(
     boss: SessionFilterBoss,
     options: SessionFilterOptions,
 ) -> None:
-    """Apply one tab filter without resetting runtime font or theme state."""
+    """Apply and carry one tab filter across future native configuration reloads."""
     options.tab_bar_filter = expression
+    options.config_overrides = (
+        *(
+            override
+            for override in options.config_overrides
+            if override.lstrip().partition(" ")[0] != "tab_bar_filter"
+        ),
+        f"tab_bar_filter {expression}",
+    )
     for manager in boss.all_tab_managers:
         manager.mark_tab_bar_dirty()
         manager.update_tab_bar_data()

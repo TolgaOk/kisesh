@@ -18,6 +18,7 @@ class Options:
     tab_bar_filter: str
     font_size: float
     theme: str
+    config_overrides: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -79,9 +80,41 @@ class SessionFilterTests(unittest.TestCase):
         set_session_filter("var:kisesh_session=session-id", Boss(managers), options)
 
         self.assertEqual(options.tab_bar_filter, "var:kisesh_session=session-id")
+        self.assertEqual(
+            options.config_overrides,
+            ("tab_bar_filter var:kisesh_session=session-id",),
+        )
         self.assertEqual(options.font_size, 22.5)
         self.assertEqual(options.theme, "custom-runtime-theme")
         self.assertEqual([manager.events for manager in managers], [["dirty", "update"]] * 2)
+
+    def test_filter_refresh_replaces_only_its_previous_config_override(self) -> None:
+        options = Options(
+            "title:old",
+            22.5,
+            "custom-runtime-theme",
+            (
+                "font_size 22.5",
+                "tab_bar_filter title:old",
+                "background_opacity 0.9",
+                "tab_bar_filter title:duplicate",
+            ),
+        )
+        manager = Manager()
+
+        set_session_filter("title:first", Boss([manager]), options)
+        set_session_filter("title:second", Boss([manager]), options)
+
+        self.assertEqual(options.tab_bar_filter, "title:second")
+        self.assertEqual(
+            options.config_overrides,
+            (
+                "font_size 22.5",
+                "background_opacity 0.9",
+                "tab_bar_filter title:second",
+            ),
+        )
+        self.assertEqual(manager.events, ["dirty", "update"] * 2)
 
     def test_reload_uses_fresh_options_and_preserves_all_window_selections(self) -> None:
         runtime_filter = (
