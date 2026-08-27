@@ -857,6 +857,56 @@ class LiveKittyFilterTests(unittest.TestCase):
             finally:
                 server.stop()
 
+    def test_native_font_config_reload_preserves_session_filter(self) -> None:
+        """Keep hidden sessions filtered when a font edit triggers Kitty's own reload."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            server = IsolatedKitty(Path(temporary))
+            try:
+                server.start()
+                server.remote(
+                    "set-user-vars",
+                    "--match",
+                    "all",
+                    f"{SESSION_ID_VAR}=focused",
+                )
+                server.remote(
+                    "launch",
+                    "--type=tab",
+                    "--tab-title=Hidden session",
+                    f"--var={SESSION_ID_VAR}=hidden",
+                    "/bin/sh",
+                    "-c",
+                    "while :; do sleep 1; done",
+                )
+                state = server.wait_for(lambda current: len(_tabs(current)) == 2)
+                client = KittyClient(executable=server.kitty, socket=server.socket)
+                focused = next(tab for tab in client.tabs(state) if tab.session_id() == "focused")
+                client.activate_session("focused", focused)
+                expected_filter = (
+                    f"var:{SESSION_ID_VAR}=focused or "
+                    f"not var:{SESSION_SCOPE_VAR}={focused.os_window_id}"
+                )
+                self.assertEqual(server.tab_filter(), expected_filter)
+
+                server.config.write_text(
+                    server.config.read_text(encoding="utf-8").replace(
+                        "font_size 13",
+                        "font_size 17",
+                    ),
+                    encoding="utf-8",
+                )
+                server.remote("load-config")
+
+                self.assertEqual(server.configured_font_size(), 17.0)
+                self.assertEqual(server.tab_filter(), expected_filter)
+                self.assertEqual(
+                    server.visible_session_ids()[str(focused.os_window_id)],
+                    ["focused"],
+                )
+                self.assertEqual(len(_tabs(server.state())), 2)
+            finally:
+                server.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

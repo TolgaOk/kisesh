@@ -58,6 +58,7 @@ class Options:
     tab_bar_filter: str
     font_size: float
     theme: str
+    config_overrides: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
