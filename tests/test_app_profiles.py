@@ -101,6 +101,8 @@ class AppProfileBehaviorTests(unittest.TestCase):
         codex = DEFAULT_APP_PROFILES.match("/opt/homebrew/bin/CODEX-nightly")
         pi = DEFAULT_APP_PROFILES.named("pi")
         top = DEFAULT_APP_PROFILES.named("TOP")
+        neovim = DEFAULT_APP_PROFILES.match("/usr/bin/nvim")
+        vim = DEFAULT_APP_PROFILES.match("vi")
 
         self.assertIsInstance(DEFAULT_APP_PROFILES.defaults.restore, PrefillRestore)
         self.assertEqual(DEFAULT_APP_PROFILES.defaults.icon, "")
@@ -120,6 +122,14 @@ class AppProfileBehaviorTests(unittest.TestCase):
         configured = top.restore if top is not None else None
         self.assertEqual(
             configured.argv if isinstance(configured, ConfiguredRestore) else (), ("top",)
+        )
+        self.assertEqual(
+            (neovim.name, neovim.label, neovim.icon) if neovim is not None else None,
+            ("nvim", "Neovim", ""),
+        )
+        self.assertEqual(
+            (vim.name, vim.label, vim.icon) if vim is not None else None,
+            ("vim", "Vim", ""),
         )
         self.assertIsNone(DEFAULT_APP_PROFILES.match(None))
         self.assertIsNone(DEFAULT_APP_PROFILES.match("python"))
