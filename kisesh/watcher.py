@@ -8,12 +8,16 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from contextlib import ExitStack
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from functools import partial
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import BinaryIO, Literal, Protocol, cast
 
 SESSION_ID_VAR = "kisesh_session"
 SESSION_SLUG_VAR = "kisesh_slug"
@@ -101,6 +105,29 @@ class WatcherBoss(Protocol):
         """Execute a remote-control command inside Kitty's process."""
 
 
+class QuitBoss(WatcherBoss, Protocol):
+    """Native process supervision and confirmed-quit continuation supplied by Kitty."""
+
+    def run_background_process(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str,
+        env: dict[str, str],
+        stdin: bytes,
+        notify_on_death: Callable[[int, Exception | None], None],
+        stdout: int,
+        stderr: int,
+    ) -> None:
+        """Run one save and report completion on Kitty's event loop."""
+
+    def handle_quit_confirmation(self, confirmed: bool) -> None:
+        """Continue an already-confirmed quit through all native quit watchers."""
+
+    def show_error(self, title: str, message: str) -> None:
+        """Display a failed save while leaving the terminal open."""
+
+
 class WatcherAppProfile(Protocol):
     """Configured app identity needed for lightweight agent classification."""
 
@@ -138,6 +165,35 @@ _timers: dict[str, threading.Timer] = {}
 _timer_generations: dict[str, int] = {}
 _pending_commands: dict[str, list[CommandPayload]] = {}
 _timer_lock = threading.Lock()
+
+
+class QuitPhase(Enum):
+    """Distinguish ordinary activity, final persistence, and terminal teardown."""
+
+    IDLE = auto()
+    SAVING = auto()
+    EXITING = auto()
+
+
+@dataclass(slots=True, frozen=True)
+class QuitSaveRequest:
+    """One supervised final save and its unacknowledged command events."""
+
+    session_id: str
+    events: tuple[CommandPayload, ...]
+    errors: BinaryIO
+
+
+@dataclass(slots=True)
+class QuitSaveState:
+    """Event-loop-owned queue shared with the watcher's protected command buffer."""
+
+    phase: QuitPhase = QuitPhase.IDLE
+    pending: dict[str, WatcherWindow] = field(default_factory=dict)
+    closing_managers: set[int] = field(default_factory=set)
+
+
+_quit_state = QuitSaveState()
 
 
 def _runtime_root() -> Path:
@@ -448,7 +504,10 @@ def _run_autosave(
 ) -> None:
     """Drain events only when invoked by the session's current debounce timer."""
     with _timer_lock:
-        if _timer_generations.get(session_id) != generation:
+        if (
+            _timer_generations.get(session_id) != generation
+            or _quit_state.phase is not QuitPhase.IDLE
+        ):
             return
         _timers.pop(session_id, None)
         command_events = list(_pending_commands.get(session_id, []))
@@ -465,6 +524,11 @@ def _run_autosave(
         return
     if return_code:
         return
+    _acknowledge_commands(session_id, command_events)
+
+
+def _acknowledge_commands(session_id: str, command_events: Iterable[CommandPayload]) -> None:
+    """Remove only the exact events whose persistence has completed successfully."""
     saved_event_ids = {id(event) for event in command_events}
     with _timer_lock:
         pending = _pending_commands.get(session_id)
@@ -629,6 +693,14 @@ def _schedule(
         return
     environment = _window_environment(window)
     with _timer_lock:
+        if command_event is not None:
+            pending = _pending_commands.setdefault(session_id, [])
+            pending.append(command_event)
+            del pending[:-COMMAND_HISTORY_LIMIT]
+        if _quit_state.phase is not QuitPhase.IDLE:
+            if _quit_state.phase is QuitPhase.SAVING:
+                _quit_state.pending[session_id] = window
+            return
         generation = _timer_generations.get(session_id, 0) + 1
         timer = threading.Timer(
             DEBOUNCE_SECONDS,
@@ -636,10 +708,6 @@ def _schedule(
             (session_id, environment, generation),
         )
         timer.daemon = True
-        if command_event is not None:
-            pending = _pending_commands.setdefault(session_id, [])
-            pending.append(command_event)
-            del pending[:-COMMAND_HISTORY_LIMIT]
         previous = _timers.get(session_id)
         if previous is not None:
             previous.cancel()
@@ -661,7 +729,13 @@ def on_focus_change(boss: WatcherBoss, window: WatcherWindow, data: WatcherData)
 
 def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
     """Persist closing text, then resave layouts that retain other session tabs."""
+    if _quit_state.phase is QuitPhase.EXITING:
+        return
     if _restore_manager_layout(window, boss):
+        if window.id in _quit_state.closing_managers:
+            _quit_state.closing_managers.remove(window.id)
+            if not _quit_state.closing_managers:
+                _save_next_on_quit(cast(QuitBoss, boss))
         return
     session_id = _session_id(window, data, boss)
     if not session_id:
@@ -820,3 +894,140 @@ def on_tab_bar_dirty(boss: WatcherBoss, window: WatcherWindow, data: WatcherData
         else data
     )
     _schedule(window, inheritance_event, boss)
+
+
+def _quit_failed(boss: QuitBoss, message: str) -> None:
+    """Release the quit reservation without discarding unsaved command events."""
+    with _timer_lock:
+        _quit_state.phase = QuitPhase.IDLE
+        _quit_state.pending.clear()
+        _quit_state.closing_managers.clear()
+    boss.show_error("KiSesh quit cancelled", f"Sessions could not be saved.\n{message}")
+
+
+def _continue_quit(boss: QuitBoss) -> None:
+    """Resume native confirmation once, respecting another watcher's veto."""
+    try:
+        _quit_state.phase = QuitPhase.EXITING
+        boss.handle_quit_confirmation(True)
+        native = importlib.import_module("kitty.fast_data_types")
+        if native.current_application_quit_request() != native.IMPERATIVE_CLOSE_REQUESTED:
+            with _timer_lock:
+                _quit_state.phase = QuitPhase.IDLE
+    except Exception as error:
+        _quit_failed(boss, str(error))
+
+
+def _quit_save_finished(
+    boss: QuitBoss,
+    request: QuitSaveRequest,
+    exit_status: int,
+    error: Exception | None,
+) -> None:
+    """Acknowledge a durable capture before saving the next session or exiting."""
+    with request.errors:
+        request.errors.seek(0)
+        detail = request.errors.read(4096).decode("utf-8", errors="replace").strip()
+    if error is not None or exit_status != 0:
+        message = str(error) if error is not None else detail or f"Save exited with {exit_status}."
+        _quit_failed(boss, f"Session {request.session_id}: {message}")
+        return
+    _acknowledge_commands(request.session_id, request.events)
+    _save_next_on_quit(boss)
+
+
+def _save_next_on_quit(boss: QuitBoss) -> None:
+    """Launch at most one final saver without blocking Kitty's remote-control loop."""
+    with _timer_lock:
+        session_id = next(iter(_quit_state.pending), None)
+        window = _quit_state.pending.pop(session_id) if session_id is not None else None
+        events = tuple(_pending_commands.get(session_id, [])) if session_id is not None else ()
+    if session_id is None or window is None:
+        _continue_quit(boss)
+        return
+    try:
+        environment = _window_environment(window)
+        project = _runtime_root()
+        launcher = project / "bin" / "kisesh"
+        if not launcher.is_file():
+            raise FileNotFoundError("The installed kisesh launcher is unavailable.")
+        command = [str(launcher)]
+        socket = environment.get("KITTY_LISTEN_ON")
+        if not socket:
+            raise RuntimeError("Kitty's remote-control socket is unavailable.")
+        command.extend(("--socket", socket))
+        command.extend(("autosave", session_id, "--payload-stdin"))
+        payload = json.dumps({"command_events": events}, ensure_ascii=False).encode("utf-8")
+        with ExitStack() as resources:
+            errors = resources.enter_context(tempfile.TemporaryFile())
+            request = QuitSaveRequest(session_id, events, errors)
+            boss.run_background_process(
+                command,
+                cwd=str(project),
+                env=environment,
+                stdin=payload,
+                notify_on_death=partial(_quit_save_finished, boss, request),
+                stdout=subprocess.DEVNULL,
+                stderr=errors.fileno(),
+            )
+            resources.pop_all()
+    except Exception as error:
+        _quit_failed(boss, str(error))
+
+
+def on_quit(boss: QuitBoss, window: WatcherWindow, data: dict[str, object]) -> None:
+    """Defer a confirmed application quit until every tracked session has been saved."""
+    del window
+    if _quit_state.phase is QuitPhase.EXITING:
+        return
+    if _quit_state.phase is QuitPhase.SAVING:
+        data["aborted"] = True
+        return
+    if data.get("confirmed") is not True:
+        return
+    try:
+        windows = [candidate for tab in boss.match_tabs("all") for candidate in tab]
+        representatives = {
+            session_id: candidate
+            for candidate in windows
+            if (session_id := _session_id(candidate)) is not None
+        }
+    except Exception as error:
+        data["aborted"] = True
+        _quit_failed(boss, str(error))
+        return
+    if not representatives:
+        return
+    data["aborted"] = True
+    with _timer_lock:
+        _quit_state.phase = QuitPhase.SAVING
+        _quit_state.pending.update(representatives)
+        for session_id, timer in _timers.items():
+            timer.cancel()
+            _timer_generations[session_id] = _timer_generations.get(session_id, 0) + 1
+        _timers.clear()
+    _prepare_quit_capture(boss, windows)
+
+
+def _prepare_quit_capture(boss: QuitBoss, windows: list[WatcherWindow]) -> None:
+    """Dismiss transient UI before native serialization captures its underlying layout."""
+    managers = [
+        window for window in windows if _variable(_string_mapping(window.user_vars), KISESH_UI_VAR)
+    ]
+    if not managers:
+        _save_next_on_quit(boss)
+        return
+    _quit_state.closing_managers.update(window.id for window in managers)
+    try:
+        for manager in managers:
+            layout = _string_mapping(manager.user_vars).get(RESTORE_LAYOUT_VAR, "").strip()
+            if layout:
+                boss.call_remote_control(
+                    manager, ("goto-layout", "--match", f"window_id:{manager.id}", layout)
+                )
+        boss.call_remote_control(
+            managers[0],
+            ("close-window", "--match", " or ".join(f"id:{manager.id}" for manager in managers)),
+        )
+    except Exception as error:
+        _quit_failed(boss, str(error))
