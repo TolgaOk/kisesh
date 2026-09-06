@@ -579,6 +579,15 @@ class KiSeshService:
     ) -> StoredSession:
         """Capture a live session's safe layout, commands, and terminal buffers."""
         stored = self.store.get(slug_or_id)
+        with self.store.capturing(stored.manifest.id):
+            return self._save_live_session(self.store.get(stored.manifest.id), command_events)
+
+    def _save_live_session(
+        self,
+        stored: StoredSession,
+        command_events: Iterable[Mapping[str, object]],
+    ) -> StoredSession:
+        """Capture and commit while holding the session's exclusive capture lock."""
         client = self._kitty()
         state = client.list_state()
         live_tabs = client.tabs_for_session(stored.manifest.id, state)

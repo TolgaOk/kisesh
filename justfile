@@ -24,6 +24,9 @@ typecheck:
 live-close:
     KISESH_LIVE_TESTS=1 uv run python -m unittest tests.test_live_kitty_close -v
 
+live-quit:
+    KISESH_LIVE_TESTS=1 uv run python -m unittest tests.test_live_kitty_quit -v
+
 test:
     uv run python -m unittest discover -s tests -v
 

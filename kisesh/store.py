@@ -89,6 +89,19 @@ class SessionStore:
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
+    @contextmanager
+    def capturing(self, session_id: str) -> Iterator[None]:
+        """Serialize a session's live reads and writes independently of storage transactions."""
+        identity = str(uuid.UUID(session_id))
+        directory = self.root / ".capture-locks"
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / f"{identity}.lock").open("a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
     def _write_manifest(self, directory: Path, manifest: SessionManifest) -> None:
         """Validate and atomically persist one session manifest."""
         manifest.validate()

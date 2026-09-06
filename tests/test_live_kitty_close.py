@@ -48,10 +48,15 @@ class IsolatedKitty:
         self.kitten = shutil.which("kitten") or "kitten"
         self.process: subprocess.Popen[str] | None = None
         self.environment = os.environ.copy()
+        for key in tuple(self.environment):
+            if key.startswith(("KISESH_", "KITTY_")) or key == "ZDOTDIR":
+                self.environment.pop(key)
         self.environment.update(
             {
                 "HOME": str(self.home),
                 "XDG_DATA_HOME": str(root / "data"),
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "KISESH_INSTALL_ROOT": str(self.home / ".local" / "lib" / "kisesh"),
             }
         )
 
@@ -724,6 +729,7 @@ class LiveKittyFilterTests(unittest.TestCase):
                 server.remote(
                     "launch",
                     "--type=os-window",
+                    "--os-window-state=minimized",
                     "--tab-title=Right selected",
                     f"--var={SESSION_ID_VAR}={right_session}",
                     *child,
