@@ -35,6 +35,7 @@ MAX_CONCURRENT_AUTOSAVES = 2
 MAX_PENDING_CLOSE_CAPTURES = 64
 CLOSE_TEXT_LIMIT = 1024 * 1024
 COMMAND_HISTORY_LIMIT = 2000
+AUTOSAVE_ACKNOWLEDGEMENT = "kisesh:autosave:committed\n"
 
 
 class WatcherChild(Protocol):
@@ -490,7 +491,7 @@ def _launch_autosave(
             cwd=project,
             env=environment,
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
             text=True,
@@ -503,17 +504,22 @@ def _launch_autosave(
 def _complete_autosave(process: subprocess.Popen[str], payload: AutosavePayload) -> bool:
     """Bound stdin transfer and execution together, cleaning up every failed worker."""
     try:
-        process.communicate(
+        output, _ = process.communicate(
             input=json.dumps(payload, ensure_ascii=False),
             timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS,
         )
-        return process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS) == 0
+        return (
+            process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS) == 0
+            and output == AUTOSAVE_ACKNOWLEDGEMENT
+        )
     except (OSError, subprocess.TimeoutExpired):
         _stop_autosave(process)
         return False
     finally:
         if process.stdin is not None:
             process.stdin.close()
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 def _run_autosave(

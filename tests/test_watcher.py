@@ -687,6 +687,7 @@ class WatcherTests(unittest.TestCase):
         environment = {"PATH": "/fresh", "KITTY_LISTEN_ON": "unix:/tmp/kitty"}
         watcher._timer_generations["session-id"] = 1
         with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
+            popen.return_value.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
             popen.return_value.wait.return_value = 0
             watcher._run_autosave("session-id", environment, 1)
 
@@ -713,6 +714,7 @@ class WatcherTests(unittest.TestCase):
 
         self.assertTrue(FakeTimer.instances[0].cancelled)
         with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
+            popen.return_value.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
             popen.return_value.wait.return_value = 0
             FakeTimer.instances[-1].fire()
 
@@ -739,6 +741,7 @@ class WatcherTests(unittest.TestCase):
             current = FakeTimer.instances[-1]
 
             with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
+                popen.return_value.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
                 popen.return_value.wait.return_value = 0
                 stale.fire()
                 popen.assert_not_called()
@@ -791,6 +794,7 @@ class WatcherTests(unittest.TestCase):
             return 0
 
         with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
+            popen.return_value.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
             popen.return_value.wait.side_effect = close_during_wait
             FakeTimer.instances[-1].fire()
 
@@ -819,6 +823,7 @@ class WatcherTests(unittest.TestCase):
             return 0
 
         with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
+            popen.return_value.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
             popen.return_value.wait.side_effect = append_new_event
             FakeTimer.instances[-1].fire()
 
@@ -848,6 +853,7 @@ class WatcherTests(unittest.TestCase):
                         {"is_start": False, "cmdline": "pwd", "time": 1785843000.0},
                     )
                 process = mock.MagicMock()
+                process.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
                 if isinstance(failure, BaseException):
                     process.wait.side_effect = failure
                 else:
@@ -885,6 +891,7 @@ class WatcherTests(unittest.TestCase):
         pending_timer = FakeTimer.instances[-1]
 
         with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
+            popen.return_value.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
             popen.return_value.wait.return_value = 0
             watcher.on_close(boss, closing, {})
             self.assertEqual(popen.call_count, 0)
@@ -916,6 +923,7 @@ class WatcherTests(unittest.TestCase):
         foreign = Window(92, session_id="other-session")
         boss = Boss([[closing], [remaining], [foreign]])
         process = mock.MagicMock()
+        process.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
         process.wait.return_value = 0
 
         with (
@@ -983,6 +991,7 @@ class WatcherTests(unittest.TestCase):
             watcher.on_title_change(Boss(), Window(), {"title": "settled"})
             self.assertEqual(len(FakeTimer.instances), 1)
             with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
+                popen.return_value.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
                 popen.return_value.wait.return_value = 0
                 FakeTimer.instances[0].fire()
 

@@ -45,6 +45,7 @@ class AutosaveConcurrencyTests(unittest.TestCase):
             return 0
 
         process.wait.side_effect = wait
+        process.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
         with mock.patch.object(watcher, "_launch_autosave", return_value=process) as launch:
             watcher._timer_generations["one"] = 1
             worker = threading.Thread(target=watcher._run_autosave, args=("one", {}, 1))
@@ -77,6 +78,7 @@ class AutosaveConcurrencyTests(unittest.TestCase):
             return 0
 
         process.wait.side_effect = wait
+        process.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
         with (
             mock.patch.object(watcher, "MAX_CONCURRENT_AUTOSAVES", 1, create=True),
             mock.patch.object(watcher, "_launch_autosave", return_value=process) as launch,
@@ -149,6 +151,7 @@ class AutosaveConcurrencyTests(unittest.TestCase):
         watcher._pending_commands["session-id"] = [{"window_id": 2, "command": "unsaved"}]
         process = mock.Mock()
         process.wait.return_value = 0
+        process.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
         with mock.patch.object(watcher, "_launch_autosave", return_value=process) as launch:
             watcher.on_close(Boss([[window]]), window, {})
             launch.assert_not_called()
@@ -164,6 +167,7 @@ class AutosaveConcurrencyTests(unittest.TestCase):
         watcher._pending_commands["session-id"] = [own, sibling]
         process = mock.Mock()
         process.wait.return_value = 1
+        process.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
         with mock.patch.object(watcher, "_launch_autosave", return_value=process) as launch:
             watcher.on_close(Boss([[window]]), window, {})
             window.history = "screen destroyed"

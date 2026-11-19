@@ -536,6 +536,7 @@ def _run_maintenance(command: MaintenanceCommand, service: KiSeshService) -> int
                 service.save(session_id, events)
             else:
                 service.save_closing_pane(session_id, closing_pane)
+            print("kisesh:autosave:committed", flush=True)
             return 0
         case Doctor():
             findings = service.doctor()
