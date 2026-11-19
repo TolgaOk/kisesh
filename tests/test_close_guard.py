@@ -231,6 +231,17 @@ def route_close(target_window_id: int, boss: FakeBoss) -> None:
 
 
 class CloseGuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="kisesh-close-test-")
+        self.addCleanup(temporary.cleanup)
+        self.enterContext(
+            mock.patch.dict(
+                "os.environ",
+                {"HOME": temporary.name, "KISESH_INSTALL_ROOT": temporary.name},
+                clear=True,
+            )
+        )
+
     def tearDown(self) -> None:
         for session_id in tuple(_pending_sessions):
             _release_session(session_id)

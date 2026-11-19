@@ -40,6 +40,39 @@ Below is the list of features KiSesh provides.
 - Autosave when change in: layout, terminal context, or command execution
 - Attach or detach a tab to/from a session
 
+### Process safety
+
+Ordinary autosaves use at most two workers per Kitty process, with only one
+worker per session. Events received while a saver is busy are coalesced rather
+than spawning more workers or timer threads. Pane-close captures use the same
+queue. Before final persistence, quit waits nonblockingly for ordinary writers
+to finish, then flushes queued captures and saves the remaining live layout.
+No final save or quit continuation can run ahead of an outstanding ordinary writer.
+
+Background CLI saves and save-and-close operations have a 25-second deadline.
+The ordinary autosave supervisor allows 30 seconds for payload transfer and
+execution, then terminates its isolated worker group and reaps the child before
+reusing the slot. A 60-second native quit watchdog cancels a stalled quit rather
+than claiming that persistence succeeded. A timed-out native worker stays
+reserved until its death notification: retries and new ordinary saves wait
+rather than launching beside it.
+
+Pending events are acknowledged only after a durable-save receipt. Failed
+captures remain queued for a later event or quit attempt; prior snapshots stay
+available. Close-capture buffering is limited to 64 panes, with each normal and
+alternate-screen capture bounded to 1,048,576 characters and last-command output
+to 65,536 characters. Queue overflow and unacknowledged saves are reported to Kitty's stderr.
+Force-quitting Kitty can still lose captures that have not reached storage.
+
+A closed pane that no longer matches the saved layout is preserved separately
+under `~/.local/share/kisesh/recovered-panes/<session-uuid>/`. These private JSON
+files retain the capture for manual recovery without replacing a surviving
+pane's history or blocking subsequent saves. Identical retries reuse the same
+file; recovery files are kept until explicitly removed (or session data is purged).
+
+Process regressions can be tested with `just test-processes`. These tests use
+mock Kitty objects, temporary data, sanitized environments, and disposable child
+process groups; they do not connect to or reconfigure a running Kitty instance.
 
 ## Install
 

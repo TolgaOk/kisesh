@@ -773,19 +773,20 @@ def rename_context_tab(
     return renamed
 
 
+class UnmatchedClosingPane(ValueError):
+    """A captured pane has no matching durable identity and must be preserved separately."""
+
+
 def _closing_pane_location(
     tabs: Sequence[TabContext],
     capture: ClosingPaneCapture,
 ) -> PaneLocation | None:
-    """Resolve a closing pane by current window ID, then its session position."""
+    """Resolve only a matching window ID; a stale position may now belong to another pane."""
     window_id = capture["window"]["id"]
     for tab_index, tab in enumerate(tabs):
         for pane_index, pane in enumerate(tab["panes"]):
             if pane["window_id"] == window_id:
                 return tab_index, pane_index
-    fallback = capture["tab_index"], capture["pane_index"]
-    if 0 <= fallback[0] < len(tabs) and 0 <= fallback[1] < len(tabs[fallback[0]]["panes"]):
-        return fallback
     return None
 
 
@@ -798,7 +799,7 @@ def update_context_for_closing_pane(
     tabs = _copied_context_tabs(existing)
     location = _closing_pane_location(tabs, capture)
     if location is None:
-        raise ValueError("closing pane is absent from the saved session context")
+        raise UnmatchedClosingPane("closing pane is absent from the saved session context")
     window_id = capture["window"]["id"]
     builder = _ContextBuilder(
         existing,

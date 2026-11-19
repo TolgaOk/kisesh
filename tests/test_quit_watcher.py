@@ -9,8 +9,10 @@ import threading
 import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from types import ModuleType
+from typing import cast
 from unittest import mock
 
 from kisesh import watcher
@@ -34,11 +36,19 @@ class QuitBoss(Boss):
         self.continued = 0
         self.veto = False
         self.launch_error: Exception | None = None
+        self.deadlines: list[Callable[[int | None], None]] = []
         self.native = ModuleType("kitty.fast_data_types")
         self.native.__dict__.update(
             IMPERATIVE_CLOSE_REQUESTED=2,
             current_application_quit_request=lambda: 0 if self.veto else 2,
+            add_timer=self.add_timer,
+            remove_timer=lambda _timer_id: None,
         )
+
+    def add_timer(self, callback: Callable[[int | None], None], delay: float, repeat: bool) -> int:
+        del delay, repeat
+        self.deadlines.append(callback)
+        return len(self.deadlines)
 
     def run_background_process(
         self,
@@ -55,6 +65,12 @@ class QuitBoss(Boss):
         if self.launch_error is not None:
             raise self.launch_error
         self.jobs.append(SaveJob(cmd, json.loads(stdin), notify_on_death, stderr))
+
+    def close_job_resources(self) -> None:
+        for job in self.jobs:
+            callback = cast(partial[None], job.callback)
+            request = cast(watcher.QuitSaveRequest, callback.args[1])
+            request.errors.close()
 
     def handle_quit_confirmation(self, confirmed: bool) -> None:
         self.continued += 1
@@ -75,16 +91,28 @@ class QuitWatcherTests(unittest.TestCase):
         launcher = self.runtime / "bin" / "kisesh"
         launcher.parent.mkdir()
         launcher.touch()
-        self.enterContext(mock.patch.dict(os.environ, {"KISESH_INSTALL_ROOT": str(self.runtime)}))
+        self.enterContext(
+            mock.patch.dict(
+                os.environ,
+                {"HOME": str(self.runtime), "KISESH_INSTALL_ROOT": str(self.runtime)},
+                clear=True,
+            )
+        )
         self.enterContext(mock.patch.object(watcher, "_quit_state", watcher.QuitSaveState()))
         self.enterContext(mock.patch.object(watcher, "_timers", {}))
         self.enterContext(mock.patch.object(watcher, "_timer_generations", {}))
         self.enterContext(mock.patch.object(watcher, "_pending_commands", {}))
+        self.enterContext(mock.patch.object(watcher, "_pending_closes", {}))
+        self.enterContext(mock.patch.object(watcher, "_close_environments", {}, create=True))
+        self.enterContext(mock.patch.object(watcher, "_full_save_requested", set()))
+        self.enterContext(mock.patch.object(watcher, "_running_saves", set()))
+        self.enterContext(mock.patch.object(watcher, "_deferred_saves", {}))
         self.enterContext(mock.patch.object(threading, "Timer", FakeTimer))
         FakeTimer.instances.clear()
 
     def boss(self, *windows: Window) -> QuitBoss:
         boss = QuitBoss(list(windows))
+        self.addCleanup(boss.close_job_resources)
         self.enterContext(mock.patch.dict("sys.modules", {"kitty.fast_data_types": boss.native}))
         return boss
 
@@ -282,3 +310,113 @@ class QuitWatcherTests(unittest.TestCase):
         self.assertEqual(boss.continued, 0)
         self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
         self.assertIn("remote-control socket is unavailable", boss.errors[-1])
+
+    def test_quit_flushes_a_queued_close_before_capturing_the_remaining_layout(self) -> None:
+        closing = Window(1, history="last frame")
+        remaining = Window(2)
+        boss = self.boss(closing, remaining)
+        watcher.on_close(boss, closing, {})
+        boss.tabs = [[remaining]]
+        watcher.on_quit(boss, remaining, {"confirmed": True})
+        self.assertIn("closing_pane", boss.jobs[0].payload)
+        boss.jobs[0].callback(0, None)
+        self.assertNotIn("session-id", watcher._pending_closes)
+        self.assertIn("command_events", boss.jobs[1].payload)
+        self.assertEqual(boss.continued, 0)
+        boss.jobs[1].callback(0, None)
+        self.assertEqual(boss.continued, 1)
+
+    def test_quit_flushes_closed_sessions_even_without_any_live_owned_tabs(self) -> None:
+        closing = Window(1, history="last frame")
+        remaining = Window(2, session_id=None)
+        boss = self.boss(closing, remaining)
+        watcher.on_close(boss, closing, {})
+        boss.tabs = [[remaining]]
+        watcher.on_quit(boss, remaining, {"confirmed": True})
+        self.assertEqual(len(boss.jobs), 1)
+        self.assertIn("closing_pane", boss.jobs[0].payload)
+        boss.jobs[0].callback(1, None)
+        self.assertIn("session-id", watcher._pending_closes)
+        self.assertEqual(boss.continued, 0)
+        watcher.on_quit(boss, remaining, {"confirmed": True})
+        boss.jobs[1].callback(0, None)
+        self.assertNotIn("session-id", watcher._pending_closes)
+        self.assertEqual(boss.continued, 1)
+
+    def test_quit_deadline_retains_worker_ownership_until_confirmed_death(self) -> None:
+        window = Window()
+        boss = self.boss(window)
+        watcher._pending_commands["session-id"] = [{"command": "unsaved"}]
+        watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertEqual(len(boss.deadlines), 1)
+        boss.deadlines[0](1)
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertIn("deadline", boss.errors[-1])
+        self.assertIn("session-id", watcher._pending_commands)
+        for confirmed in (False, True, True, True):
+            event: dict[str, object] = {"confirmed": confirmed}
+            watcher.on_quit(boss, window, event)
+            self.assertTrue(event["aborted"])
+        self.assertEqual(len(boss.jobs), 1, "retry launched beside an outstanding worker")
+        os.fstat(boss.jobs[0].stderr)
+        watcher.on_title_change(boss, window, {"title": "after timeout"})
+        watcher._dispatch_deferred_saves()
+        with mock.patch.object(watcher, "_launch_autosave") as launch:
+            watcher._run_autosave("session-id", {}, watcher._timer_generations["session-id"])
+            launch.assert_not_called()
+        self.assertEqual(FakeTimer.instances, [], "ordinary saver overlapped an old quit worker")
+        boss.jobs[0].callback(0, None)
+        self.assertEqual(boss.continued, 0)
+        self.assertIn("session-id", watcher._pending_commands)
+        with self.assertRaises(OSError):
+            os.fstat(boss.jobs[0].stderr)
+        self.assertEqual(len(FakeTimer.instances), 1)
+        watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertEqual(len(boss.jobs), 2)
+        boss.jobs[0].callback(0, None)
+        self.assertEqual(boss.continued, 0)
+        boss.jobs[1].callback(0, None)
+        self.assertEqual(boss.continued, 1)
+        boss.deadlines[1](2)
+        self.assertEqual(boss.continued, 1)
+
+    def test_launcher_error_after_an_early_completion_leaves_quit_retryable(self) -> None:
+        window = Window()
+        boss = self.boss(window)
+
+        def fail_after_notification(*_args: object, **kwargs: object) -> None:
+            callback = cast(Callable[[int, Exception | None], None], kwargs["notify_on_death"])
+            callback(1, None)
+            raise RuntimeError("launcher raised after notification")
+
+        with mock.patch.object(boss, "run_background_process", side_effect=fail_after_notification):
+            watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertIsNone(watcher._quit_state.worker)
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertEqual(boss.continued, 0)
+        self.assertIn("launcher raised after notification", boss.errors[-1])
+        watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertEqual(len(boss.jobs), 1)
+        boss.jobs[0].callback(0, None)
+        self.assertEqual(boss.continued, 1)
+
+    def test_watchdog_setup_failure_cancels_quit_without_launching_a_saver(self) -> None:
+        window = Window()
+        boss = self.boss(window)
+        with mock.patch.object(boss.native, "add_timer", side_effect=RuntimeError("timer failed")):
+            watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertEqual(boss.jobs, [])
+        self.assertIn("timer failed", boss.errors[-1])
+
+    def test_quit_deadline_also_covers_manager_close_callbacks(self) -> None:
+        window = Window()
+        manager = Window(3)
+        manager.user_vars = {watcher.KISESH_UI_VAR: "yes"}
+        boss = self.boss(window, manager)
+        watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertEqual(boss.jobs, [])
+        self.assertEqual(len(boss.deadlines), 1)
+        boss.deadlines[0](1)
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertEqual(watcher._quit_state.closing_managers, set())

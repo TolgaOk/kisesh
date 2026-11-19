@@ -325,7 +325,7 @@ class ContextBoundaryTests(unittest.TestCase):
         empty_prompt_context = build_context([_tab(empty_prompt)])
         self.assertIsNone(empty_prompt_context["tabs"][0]["panes"][0]["program"])
 
-    def test_remap_and_close_use_identity_then_position_and_reject_missing_panes(self) -> None:
+    def test_remap_and_close_require_matching_identity_and_reject_stale_positions(self) -> None:
         original = build_context([_tab(_shell(11))])
         extra_live_tab = _tab(_shell(99), tab_id=8)
         remapped = remap_context_windows(original, [_tab(_shell(55)), extra_live_tab])
@@ -343,8 +343,14 @@ class ContextBoundaryTests(unittest.TestCase):
                 "command_events": [],
             },
         )
-        closed = update_context_for_closing_pane(original, fallback_capture)
-        self.assertEqual(closed["tabs"][0]["panes"][0]["window_id"], 77)
+        with self.assertRaisesRegex(ValueError, "absent from the saved session"):
+            update_context_for_closing_pane(original, fallback_capture)
+        matching_capture = cast(
+            ClosingPaneCapture,
+            {**fallback_capture, "window": {**fallback_capture["window"], "id": 11}},
+        )
+        closed = update_context_for_closing_pane(original, matching_capture)
+        self.assertEqual(closed["tabs"][0]["panes"][0]["window_id"], 11)
 
         missing_capture = cast(
             ClosingPaneCapture,

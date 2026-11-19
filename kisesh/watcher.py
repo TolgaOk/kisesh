@@ -6,13 +6,14 @@ import importlib
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from functools import partial
@@ -29,7 +30,14 @@ KISESH_UI_VAR = "kisesh_ui"
 RESTORE_LAYOUT_VAR = "kisesh_restore_layout"
 DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
+AUTOSAVE_TERMINATION_GRACE_SECONDS = 0.5
+QUIT_DEADLINE_SECONDS = 60.0
+QUIT_DRAIN_RETRY_SECONDS = 0.05
+MAX_CONCURRENT_AUTOSAVES = 2
+MAX_PENDING_CLOSE_CAPTURES = 64
+CLOSE_TEXT_LIMIT = 1024 * 1024
 COMMAND_HISTORY_LIMIT = 2000
+AUTOSAVE_ACKNOWLEDGEMENT = "kisesh:autosave:committed\n"
 
 
 class WatcherChild(Protocol):
@@ -164,6 +172,11 @@ class WindowIdentity:
 _timers: dict[str, threading.Timer] = {}
 _timer_generations: dict[str, int] = {}
 _pending_commands: dict[str, list[CommandPayload]] = {}
+_running_saves: set[str] = set()
+_deferred_saves: dict[str, tuple[dict[str, str], int]] = {}
+_pending_closes: dict[str, list[AutosavePayload]] = {}
+_close_environments: dict[str, dict[str, str]] = {}
+_full_save_requested: set[str] = set()
 _timer_lock = threading.Lock()
 
 
@@ -176,12 +189,28 @@ class QuitPhase(Enum):
 
 
 @dataclass(slots=True, frozen=True)
+class QuitSaveTask:
+    """One live-layout or already-captured pane update to flush before teardown."""
+
+    session_id: str
+    environment: dict[str, str]
+    events: tuple[CommandPayload, ...]
+    closing: AutosavePayload | None = None
+
+    def payload(self) -> AutosavePayload:
+        """Encode a captured pane without querying its now-destroyed native window."""
+        if self.closing is not None:
+            return {"closing_pane": self.closing}
+        return {"command_events": self.events}
+
+
+@dataclass(slots=True, frozen=True)
 class QuitSaveRequest:
     """One supervised final save and its unacknowledged command events."""
 
-    session_id: str
-    events: tuple[CommandPayload, ...]
+    task: QuitSaveTask
     errors: BinaryIO
+    generation: int
 
 
 @dataclass(slots=True)
@@ -191,6 +220,10 @@ class QuitSaveState:
     phase: QuitPhase = QuitPhase.IDLE
     pending: dict[str, WatcherWindow] = field(default_factory=dict)
     closing_managers: set[int] = field(default_factory=set)
+    generation: int = 0
+    deadline_timer: int | None = None
+    drain_timer: int | None = None
+    worker: QuitSaveRequest | None = None
 
 
 _quit_state = QuitSaveState()
@@ -463,7 +496,7 @@ def _launch_autosave(
 ) -> subprocess.Popen[str] | None:
     """Launch one isolated autosave process and return its completion handle."""
     try:
-        encoded = json.dumps(payload, ensure_ascii=False)
+        json.dumps(payload, ensure_ascii=False)
     except (TypeError, ValueError):
         return None
     project = _runtime_root()
@@ -481,20 +514,36 @@ def _launch_autosave(
             cwd=project,
             env=environment,
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
             text=True,
         )
     except OSError:
         return None
-    try:
-        if process.stdin is not None:
-            process.stdin.write(encoded)
-            process.stdin.close()
-    except (BrokenPipeError, OSError):
-        return process
     return process
+
+
+def _complete_autosave(process: subprocess.Popen[str], payload: AutosavePayload) -> bool:
+    """Bound stdin transfer and execution together, cleaning up every failed worker."""
+    try:
+        output, _ = process.communicate(
+            input=json.dumps(payload, ensure_ascii=False),
+            timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS,
+        )
+        return (
+            process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS) == 0
+            and output == AUTOSAVE_ACKNOWLEDGEMENT
+        )
+    except Exception:
+        print("KiSesh: autosave transport failed; stopping its worker group", file=sys.stderr)
+        _stop_autosave(process)
+        return False
+    finally:
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 def _run_autosave(
@@ -510,21 +559,107 @@ def _run_autosave(
         ):
             return
         _timers.pop(session_id, None)
+        if (
+            session_id in _running_saves
+            or len(_running_saves) >= MAX_CONCURRENT_AUTOSAVES
+            or _quit_state.worker is not None
+        ):
+            _deferred_saves[session_id] = (environment, generation)
+            return
+        _running_saves.add(session_id)
+        _deferred_saves.pop(session_id, None)
+        closes = _pending_closes.get(session_id, [])
+        closing = closes[0] if closes else None
         command_events = list(_pending_commands.get(session_id, []))
-    process = _launch_autosave(
-        session_id,
-        environment,
-        {"command_events": command_events},
-    )
-    if process is None:
-        return
+        if closing is None:
+            _full_save_requested.discard(session_id)
+        else:
+            command_events = cast(list[CommandPayload], closing["command_events"])
+        payload: AutosavePayload = (
+            {"command_events": command_events} if closing is None else {"closing_pane": closing}
+        )
     try:
-        return_code = process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS)
-    except (OSError, subprocess.TimeoutExpired):
+        process = _launch_autosave(session_id, environment, payload)
+        if process is not None and _complete_autosave(process, payload):
+            _acknowledge_commands(session_id, command_events)
+            _saved_close(session_id, closing, environment)
+        else:
+            print("KiSesh: autosave not acknowledged; pending data retained", file=sys.stderr)
+    finally:
+        _finish_autosave(session_id)
+
+
+def _saved_close(
+    session_id: str,
+    closing: AutosavePayload | None,
+    environment: dict[str, str],
+) -> None:
+    """Acknowledge exactly one capture and schedule any remaining close or layout work."""
+    if closing is None:
         return
-    if return_code:
-        return
-    _acknowledge_commands(session_id, command_events)
+    with _timer_lock:
+        captures = _pending_closes.get(session_id, [])
+        captures[:] = [capture for capture in captures if capture is not closing]
+        if not captures:
+            _pending_closes.pop(session_id, None)
+            _close_environments.pop(session_id, None)
+        if (
+            _quit_state.phase is QuitPhase.IDLE
+            and (captures or session_id in _full_save_requested)
+            and session_id not in _timers
+        ):
+            _deferred_saves[session_id] = (environment, _timer_generations[session_id])
+
+
+def _stop_autosave(process: subprocess.Popen[str]) -> None:
+    """Terminate only our isolated group and retain capacity until the child is reaped."""
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    with suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=AUTOSAVE_TERMINATION_GRACE_SECONDS)
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    while True:
+        try:
+            process.wait(timeout=1)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _finish_autosave(session_id: str) -> None:
+    """Release capacity only after the ordinary child has completed or been reaped."""
+    with _timer_lock:
+        _running_saves.discard(session_id)
+    _dispatch_deferred_saves()
+
+
+def _dispatch_deferred_saves() -> None:
+    """Resume coalesced work only when no native quit writer retains ownership."""
+    timers: list[threading.Timer] = []
+    with _timer_lock:
+        if _quit_state.phase is not QuitPhase.IDLE:
+            _deferred_saves.clear()
+            return
+        if _quit_state.worker is not None:
+            return
+        available = MAX_CONCURRENT_AUTOSAVES - len(_running_saves)
+        for identity, (environment, generation) in tuple(_deferred_saves.items()):
+            if identity in _running_saves:
+                continue
+            if len(timers) >= available:
+                break
+            del _deferred_saves[identity]
+            if _timer_generations.get(identity) != generation:
+                continue
+            timer = threading.Timer(
+                DEBOUNCE_SECONDS, _run_autosave, (identity, environment, generation)
+            )
+            timer.daemon = True
+            _timers[identity] = timer
+            timers.append(timer)
+    for timer in timers:
+        timer.start()
 
 
 def _acknowledge_commands(session_id: str, command_events: Iterable[CommandPayload]) -> None:
@@ -660,25 +795,17 @@ def _closing_pane_capture(
         "tab_index": tab_index,
         "pane_index": pane_index,
         "window": state,
-        "terminal_history": terminal_history,
+        "terminal_history": terminal_history[-CLOSE_TEXT_LIMIT:],
         "alternate_screen_text": (
-            _read_window_text(lambda: window.as_text(as_ansi=True, alternate_screen=True))
+            _read_window_text(lambda: window.as_text(as_ansi=True, alternate_screen=True))[
+                -CLOSE_TEXT_LIMIT:
+            ]
             if alternate_screen
             else ""
         ),
-        "last_command_output": _read_window_text(window.cmd_output),
+        "last_command_output": _read_window_text(window.cmd_output)[-(64 * 1024) :],
         "command_events": command_events,
     }
-
-
-def _drain_closing_events(session_id: str) -> list[CommandPayload]:
-    """Cancel a delayed save and atomically take its pending command events."""
-    with _timer_lock:
-        timer = _timers.pop(session_id, None)
-        _timer_generations[session_id] = _timer_generations.get(session_id, 0) + 1
-        if timer is not None:
-            timer.cancel()
-        return _pending_commands.pop(session_id, [])
 
 
 def _schedule(
@@ -686,6 +813,8 @@ def _schedule(
     data: WatcherData | None = None,
     boss: WatcherBoss | None = None,
     command_event: CommandPayload | None = None,
+    *,
+    capture_live: bool = True,
 ) -> None:
     """Replace a session's one-shot timer while retaining bounded command events."""
     session_id = _session_id(window, data, boss)
@@ -693,6 +822,8 @@ def _schedule(
         return
     environment = _window_environment(window)
     with _timer_lock:
+        if capture_live:
+            _full_save_requested.add(session_id)
         if command_event is not None:
             pending = _pending_commands.setdefault(session_id, [])
             pending.append(command_event)
@@ -702,17 +833,24 @@ def _schedule(
                 _quit_state.pending[session_id] = window
             return
         generation = _timer_generations.get(session_id, 0) + 1
+        _timer_generations[session_id] = generation
+        previous = _timers.pop(session_id, None)
+        if previous is not None:
+            previous.cancel()
+        if (
+            session_id in _running_saves
+            or session_id in _deferred_saves
+            or _quit_state.worker is not None
+        ):
+            _deferred_saves[session_id] = (environment, generation)
+            return
         timer = threading.Timer(
             DEBOUNCE_SECONDS,
             _run_autosave,
             (session_id, environment, generation),
         )
         timer.daemon = True
-        previous = _timers.get(session_id)
-        if previous is not None:
-            previous.cancel()
         _timers[session_id] = timer
-        _timer_generations[session_id] = generation
     timer.start()
 
 
@@ -740,19 +878,25 @@ def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> Non
     session_id = _session_id(window, data, boss)
     if not session_id:
         return
-    capture = _closing_pane_capture(
+    with _timer_lock:
+        if sum(map(len, _pending_closes.values())) >= MAX_PENDING_CLOSE_CAPTURES:
+            print("KiSesh: close capture queue is full; prior snapshots retained", file=sys.stderr)
+            return
+        events = [
+            event
+            for event in _pending_commands.get(session_id, [])
+            if event.get("window_id") == window.id
+        ]
+    capture = _closing_pane_capture(window, boss, session_id, events)
+    environment = _window_environment(window)
+    with _timer_lock:
+        _pending_closes.setdefault(session_id, []).append(capture)
+        _close_environments[session_id] = environment
+    _schedule(
         window,
-        boss,
-        session_id,
-        _drain_closing_events(session_id),
+        boss=boss,
+        capture_live=_has_other_session_tab(window, boss, session_id),
     )
-    _launch_autosave(
-        session_id,
-        _window_environment(window),
-        {"closing_pane": capture},
-    )
-    if _has_other_session_tab(window, boss, session_id):
-        _schedule(window, boss=boss)
 
 
 def on_set_user_var(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
@@ -896,8 +1040,29 @@ def on_tab_bar_dirty(boss: WatcherBoss, window: WatcherWindow, data: WatcherData
     _schedule(window, inheritance_event, boss)
 
 
+def _cancel_quit_deadline() -> None:
+    """Remove this attempt's watchdog and drain continuation, never unrelated timers."""
+    timers = (_quit_state.deadline_timer, _quit_state.drain_timer)
+    _quit_state.deadline_timer = None
+    _quit_state.drain_timer = None
+    for timer in timers:
+        if timer is not None:
+            with suppress(Exception):
+                importlib.import_module("kitty.fast_data_types").remove_timer(timer)
+
+
+def _quit_timed_out(boss: QuitBoss, generation: int, timer_id: int | None) -> None:
+    """Cancel only the matching quit attempt, including a stalled manager dismissal."""
+    del timer_id
+    if _quit_state.phase is QuitPhase.SAVING and _quit_state.generation == generation:
+        _quit_failed(
+            boss, "The final save exceeded its deadline. Retry after outstanding saves exit."
+        )
+
+
 def _quit_failed(boss: QuitBoss, message: str) -> None:
     """Release the quit reservation without discarding unsaved command events."""
+    _cancel_quit_deadline()
     with _timer_lock:
         _quit_state.phase = QuitPhase.IDLE
         _quit_state.pending.clear()
@@ -907,6 +1072,7 @@ def _quit_failed(boss: QuitBoss, message: str) -> None:
 
 def _continue_quit(boss: QuitBoss) -> None:
     """Resume native confirmation once, respecting another watcher's veto."""
+    _cancel_quit_deadline()
     try:
         _quit_state.phase = QuitPhase.EXITING
         boss.handle_quit_confirmation(True)
@@ -924,29 +1090,96 @@ def _quit_save_finished(
     exit_status: int,
     error: Exception | None,
 ) -> None:
-    """Acknowledge a durable capture before saving the next session or exiting."""
+    """Release native ownership on death, never merely on a watchdog timeout."""
+    with _timer_lock:
+        if _quit_state.worker is not request:
+            return
+        _quit_state.worker = None
     with request.errors:
         request.errors.seek(0)
         detail = request.errors.read(4096).decode("utf-8", errors="replace").strip()
+    if _quit_state.phase is not QuitPhase.SAVING or request.generation != _quit_state.generation:
+        _dispatch_deferred_saves()
+        return
     if error is not None or exit_status != 0:
         message = str(error) if error is not None else detail or f"Save exited with {exit_status}."
-        _quit_failed(boss, f"Session {request.session_id}: {message}")
+        _quit_failed(boss, f"Session {request.task.session_id}: {message}")
         return
-    _acknowledge_commands(request.session_id, request.events)
+    task = request.task
+    _acknowledge_commands(task.session_id, task.events)
+    _saved_close(task.session_id, task.closing, task.environment)
     _save_next_on_quit(boss)
+
+
+def _next_quit_task(boss: QuitBoss) -> QuitSaveTask | None:
+    """Flush closed panes first, including sessions with no remaining native windows."""
+    with _timer_lock:
+        closing_id = next(iter(_pending_closes), None)
+        if closing_id is not None:
+            capture = _pending_closes[closing_id][0]
+            return QuitSaveTask(
+                closing_id,
+                _close_environments[closing_id],
+                tuple(cast(list[CommandPayload], capture["command_events"])),
+                capture,
+            )
+        if not _quit_state.pending:
+            return None
+    live = {
+        identity: window
+        for tab in boss.match_tabs("all")
+        for window in tab
+        if (identity := _session_id(window)) is not None
+    }
+    with _timer_lock:
+        for identity in tuple(_quit_state.pending):
+            if identity not in live:
+                del _quit_state.pending[identity]
+        session_id = next(iter(_quit_state.pending), None)
+        if session_id is None:
+            return None
+        del _quit_state.pending[session_id]
+        events = tuple(_pending_commands.get(session_id, []))
+    return QuitSaveTask(session_id, _window_environment(live[session_id]), events)
+
+
+def _quit_drain_tick(boss: QuitBoss, generation: int, timer_id: int | None) -> None:
+    """Continue only the matching drain attempt on Kitty's event-loop thread."""
+    if generation != _quit_state.generation or timer_id != _quit_state.drain_timer:
+        return
+    _quit_state.drain_timer = None
+    _save_next_on_quit(boss)
+
+
+def _drain_ordinary_saves(boss: QuitBoss) -> bool:
+    """Wait nonblockingly for all ordinary writers before final capture or exit."""
+    with _timer_lock:
+        running = bool(_running_saves)
+    if running and _quit_state.drain_timer is None:
+        native = importlib.import_module("kitty.fast_data_types")
+        _quit_state.drain_timer = native.add_timer(
+            partial(_quit_drain_tick, boss, _quit_state.generation), QUIT_DRAIN_RETRY_SECONDS, False
+        )
+    return running
 
 
 def _save_next_on_quit(boss: QuitBoss) -> None:
     """Launch at most one final saver without blocking Kitty's remote-control loop."""
-    with _timer_lock:
-        session_id = next(iter(_quit_state.pending), None)
-        window = _quit_state.pending.pop(session_id) if session_id is not None else None
-        events = tuple(_pending_commands.get(session_id, [])) if session_id is not None else ()
-    if session_id is None or window is None:
-        _continue_quit(boss)
+    if (
+        _quit_state.phase is not QuitPhase.SAVING
+        or _quit_state.worker is not None
+        or _quit_state.closing_managers
+    ):
         return
+    request: QuitSaveRequest | None = None
     try:
-        environment = _window_environment(window)
+        if _drain_ordinary_saves(boss):
+            return
+        task = _next_quit_task(boss)
+        if task is None:
+            _continue_quit(boss)
+            return
+        environment = task.environment
         project = _runtime_root()
         launcher = project / "bin" / "kisesh"
         if not launcher.is_file():
@@ -956,11 +1189,13 @@ def _save_next_on_quit(boss: QuitBoss) -> None:
         if not socket:
             raise RuntimeError("Kitty's remote-control socket is unavailable.")
         command.extend(("--socket", socket))
-        command.extend(("autosave", session_id, "--payload-stdin"))
-        payload = json.dumps({"command_events": events}, ensure_ascii=False).encode("utf-8")
+        command.extend(("autosave", task.session_id, "--payload-stdin"))
+        payload = json.dumps(task.payload(), ensure_ascii=False).encode("utf-8")
         with ExitStack() as resources:
             errors = resources.enter_context(tempfile.TemporaryFile())
-            request = QuitSaveRequest(session_id, events, errors)
+            request = QuitSaveRequest(task, errors, _quit_state.generation)
+            with _timer_lock:
+                _quit_state.worker = request
             boss.run_background_process(
                 command,
                 cwd=str(project),
@@ -972,6 +1207,9 @@ def _save_next_on_quit(boss: QuitBoss) -> None:
             )
             resources.pop_all()
     except Exception as error:
+        with _timer_lock:
+            if _quit_state.worker is request:
+                _quit_state.worker = None
         _quit_failed(boss, str(error))
 
 
@@ -982,6 +1220,14 @@ def on_quit(boss: QuitBoss, window: WatcherWindow, data: dict[str, object]) -> N
         return
     if _quit_state.phase is QuitPhase.SAVING:
         data["aborted"] = True
+        return
+    if _quit_state.worker is not None:
+        data["aborted"] = True
+        if data.get("confirmed") is True:
+            boss.show_error(
+                "KiSesh save still running",
+                "The previous quit worker has not exited. No replacement will be launched.",
+            )
         return
     if data.get("confirmed") is not True:
         return
@@ -996,16 +1242,25 @@ def on_quit(boss: QuitBoss, window: WatcherWindow, data: dict[str, object]) -> N
         data["aborted"] = True
         _quit_failed(boss, str(error))
         return
-    if not representatives:
+    if not representatives and not _pending_closes:
         return
     data["aborted"] = True
     with _timer_lock:
         _quit_state.phase = QuitPhase.SAVING
+        _quit_state.generation += 1
         _quit_state.pending.update(representatives)
         for session_id, timer in _timers.items():
             timer.cancel()
             _timer_generations[session_id] = _timer_generations.get(session_id, 0) + 1
         _timers.clear()
+    try:
+        native = importlib.import_module("kitty.fast_data_types")
+        _quit_state.deadline_timer = native.add_timer(
+            partial(_quit_timed_out, boss, _quit_state.generation), QUIT_DEADLINE_SECONDS, False
+        )
+    except Exception as error:
+        _quit_failed(boss, str(error))
+        return
     _prepare_quit_capture(boss, windows)
 
 
