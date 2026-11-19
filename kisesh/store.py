@@ -15,7 +15,15 @@ from pathlib import Path
 from typing import cast
 
 from .filesystem import atomic_write_text
-from .model import SessionContext, SessionManifest, SessionStatus, SnapshotSummary, slugify, utc_now
+from .model import (
+    ClosingPaneCapture,
+    SessionContext,
+    SessionManifest,
+    SessionStatus,
+    SnapshotSummary,
+    slugify,
+    utc_now,
+)
 
 
 class StoreError(RuntimeError):
@@ -264,6 +272,24 @@ class SessionStore:
             stored = self.get(slug_or_id)
             context = transform(self._read_context(stored))
             return self._write_context(stored, context, now)
+
+    def preserve_closing_capture(self, session_id: str, capture: ClosingPaneCapture) -> Path:
+        """Durably retain an unmatched pane, even after its session moved to trash."""
+        identity = str(uuid.UUID(session_id))
+        encoded = (
+            json.dumps(
+                {"schema_version": 1, "session_id": identity, "capture": capture},
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        destination = self.root / "recovered-panes" / identity / f"{digest}.json"
+        with self.locked():
+            atomic_write_text(destination, encoded, mode=0o600)
+        return destination
 
     def _write_context(
         self,

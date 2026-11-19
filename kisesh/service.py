@@ -20,6 +20,7 @@ from .agent_resume import AgentResumeResolver, resolve_agent_resumes, resume_arg
 from .app_profiles import DEFAULT_APP_PROFILES, AppProfiles, ResumeAdapter
 from .context import (
     CONTEXT_SCHEMA_VERSION,
+    UnmatchedClosingPane,
     build_context,
     merge_context,
     pending_restore_commands,
@@ -41,7 +42,7 @@ from .model import (
 )
 from .paths import runtime_root
 from .session_file import clean_tab_title, rename_snapshot_tab, sanitize_session, snapshot_summary
-from .store import SessionStore, StoredSession, StoreError
+from .store import SessionNotFound, SessionStore, StoredSession, StoreError
 
 
 class KiSeshError(RuntimeError):
@@ -869,16 +870,19 @@ class KiSeshService:
         self,
         session_id: str,
         capture: ClosingPaneCapture,
-    ) -> StoredSession:
-        """Persist synchronous pre-close pane state without querying dead Kitty tabs."""
-        return self.store.update_context(
-            session_id,
-            lambda existing: update_context_for_closing_pane(
-                existing,
-                capture,
-                self.profiles,
-            ),
-        )
+    ) -> StoredSession | Path:
+        """Merge a known pane or preserve an unmatched capture outside the live layout."""
+        try:
+            return self.store.update_context(
+                session_id,
+                lambda existing: update_context_for_closing_pane(
+                    existing,
+                    capture,
+                    self.profiles,
+                ),
+            )
+        except (UnmatchedClosingPane, SessionNotFound):
+            return self.store.preserve_closing_capture(session_id, capture)
 
     def rename(self, slug_or_id: str, new_name: str) -> StoredSession:
         """Rename stored and live ownership markers without replaying processes."""

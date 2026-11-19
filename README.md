@@ -60,6 +60,12 @@ alternate-screen capture bounded to 1,048,576 characters and last-command output
 to 65,536 characters. Queue overflow and unacknowledged saves are reported to Kitty's stderr.
 Force-quitting Kitty can still lose captures that have not reached storage.
 
+A closed pane that no longer matches the saved layout is preserved separately
+under `~/.local/share/kisesh/recovered-panes/<session-uuid>/`. These private JSON
+files retain the capture for manual recovery without replacing a surviving
+pane's history or blocking subsequent saves. Identical retries reuse the same
+file; recovery files are kept until explicitly removed (or session data is purged).
+
 Process regressions can be tested with `just test-processes`. These tests use
 mock Kitty objects, temporary data, sanitized environments, and disposable child
 process groups; they do not connect to or reconfigure a running Kitty instance.
