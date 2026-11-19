@@ -29,6 +29,7 @@ KISESH_UI_VAR = "kisesh_ui"
 RESTORE_LAYOUT_VAR = "kisesh_restore_layout"
 DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
+MAX_CONCURRENT_AUTOSAVES = 2
 COMMAND_HISTORY_LIMIT = 2000
 
 
@@ -164,6 +165,8 @@ class WindowIdentity:
 _timers: dict[str, threading.Timer] = {}
 _timer_generations: dict[str, int] = {}
 _pending_commands: dict[str, list[CommandPayload]] = {}
+_running_saves: set[str] = set()
+_deferred_saves: dict[str, tuple[dict[str, str], int]] = {}
 _timer_lock = threading.Lock()
 
 
@@ -510,21 +513,55 @@ def _run_autosave(
         ):
             return
         _timers.pop(session_id, None)
+        if session_id in _running_saves or len(_running_saves) >= MAX_CONCURRENT_AUTOSAVES:
+            _deferred_saves[session_id] = (environment, generation)
+            return
+        _running_saves.add(session_id)
+        _deferred_saves.pop(session_id, None)
         command_events = list(_pending_commands.get(session_id, []))
-    process = _launch_autosave(
-        session_id,
-        environment,
-        {"command_events": command_events},
-    )
-    if process is None:
-        return
     try:
-        return_code = process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS)
-    except (OSError, subprocess.TimeoutExpired):
-        return
-    if return_code:
-        return
-    _acknowledge_commands(session_id, command_events)
+        process = _launch_autosave(
+            session_id,
+            environment,
+            {"command_events": command_events},
+        )
+        if process is None:
+            return
+        try:
+            return_code = process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        if return_code == 0:
+            _acknowledge_commands(session_id, command_events)
+    finally:
+        _finish_autosave(session_id)
+
+
+def _finish_autosave(session_id: str) -> None:
+    """Release capacity and retry coalesced requests without creating lock-waiter children."""
+    timers: list[threading.Timer] = []
+    with _timer_lock:
+        _running_saves.discard(session_id)
+        if _quit_state.phase is not QuitPhase.IDLE:
+            _deferred_saves.clear()
+            return
+        available = MAX_CONCURRENT_AUTOSAVES - len(_running_saves)
+        for identity, (environment, generation) in tuple(_deferred_saves.items()):
+            if identity in _running_saves:
+                continue
+            if len(timers) >= available:
+                break
+            del _deferred_saves[identity]
+            if _timer_generations.get(identity) != generation:
+                continue
+            timer = threading.Timer(
+                DEBOUNCE_SECONDS, _run_autosave, (identity, environment, generation)
+            )
+            timer.daemon = True
+            _timers[identity] = timer
+            timers.append(timer)
+    for timer in timers:
+        timer.start()
 
 
 def _acknowledge_commands(session_id: str, command_events: Iterable[CommandPayload]) -> None:
