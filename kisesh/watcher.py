@@ -818,17 +818,20 @@ def _schedule(
                 _quit_state.pending[session_id] = window
             return
         generation = _timer_generations.get(session_id, 0) + 1
+        _timer_generations[session_id] = generation
+        previous = _timers.pop(session_id, None)
+        if previous is not None:
+            previous.cancel()
+        if session_id in _running_saves or session_id in _deferred_saves:
+            _deferred_saves[session_id] = (environment, generation)
+            return
         timer = threading.Timer(
             DEBOUNCE_SECONDS,
             _run_autosave,
             (session_id, environment, generation),
         )
         timer.daemon = True
-        previous = _timers.get(session_id)
-        if previous is not None:
-            previous.cancel()
         _timers[session_id] = timer
-        _timer_generations[session_id] = generation
     timer.start()
 
 

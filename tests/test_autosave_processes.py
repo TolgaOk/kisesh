@@ -223,6 +223,23 @@ class AutosaveConcurrencyTests(unittest.TestCase):
         self.assertEqual(watcher._running_saves, set())
         self.assertEqual(watcher._timers, {})
 
+    def test_busy_session_event_burst_does_not_create_timer_threads(self) -> None:
+        watcher._running_saves.add("session-id")
+        window = Window()
+        for index in range(1000):
+            watcher._schedule(window, command_event={"window_id": 2, "command": str(index)})
+        self.assertEqual(len(FakeTimer.instances), 0)
+        self.assertEqual(len(watcher._deferred_saves), 1)
+        self.assertEqual(len(watcher._pending_commands["session-id"]), 1000)
+        watcher._finish_autosave("session-id")
+        self.assertEqual(len(FakeTimer.instances), 1)
+        process = mock.Mock()
+        process.wait.return_value = 0
+        process.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
+        with mock.patch.object(watcher, "_launch_autosave", return_value=process):
+            FakeTimer.instances[-1].fire()
+        self.assertEqual(watcher._pending_commands, {})
+
     def test_queue_skips_busy_and_stale_requests_without_exceeding_capacity(self) -> None:
         watcher._running_saves.update({"finished", "busy"})
         watcher._deferred_saves.update(
