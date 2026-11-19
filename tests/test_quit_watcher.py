@@ -34,11 +34,19 @@ class QuitBoss(Boss):
         self.continued = 0
         self.veto = False
         self.launch_error: Exception | None = None
+        self.deadlines: list[Callable[[int | None], None]] = []
         self.native = ModuleType("kitty.fast_data_types")
         self.native.__dict__.update(
             IMPERATIVE_CLOSE_REQUESTED=2,
             current_application_quit_request=lambda: 0 if self.veto else 2,
+            add_timer=self.add_timer,
+            remove_timer=lambda _timer_id: None,
         )
+
+    def add_timer(self, callback: Callable[[int | None], None], delay: float, repeat: bool) -> int:
+        del delay, repeat
+        self.deadlines.append(callback)
+        return len(self.deadlines)
 
     def run_background_process(
         self,
@@ -286,3 +294,34 @@ class QuitWatcherTests(unittest.TestCase):
         self.assertEqual(boss.continued, 0)
         self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
         self.assertIn("remote-control socket is unavailable", boss.errors[-1])
+
+    def test_quit_deadline_releases_state_and_ignores_late_completion(self) -> None:
+        window = Window()
+        boss = self.boss(window)
+        watcher._pending_commands["session-id"] = [{"command": "unsaved"}]
+        watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertEqual(len(boss.deadlines), 1)
+        boss.deadlines[0](1)
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertIn("deadline", boss.errors[-1])
+        self.assertIn("session-id", watcher._pending_commands)
+        watcher.on_quit(boss, window, {"confirmed": True})
+        boss.jobs[0].callback(0, None)
+        self.assertEqual(boss.continued, 0)
+        self.assertIn("session-id", watcher._pending_commands)
+        boss.jobs[1].callback(0, None)
+        self.assertEqual(boss.continued, 1)
+        boss.deadlines[1](2)
+        self.assertEqual(boss.continued, 1)
+
+    def test_quit_deadline_also_covers_manager_close_callbacks(self) -> None:
+        window = Window()
+        manager = Window(3)
+        manager.user_vars = {watcher.KISESH_UI_VAR: "yes"}
+        boss = self.boss(window, manager)
+        watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertEqual(boss.jobs, [])
+        self.assertEqual(len(boss.deadlines), 1)
+        boss.deadlines[0](1)
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertEqual(watcher._quit_state.closing_managers, set())

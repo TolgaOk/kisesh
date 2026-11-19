@@ -31,6 +31,7 @@ RESTORE_LAYOUT_VAR = "kisesh_restore_layout"
 DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
 AUTOSAVE_TERMINATION_GRACE_SECONDS = 0.5
+QUIT_DEADLINE_SECONDS = 60.0
 MAX_CONCURRENT_AUTOSAVES = 2
 MAX_PENDING_CLOSE_CAPTURES = 64
 CLOSE_TEXT_LIMIT = 1024 * 1024
@@ -192,6 +193,7 @@ class QuitSaveRequest:
     session_id: str
     events: tuple[CommandPayload, ...]
     errors: BinaryIO
+    generation: int
 
 
 @dataclass(slots=True)
@@ -201,6 +203,8 @@ class QuitSaveState:
     phase: QuitPhase = QuitPhase.IDLE
     pending: dict[str, WatcherWindow] = field(default_factory=dict)
     closing_managers: set[int] = field(default_factory=set)
+    generation: int = 0
+    deadline_timer: int | None = None
 
 
 _quit_state = QuitSaveState()
@@ -998,8 +1002,25 @@ def on_tab_bar_dirty(boss: WatcherBoss, window: WatcherWindow, data: WatcherData
     _schedule(window, inheritance_event, boss)
 
 
+def _cancel_quit_deadline() -> None:
+    """Remove the native event-loop watchdog without touching unrelated timers."""
+    timer = _quit_state.deadline_timer
+    _quit_state.deadline_timer = None
+    if timer is not None:
+        with suppress(Exception):
+            importlib.import_module("kitty.fast_data_types").remove_timer(timer)
+
+
+def _quit_timed_out(boss: QuitBoss, generation: int, timer_id: int | None) -> None:
+    """Cancel only the matching quit attempt, including a stalled manager dismissal."""
+    del timer_id
+    if _quit_state.phase is QuitPhase.SAVING and _quit_state.generation == generation:
+        _quit_failed(boss, "The final save exceeded its deadline; quit again to retry.")
+
+
 def _quit_failed(boss: QuitBoss, message: str) -> None:
     """Release the quit reservation without discarding unsaved command events."""
+    _cancel_quit_deadline()
     with _timer_lock:
         _quit_state.phase = QuitPhase.IDLE
         _quit_state.pending.clear()
@@ -1009,6 +1030,7 @@ def _quit_failed(boss: QuitBoss, message: str) -> None:
 
 def _continue_quit(boss: QuitBoss) -> None:
     """Resume native confirmation once, respecting another watcher's veto."""
+    _cancel_quit_deadline()
     try:
         _quit_state.phase = QuitPhase.EXITING
         boss.handle_quit_confirmation(True)
@@ -1030,6 +1052,8 @@ def _quit_save_finished(
     with request.errors:
         request.errors.seek(0)
         detail = request.errors.read(4096).decode("utf-8", errors="replace").strip()
+    if _quit_state.phase is not QuitPhase.SAVING or request.generation != _quit_state.generation:
+        return
     if error is not None or exit_status != 0:
         message = str(error) if error is not None else detail or f"Save exited with {exit_status}."
         _quit_failed(boss, f"Session {request.session_id}: {message}")
@@ -1062,7 +1086,7 @@ def _save_next_on_quit(boss: QuitBoss) -> None:
         payload = json.dumps({"command_events": events}, ensure_ascii=False).encode("utf-8")
         with ExitStack() as resources:
             errors = resources.enter_context(tempfile.TemporaryFile())
-            request = QuitSaveRequest(session_id, events, errors)
+            request = QuitSaveRequest(session_id, events, errors, _quit_state.generation)
             boss.run_background_process(
                 command,
                 cwd=str(project),
@@ -1103,11 +1127,20 @@ def on_quit(boss: QuitBoss, window: WatcherWindow, data: dict[str, object]) -> N
     data["aborted"] = True
     with _timer_lock:
         _quit_state.phase = QuitPhase.SAVING
+        _quit_state.generation += 1
         _quit_state.pending.update(representatives)
         for session_id, timer in _timers.items():
             timer.cancel()
             _timer_generations[session_id] = _timer_generations.get(session_id, 0) + 1
         _timers.clear()
+    try:
+        native = importlib.import_module("kitty.fast_data_types")
+        _quit_state.deadline_timer = native.add_timer(
+            partial(_quit_timed_out, boss, _quit_state.generation), QUIT_DEADLINE_SECONDS, False
+        )
+    except Exception as error:
+        _quit_failed(boss, str(error))
+        return
     _prepare_quit_capture(boss, windows)
 
 

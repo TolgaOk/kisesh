@@ -22,6 +22,7 @@ from .agent_hooks import (
 )
 from .app_profiles import ResumeAdapter, load_app_profiles
 from .context import normalize_command_event, pane_last_command_output
+from .deadline import OperationDeadlineExceeded, operation_deadline
 from .kitty_client import KittyClient, KittyError
 from .model import ClosingPaneCapture, CommandEvent, JsonObject, KittyWindow
 from .panel import (
@@ -53,6 +54,7 @@ OptionalUnownedTabsAction = Annotated[
 INVALID_EVENTS_MESSAGE = "autosave command events must be a JSON list of objects"
 INVALID_PAYLOAD_MESSAGE = "autosave input must be a JSON object"
 INVALID_CLOSE_MESSAGE = "autosave closing-pane input is incomplete"
+BACKGROUND_OPERATION_TIMEOUT_SECONDS = 25.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -624,8 +626,12 @@ def main(argv: list[str] | None = None) -> int:
             (EnableIntegration, DisableIntegration, UninstallIntegration),
         ):
             return _run_integration(config.command)
+        if isinstance(config.command, (AutosaveSession, CloseSession)):
+            with operation_deadline(BACKGROUND_OPERATION_TIMEOUT_SECONDS):
+                return _dispatch(config, _service(config))
         return _dispatch(config, _service(config))
     except (
+        OperationDeadlineExceeded,
         KittyError,
         PanelError,
         StoreError,
