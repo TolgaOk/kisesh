@@ -294,6 +294,7 @@ class WatcherTests(unittest.TestCase):
         watcher._running_saves.clear()
         watcher._deferred_saves.clear()
         watcher._pending_closes.clear()
+        watcher._close_environments.clear()
         watcher._full_save_requested.clear()
         self.enterContext(mock.patch("kisesh.watcher.threading.Timer", FakeTimer))
         FakeTimer.instances.clear()

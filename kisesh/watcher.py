@@ -174,6 +174,7 @@ _pending_commands: dict[str, list[CommandPayload]] = {}
 _running_saves: set[str] = set()
 _deferred_saves: dict[str, tuple[dict[str, str], int]] = {}
 _pending_closes: dict[str, list[AutosavePayload]] = {}
+_close_environments: dict[str, dict[str, str]] = {}
 _full_save_requested: set[str] = set()
 _timer_lock = threading.Lock()
 
@@ -187,11 +188,26 @@ class QuitPhase(Enum):
 
 
 @dataclass(slots=True, frozen=True)
+class QuitSaveTask:
+    """One live-layout or already-captured pane update to flush before teardown."""
+
+    session_id: str
+    environment: dict[str, str]
+    events: tuple[CommandPayload, ...]
+    closing: AutosavePayload | None = None
+
+    def payload(self) -> AutosavePayload:
+        """Encode a captured pane without querying its now-destroyed native window."""
+        if self.closing is not None:
+            return {"closing_pane": self.closing}
+        return {"command_events": self.events}
+
+
+@dataclass(slots=True, frozen=True)
 class QuitSaveRequest:
     """One supervised final save and its unacknowledged command events."""
 
-    session_id: str
-    events: tuple[CommandPayload, ...]
+    task: QuitSaveTask
     errors: BinaryIO
     generation: int
 
@@ -576,7 +592,12 @@ def _saved_close(
         captures[:] = [capture for capture in captures if capture is not closing]
         if not captures:
             _pending_closes.pop(session_id, None)
-        if (captures or session_id in _full_save_requested) and session_id not in _timers:
+            _close_environments.pop(session_id, None)
+        if (
+            _quit_state.phase is QuitPhase.IDLE
+            and (captures or session_id in _full_save_requested)
+            and session_id not in _timers
+        ):
             _deferred_saves[session_id] = (environment, _timer_generations[session_id])
 
 
@@ -852,8 +873,10 @@ def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> Non
             if event.get("window_id") == window.id
         ]
     capture = _closing_pane_capture(window, boss, session_id, events)
+    environment = _window_environment(window)
     with _timer_lock:
         _pending_closes.setdefault(session_id, []).append(capture)
+        _close_environments[session_id] = environment
     _schedule(
         window,
         boss=boss,
@@ -1056,23 +1079,42 @@ def _quit_save_finished(
         return
     if error is not None or exit_status != 0:
         message = str(error) if error is not None else detail or f"Save exited with {exit_status}."
-        _quit_failed(boss, f"Session {request.session_id}: {message}")
+        _quit_failed(boss, f"Session {request.task.session_id}: {message}")
         return
-    _acknowledge_commands(request.session_id, request.events)
+    task = request.task
+    _acknowledge_commands(task.session_id, task.events)
+    _saved_close(task.session_id, task.closing, task.environment)
     _save_next_on_quit(boss)
 
 
-def _save_next_on_quit(boss: QuitBoss) -> None:
-    """Launch at most one final saver without blocking Kitty's remote-control loop."""
+def _next_quit_task() -> QuitSaveTask | None:
+    """Flush closed panes first, including sessions with no remaining native windows."""
     with _timer_lock:
+        closing_id = next(iter(_pending_closes), None)
+        if closing_id is not None:
+            capture = _pending_closes[closing_id][0]
+            return QuitSaveTask(
+                closing_id,
+                _close_environments[closing_id],
+                tuple(cast(list[CommandPayload], capture["command_events"])),
+                capture,
+            )
         session_id = next(iter(_quit_state.pending), None)
         window = _quit_state.pending.pop(session_id) if session_id is not None else None
         events = tuple(_pending_commands.get(session_id, [])) if session_id is not None else ()
     if session_id is None or window is None:
-        _continue_quit(boss)
-        return
+        return None
+    return QuitSaveTask(session_id, _window_environment(window), events)
+
+
+def _save_next_on_quit(boss: QuitBoss) -> None:
+    """Launch at most one final saver without blocking Kitty's remote-control loop."""
     try:
-        environment = _window_environment(window)
+        task = _next_quit_task()
+        if task is None:
+            _continue_quit(boss)
+            return
+        environment = task.environment
         project = _runtime_root()
         launcher = project / "bin" / "kisesh"
         if not launcher.is_file():
@@ -1082,11 +1124,11 @@ def _save_next_on_quit(boss: QuitBoss) -> None:
         if not socket:
             raise RuntimeError("Kitty's remote-control socket is unavailable.")
         command.extend(("--socket", socket))
-        command.extend(("autosave", session_id, "--payload-stdin"))
-        payload = json.dumps({"command_events": events}, ensure_ascii=False).encode("utf-8")
+        command.extend(("autosave", task.session_id, "--payload-stdin"))
+        payload = json.dumps(task.payload(), ensure_ascii=False).encode("utf-8")
         with ExitStack() as resources:
             errors = resources.enter_context(tempfile.TemporaryFile())
-            request = QuitSaveRequest(session_id, events, errors, _quit_state.generation)
+            request = QuitSaveRequest(task, errors, _quit_state.generation)
             boss.run_background_process(
                 command,
                 cwd=str(project),
@@ -1122,7 +1164,7 @@ def on_quit(boss: QuitBoss, window: WatcherWindow, data: dict[str, object]) -> N
         data["aborted"] = True
         _quit_failed(boss, str(error))
         return
-    if not representatives:
+    if not representatives and not _pending_closes:
         return
     data["aborted"] = True
     with _timer_lock:

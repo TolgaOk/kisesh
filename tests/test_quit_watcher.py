@@ -89,6 +89,7 @@ class QuitWatcherTests(unittest.TestCase):
         self.enterContext(mock.patch.object(watcher, "_timer_generations", {}))
         self.enterContext(mock.patch.object(watcher, "_pending_commands", {}))
         self.enterContext(mock.patch.object(watcher, "_pending_closes", {}))
+        self.enterContext(mock.patch.object(watcher, "_close_environments", {}, create=True))
         self.enterContext(mock.patch.object(watcher, "_full_save_requested", set()))
         self.enterContext(mock.patch.object(watcher, "_running_saves", set()))
         self.enterContext(mock.patch.object(watcher, "_deferred_saves", {}))
@@ -294,6 +295,38 @@ class QuitWatcherTests(unittest.TestCase):
         self.assertEqual(boss.continued, 0)
         self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
         self.assertIn("remote-control socket is unavailable", boss.errors[-1])
+
+    def test_quit_flushes_a_queued_close_before_capturing_the_remaining_layout(self) -> None:
+        closing = Window(1, history="last frame")
+        remaining = Window(2)
+        boss = self.boss(closing, remaining)
+        watcher.on_close(boss, closing, {})
+        boss.tabs = [[remaining]]
+        watcher.on_quit(boss, remaining, {"confirmed": True})
+        self.assertIn("closing_pane", boss.jobs[0].payload)
+        boss.jobs[0].callback(0, None)
+        self.assertNotIn("session-id", watcher._pending_closes)
+        self.assertIn("command_events", boss.jobs[1].payload)
+        self.assertEqual(boss.continued, 0)
+        boss.jobs[1].callback(0, None)
+        self.assertEqual(boss.continued, 1)
+
+    def test_quit_flushes_closed_sessions_even_without_any_live_owned_tabs(self) -> None:
+        closing = Window(1, history="last frame")
+        remaining = Window(2, session_id=None)
+        boss = self.boss(closing, remaining)
+        watcher.on_close(boss, closing, {})
+        boss.tabs = [[remaining]]
+        watcher.on_quit(boss, remaining, {"confirmed": True})
+        self.assertEqual(len(boss.jobs), 1)
+        self.assertIn("closing_pane", boss.jobs[0].payload)
+        boss.jobs[0].callback(1, None)
+        self.assertIn("session-id", watcher._pending_closes)
+        self.assertEqual(boss.continued, 0)
+        watcher.on_quit(boss, remaining, {"confirmed": True})
+        boss.jobs[1].callback(0, None)
+        self.assertNotIn("session-id", watcher._pending_closes)
+        self.assertEqual(boss.continued, 1)
 
     def test_quit_deadline_releases_state_and_ignores_late_completion(self) -> None:
         window = Window()

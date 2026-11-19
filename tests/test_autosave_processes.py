@@ -23,6 +23,7 @@ class AutosaveConcurrencyTests(unittest.TestCase):
             "_pending_commands",
             "_deferred_saves",
             "_pending_closes",
+            "_close_environments",
         ):
             self.enterContext(mock.patch.object(watcher, name, {}))
         for name in ("_running_saves", "_full_save_requested"):
