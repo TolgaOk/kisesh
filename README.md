@@ -45,7 +45,9 @@ Below is the list of features KiSesh provides.
 Ordinary autosaves use at most two workers per Kitty process, with only one
 worker per session. Events received while a saver is busy are coalesced rather
 than spawning more workers or timer threads. Pane-close captures use the same
-queue, and quit flushes queued captures before saving the remaining live layout.
+queue. Before final persistence, quit waits nonblockingly for ordinary writers
+to finish, then flushes queued captures and saves the remaining live layout.
+No final save or quit continuation can run ahead of an outstanding ordinary writer.
 
 Background CLI saves and save-and-close operations have a 25-second deadline.
 The ordinary autosave supervisor allows 30 seconds for payload transfer and

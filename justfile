@@ -33,8 +33,8 @@ test:
 test-processes:
     KISESH_LIVE_TESTS=0 uv run python -m unittest \
         tests.test_autosave_processes tests.test_autosave_protocol \
-        tests.test_background_deadlines tests.test_watcher \
-        tests.test_quit_watcher tests.test_close_guard -v
+        tests.test_background_deadlines tests.test_review_regressions \
+        tests.test_watcher tests.test_quit_watcher tests.test_close_guard -v
 
 coverage:
     #!/bin/sh

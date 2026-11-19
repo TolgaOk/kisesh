@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from typing import cast
 from unittest import mock
 
 from kisesh import watcher
-from kisesh.model import ClosingPaneCapture
+from kisesh.model import ClosingPaneCapture, KittyWindow
 from kisesh.service import KiSeshService
 from kisesh.store import SessionStore
 from tests.fakes import FakeKitty
@@ -142,6 +144,145 @@ class ReviewRegressionTests(unittest.TestCase):
         FakeTimer.instances[-1].fire()
         self.assertNotIn(self.sid, watcher._pending_closes)
         self.assertNotIn(self.sid, watcher._pending_commands)
+
+    def fire_drain(self) -> None:
+        timer = watcher._quit_state.drain_timer
+        self.assertIsNotNone(timer, "quit did not schedule a nonblocking drain continuation")
+        assert timer is not None
+        self.boss.deadlines[timer - 1](timer)
+
+    def finish_native_save(self, index: int) -> None:
+        payload = self.boss.jobs[index].payload
+        if "closing_pane" in payload:
+            self.service.save_closing_pane(
+                self.sid, cast(ClosingPaneCapture, payload["closing_pane"])
+            )
+        else:
+            self.service.save(self.sid)
+        self.boss.jobs[index].callback(0, None)
+
+    def test_quit_drains_an_actual_ordinary_writer_before_the_final_live_save(self) -> None:
+        self.kitty.tab.windows.append(cast(KittyWindow, dict(self.new.as_dict())))
+        self.kitty.capture_session_text = "new_tab Review\nlaunch\nlaunch\n"
+        self.service.save(self.sid)
+        watcher.on_close(self.boss, self.old, {})
+        self.boss.tabs = [[self.new]]
+        self.kitty.tab.windows = [cast(KittyWindow, dict(self.new.as_dict()))]
+        self.kitty.capture_session_text = "new_tab Review\nlaunch\n"
+        self.kitty.terminal_histories[22] = "surviving B history"
+        entered = threading.Event()
+        release = threading.Event()
+        complete = watcher._complete_autosave
+
+        def blocked_complete(process: mock.Mock, payload: dict[str, object]) -> bool:
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("test did not release ordinary writer")
+            return complete(process, payload)
+
+        with mock.patch.object(watcher, "_complete_autosave", side_effect=blocked_complete):
+            worker = threading.Thread(target=FakeTimer.instances[-1].fire)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                started = time.monotonic()
+                watcher.on_quit(self.boss, self.new, {"confirmed": True})
+                self.assertLess(time.monotonic() - started, 0.5)
+                self.assertEqual(self.boss.jobs, [], "quit duplicated an in-flight close writer")
+                timer_count = len(self.boss.deadlines)
+                watcher._save_next_on_quit(self.boss)
+                self.assertEqual(len(self.boss.deadlines), timer_count)
+                self.fire_drain()
+                self.assertEqual(self.boss.jobs, [])
+            finally:
+                release.set()
+                worker.join(4)
+        self.assertFalse(worker.is_alive())
+        self.assertNotIn(self.sid, watcher._running_saves)
+        self.assertNotIn(self.sid, watcher._pending_closes)
+        self.fire_drain()
+        self.assertEqual(len(self.boss.jobs), 1)
+        self.assertIn("command_events", self.boss.jobs[0].payload)
+        self.finish_native_save(0)
+        self.assertEqual(self.boss.continued, 1)
+        context = self.store.read_context(self.sid)
+        assert context is not None
+        self.assertEqual(context["tabs"][0]["panes"][0]["window_id"], 22)
+        self.assertEqual(context["tabs"][0]["panes"][0]["terminal_history"], "surviving B history")
+
+    def test_quit_retries_a_failed_ordinary_close_only_after_its_slot_is_released(self) -> None:
+        self.queue_unknown_close()
+        watcher._running_saves.add(self.sid)
+        watcher.on_quit(self.boss, self.old, {"confirmed": True})
+        self.assertEqual(self.boss.jobs, [])
+        watcher._finish_autosave(self.sid)
+        self.fire_drain()
+        self.assertEqual(len(self.boss.jobs), 1)
+        self.assertIn("closing_pane", self.boss.jobs[0].payload)
+        self.finish_native_save(0)
+        self.assertEqual(len(self.boss.jobs), 2)
+        self.finish_native_save(1)
+        self.assertEqual(self.boss.continued, 1)
+
+    def test_drain_timeout_does_not_release_an_ordinary_slot_or_launch_replacements(self) -> None:
+        self.boss.tabs = [[self.old]]
+        watcher._running_saves.add(self.sid)
+        watcher.on_quit(self.boss, self.old, {"confirmed": True})
+        self.assertEqual(self.boss.jobs, [])
+        old_timer = watcher._quit_state.drain_timer
+        assert old_timer is not None
+        self.boss.deadlines[0](1)
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertIn(self.sid, watcher._running_saves)
+        self.boss.deadlines[old_timer - 1](old_timer)
+        self.assertEqual(self.boss.jobs, [])
+        watcher.on_quit(self.boss, self.old, {"confirmed": True})
+        self.boss.deadlines[old_timer - 1](old_timer)
+        self.assertEqual(self.boss.jobs, [])
+        watcher._finish_autosave(self.sid)
+        self.fire_drain()
+        self.assertEqual(len(self.boss.jobs), 1)
+        self.finish_native_save(0)
+        self.assertEqual(self.boss.continued, 1)
+
+    def test_drain_callback_cannot_duplicate_an_already_launched_native_worker(self) -> None:
+        self.boss.tabs = [[self.old]]
+        watcher._running_saves.add(self.sid)
+        watcher.on_quit(self.boss, self.old, {"confirmed": True})
+        watcher._finish_autosave(self.sid)
+        watcher._save_next_on_quit(self.boss)
+        self.assertEqual(len(self.boss.jobs), 1)
+        self.fire_drain()
+        self.assertEqual(len(self.boss.jobs), 1)
+        self.finish_native_save(0)
+        self.assertEqual(self.boss.continued, 1)
+
+    def test_failure_to_schedule_drain_cancels_quit_without_releasing_the_worker(self) -> None:
+        self.boss.tabs = [[self.old]]
+        watcher._running_saves.add(self.sid)
+        with mock.patch.object(
+            self.boss.native, "add_timer", side_effect=[1, RuntimeError("timer")]
+        ):
+            watcher.on_quit(self.boss, self.old, {"confirmed": True})
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertIn(self.sid, watcher._running_saves)
+        self.assertEqual(self.boss.jobs, [])
+        self.assertEqual(self.boss.continued, 0)
+
+    def test_last_pane_closed_while_draining_does_not_leave_a_stale_live_save(self) -> None:
+        self.boss.tabs = [[self.old]]
+        watcher._running_saves.add(self.sid)
+        watcher.on_quit(self.boss, self.old, {"confirmed": True})
+        watcher.on_close(self.boss, self.old, {})
+        self.boss.tabs = []
+        self.kitty.include_tab = False
+        watcher._finish_autosave(self.sid)
+        self.fire_drain()
+        self.assertEqual(len(self.boss.jobs), 1)
+        self.assertIn("closing_pane", self.boss.jobs[0].payload)
+        self.finish_native_save(0)
+        self.assertEqual(len(self.boss.jobs), 1, "quit tried to save a nonexistent live layout")
+        self.assertEqual(self.boss.continued, 1)
 
     def test_removed_session_capture_is_preserved_without_recreating_the_session(self) -> None:
         capture = self.queue_unknown_close()

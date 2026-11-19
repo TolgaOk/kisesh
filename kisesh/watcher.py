@@ -32,6 +32,7 @@ DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
 AUTOSAVE_TERMINATION_GRACE_SECONDS = 0.5
 QUIT_DEADLINE_SECONDS = 60.0
+QUIT_DRAIN_RETRY_SECONDS = 0.05
 MAX_CONCURRENT_AUTOSAVES = 2
 MAX_PENDING_CLOSE_CAPTURES = 64
 CLOSE_TEXT_LIMIT = 1024 * 1024
@@ -221,6 +222,7 @@ class QuitSaveState:
     closing_managers: set[int] = field(default_factory=set)
     generation: int = 0
     deadline_timer: int | None = None
+    drain_timer: int | None = None
     worker: QuitSaveRequest | None = None
 
 
@@ -1039,12 +1041,14 @@ def on_tab_bar_dirty(boss: WatcherBoss, window: WatcherWindow, data: WatcherData
 
 
 def _cancel_quit_deadline() -> None:
-    """Remove the native event-loop watchdog without touching unrelated timers."""
-    timer = _quit_state.deadline_timer
+    """Remove this attempt's watchdog and drain continuation, never unrelated timers."""
+    timers = (_quit_state.deadline_timer, _quit_state.drain_timer)
     _quit_state.deadline_timer = None
-    if timer is not None:
-        with suppress(Exception):
-            importlib.import_module("kitty.fast_data_types").remove_timer(timer)
+    _quit_state.drain_timer = None
+    for timer in timers:
+        if timer is not None:
+            with suppress(Exception):
+                importlib.import_module("kitty.fast_data_types").remove_timer(timer)
 
 
 def _quit_timed_out(boss: QuitBoss, generation: int, timer_id: int | None) -> None:
@@ -1107,7 +1111,7 @@ def _quit_save_finished(
     _save_next_on_quit(boss)
 
 
-def _next_quit_task() -> QuitSaveTask | None:
+def _next_quit_task(boss: QuitBoss) -> QuitSaveTask | None:
     """Flush closed panes first, including sessions with no remaining native windows."""
     with _timer_lock:
         closing_id = next(iter(_pending_closes), None)
@@ -1119,21 +1123,59 @@ def _next_quit_task() -> QuitSaveTask | None:
                 tuple(cast(list[CommandPayload], capture["command_events"])),
                 capture,
             )
+        if not _quit_state.pending:
+            return None
+    live = {
+        identity: window
+        for tab in boss.match_tabs("all")
+        for window in tab
+        if (identity := _session_id(window)) is not None
+    }
+    with _timer_lock:
+        for identity in tuple(_quit_state.pending):
+            if identity not in live:
+                del _quit_state.pending[identity]
         session_id = next(iter(_quit_state.pending), None)
-        window = _quit_state.pending.pop(session_id) if session_id is not None else None
-        events = tuple(_pending_commands.get(session_id, [])) if session_id is not None else ()
-    if session_id is None or window is None:
-        return None
-    return QuitSaveTask(session_id, _window_environment(window), events)
+        if session_id is None:
+            return None
+        del _quit_state.pending[session_id]
+        events = tuple(_pending_commands.get(session_id, []))
+    return QuitSaveTask(session_id, _window_environment(live[session_id]), events)
+
+
+def _quit_drain_tick(boss: QuitBoss, generation: int, timer_id: int | None) -> None:
+    """Continue only the matching drain attempt on Kitty's event-loop thread."""
+    if generation != _quit_state.generation or timer_id != _quit_state.drain_timer:
+        return
+    _quit_state.drain_timer = None
+    _save_next_on_quit(boss)
+
+
+def _drain_ordinary_saves(boss: QuitBoss) -> bool:
+    """Wait nonblockingly for all ordinary writers before final capture or exit."""
+    with _timer_lock:
+        running = bool(_running_saves)
+    if running and _quit_state.drain_timer is None:
+        native = importlib.import_module("kitty.fast_data_types")
+        _quit_state.drain_timer = native.add_timer(
+            partial(_quit_drain_tick, boss, _quit_state.generation), QUIT_DRAIN_RETRY_SECONDS, False
+        )
+    return running
 
 
 def _save_next_on_quit(boss: QuitBoss) -> None:
     """Launch at most one final saver without blocking Kitty's remote-control loop."""
-    if _quit_state.phase is not QuitPhase.SAVING or _quit_state.worker is not None:
+    if (
+        _quit_state.phase is not QuitPhase.SAVING
+        or _quit_state.worker is not None
+        or _quit_state.closing_managers
+    ):
         return
     request: QuitSaveRequest | None = None
     try:
-        task = _next_quit_task()
+        if _drain_ordinary_saves(boss):
+            return
+        task = _next_quit_task(boss)
         if task is None:
             _continue_quit(boss)
             return
