@@ -80,6 +80,10 @@ class QuitWatcherTests(unittest.TestCase):
         self.enterContext(mock.patch.object(watcher, "_timers", {}))
         self.enterContext(mock.patch.object(watcher, "_timer_generations", {}))
         self.enterContext(mock.patch.object(watcher, "_pending_commands", {}))
+        self.enterContext(mock.patch.object(watcher, "_pending_closes", {}))
+        self.enterContext(mock.patch.object(watcher, "_full_save_requested", set()))
+        self.enterContext(mock.patch.object(watcher, "_running_saves", set()))
+        self.enterContext(mock.patch.object(watcher, "_deferred_saves", {}))
         self.enterContext(mock.patch.object(threading, "Timer", FakeTimer))
         FakeTimer.instances.clear()
 

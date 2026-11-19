@@ -32,6 +32,8 @@ DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
 AUTOSAVE_TERMINATION_GRACE_SECONDS = 0.5
 MAX_CONCURRENT_AUTOSAVES = 2
+MAX_PENDING_CLOSE_CAPTURES = 64
+CLOSE_TEXT_LIMIT = 1024 * 1024
 COMMAND_HISTORY_LIMIT = 2000
 
 
@@ -169,6 +171,8 @@ _timer_generations: dict[str, int] = {}
 _pending_commands: dict[str, list[CommandPayload]] = {}
 _running_saves: set[str] = set()
 _deferred_saves: dict[str, tuple[dict[str, str], int]] = {}
+_pending_closes: dict[str, list[AutosavePayload]] = {}
+_full_save_requested: set[str] = set()
 _timer_lock = threading.Lock()
 
 
@@ -468,7 +472,7 @@ def _launch_autosave(
 ) -> subprocess.Popen[str] | None:
     """Launch one isolated autosave process and return its completion handle."""
     try:
-        encoded = json.dumps(payload, ensure_ascii=False)
+        json.dumps(payload, ensure_ascii=False)
     except (TypeError, ValueError):
         return None
     project = _runtime_root()
@@ -493,13 +497,23 @@ def _launch_autosave(
         )
     except OSError:
         return None
-    try:
-        if process.stdin is not None:
-            process.stdin.write(encoded)
-            process.stdin.close()
-    except (BrokenPipeError, OSError):
-        return process
     return process
+
+
+def _complete_autosave(process: subprocess.Popen[str], payload: AutosavePayload) -> bool:
+    """Bound stdin transfer and execution together, cleaning up every failed worker."""
+    try:
+        process.communicate(
+            input=json.dumps(payload, ensure_ascii=False),
+            timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS,
+        )
+        return process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS) == 0
+    except (OSError, subprocess.TimeoutExpired):
+        _stop_autosave(process)
+        return False
+    finally:
+        if process.stdin is not None:
+            process.stdin.close()
 
 
 def _run_autosave(
@@ -520,24 +534,40 @@ def _run_autosave(
             return
         _running_saves.add(session_id)
         _deferred_saves.pop(session_id, None)
+        closes = _pending_closes.get(session_id, [])
+        closing = closes[0] if closes else None
         command_events = list(_pending_commands.get(session_id, []))
-    try:
-        process = _launch_autosave(
-            session_id,
-            environment,
-            {"command_events": command_events},
+        if closing is None:
+            _full_save_requested.discard(session_id)
+        else:
+            command_events = cast(list[CommandPayload], closing["command_events"])
+        payload: AutosavePayload = (
+            {"command_events": command_events} if closing is None else {"closing_pane": closing}
         )
-        if process is None:
-            return
-        try:
-            return_code = process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS)
-        except (OSError, subprocess.TimeoutExpired):
-            _stop_autosave(process)
-            return
-        if return_code == 0:
+    try:
+        process = _launch_autosave(session_id, environment, payload)
+        if process is not None and _complete_autosave(process, payload):
             _acknowledge_commands(session_id, command_events)
+            _saved_close(session_id, closing, environment)
     finally:
         _finish_autosave(session_id)
+
+
+def _saved_close(
+    session_id: str,
+    closing: AutosavePayload | None,
+    environment: dict[str, str],
+) -> None:
+    """Acknowledge exactly one capture and schedule any remaining close or layout work."""
+    if closing is None:
+        return
+    with _timer_lock:
+        captures = _pending_closes.get(session_id, [])
+        captures[:] = [capture for capture in captures if capture is not closing]
+        if not captures:
+            _pending_closes.pop(session_id, None)
+        if (captures or session_id in _full_save_requested) and session_id not in _timers:
+            _deferred_saves[session_id] = (environment, _timer_generations[session_id])
 
 
 def _stop_autosave(process: subprocess.Popen[str]) -> None:
@@ -716,13 +746,15 @@ def _closing_pane_capture(
         "tab_index": tab_index,
         "pane_index": pane_index,
         "window": state,
-        "terminal_history": terminal_history,
+        "terminal_history": terminal_history[-CLOSE_TEXT_LIMIT:],
         "alternate_screen_text": (
-            _read_window_text(lambda: window.as_text(as_ansi=True, alternate_screen=True))
+            _read_window_text(lambda: window.as_text(as_ansi=True, alternate_screen=True))[
+                -CLOSE_TEXT_LIMIT:
+            ]
             if alternate_screen
             else ""
         ),
-        "last_command_output": _read_window_text(window.cmd_output),
+        "last_command_output": _read_window_text(window.cmd_output)[-(64 * 1024) :],
         "command_events": command_events,
     }
 
@@ -742,6 +774,8 @@ def _schedule(
     data: WatcherData | None = None,
     boss: WatcherBoss | None = None,
     command_event: CommandPayload | None = None,
+    *,
+    capture_live: bool = True,
 ) -> None:
     """Replace a session's one-shot timer while retaining bounded command events."""
     session_id = _session_id(window, data, boss)
@@ -749,6 +783,8 @@ def _schedule(
         return
     environment = _window_environment(window)
     with _timer_lock:
+        if capture_live:
+            _full_save_requested.add(session_id)
         if command_event is not None:
             pending = _pending_commands.setdefault(session_id, [])
             pending.append(command_event)
@@ -796,19 +832,23 @@ def on_close(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> Non
     session_id = _session_id(window, data, boss)
     if not session_id:
         return
-    capture = _closing_pane_capture(
+    with _timer_lock:
+        if sum(map(len, _pending_closes.values())) >= MAX_PENDING_CLOSE_CAPTURES:
+            print("KiSesh: close capture queue is full; prior snapshots retained", file=sys.stderr)
+            return
+        events = [
+            event
+            for event in _pending_commands.get(session_id, [])
+            if event.get("window_id") == window.id
+        ]
+    capture = _closing_pane_capture(window, boss, session_id, events)
+    with _timer_lock:
+        _pending_closes.setdefault(session_id, []).append(capture)
+    _schedule(
         window,
-        boss,
-        session_id,
-        _drain_closing_events(session_id),
+        boss=boss,
+        capture_live=_has_other_session_tab(window, boss, session_id),
     )
-    _launch_autosave(
-        session_id,
-        _window_environment(window),
-        {"closing_pane": capture},
-    )
-    if _has_other_session_tab(window, boss, session_id):
-        _schedule(window, boss=boss)
 
 
 def on_set_user_var(boss: WatcherBoss, window: WatcherWindow, data: WatcherData) -> None:
