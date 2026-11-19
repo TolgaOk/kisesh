@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import select
+import signal
+import subprocess
+import sys
 import threading
 import unittest
 from unittest import mock
@@ -88,3 +93,43 @@ class AutosaveConcurrencyTests(unittest.TestCase):
             watcher._timer_generations["one"] = 2
             watcher._run_autosave("one", {}, 2)
         self.assertEqual(launch.call_count, 2)
+
+    def test_timeout_kills_and_reaps_its_owned_child_and_retains_events(self) -> None:
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print('ready', flush=True); time.sleep(30)",
+            ],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+
+        def cleanup() -> None:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=3)
+            if child.stdout is not None:
+                child.stdout.close()
+
+        self.addCleanup(cleanup)
+        assert child.stdout is not None
+        self.assertTrue(select.select([child.stdout], [], [], 3)[0])
+        self.assertEqual(child.stdout.readline(), "ready\n")
+        watcher._timer_generations["one"] = 1
+        watcher._pending_commands["one"] = [{"command": "must survive"}]
+        with (
+            mock.patch.object(watcher, "AUTOSAVE_COMPLETION_TIMEOUT_SECONDS", 0.05),
+            mock.patch.object(watcher, "AUTOSAVE_TERMINATION_GRACE_SECONDS", 0.05, create=True),
+            mock.patch.object(watcher, "_launch_autosave", return_value=child),
+        ):
+            watcher._run_autosave("one", {}, 1)
+        self.assertIsNotNone(child.returncode, "timed-out child was abandoned")
+        self.assertEqual(child.returncode, -signal.SIGKILL)
+        self.assertEqual(watcher._pending_commands["one"], [{"command": "must survive"}])
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(child.pid, os.WNOHANG)

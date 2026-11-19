@@ -848,7 +848,10 @@ class WatcherTests(unittest.TestCase):
                 else:
                     process.wait.return_value = failure
                 launched = None if failure is None else process
-                with mock.patch.object(watcher, "_launch_autosave", return_value=launched):
+                with (
+                    mock.patch.object(watcher, "_launch_autosave", return_value=launched),
+                    mock.patch.object(watcher, "_stop_autosave"),
+                ):
                     FakeTimer.instances[-1].fire()
 
                 recovered = watcher._drain_closing_events("session-id")

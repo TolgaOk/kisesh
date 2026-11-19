@@ -6,13 +6,14 @@ import importlib
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from functools import partial
@@ -29,6 +30,7 @@ KISESH_UI_VAR = "kisesh_ui"
 RESTORE_LAYOUT_VAR = "kisesh_restore_layout"
 DEBOUNCE_SECONDS = 1.25
 AUTOSAVE_COMPLETION_TIMEOUT_SECONDS = 30.0
+AUTOSAVE_TERMINATION_GRACE_SECONDS = 0.5
 MAX_CONCURRENT_AUTOSAVES = 2
 COMMAND_HISTORY_LIMIT = 2000
 
@@ -530,11 +532,28 @@ def _run_autosave(
         try:
             return_code = process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS)
         except (OSError, subprocess.TimeoutExpired):
+            _stop_autosave(process)
             return
         if return_code == 0:
             _acknowledge_commands(session_id, command_events)
     finally:
         _finish_autosave(session_id)
+
+
+def _stop_autosave(process: subprocess.Popen[str]) -> None:
+    """Terminate only our isolated group and retain capacity until the child is reaped."""
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    with suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=AUTOSAVE_TERMINATION_GRACE_SECONDS)
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    while True:
+        try:
+            process.wait(timeout=1)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _finish_autosave(session_id: str) -> None:
