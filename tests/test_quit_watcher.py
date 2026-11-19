@@ -83,7 +83,13 @@ class QuitWatcherTests(unittest.TestCase):
         launcher = self.runtime / "bin" / "kisesh"
         launcher.parent.mkdir()
         launcher.touch()
-        self.enterContext(mock.patch.dict(os.environ, {"KISESH_INSTALL_ROOT": str(self.runtime)}))
+        self.enterContext(
+            mock.patch.dict(
+                os.environ,
+                {"HOME": str(self.runtime), "KISESH_INSTALL_ROOT": str(self.runtime)},
+                clear=True,
+            )
+        )
         self.enterContext(mock.patch.object(watcher, "_quit_state", watcher.QuitSaveState()))
         self.enterContext(mock.patch.object(watcher, "_timers", {}))
         self.enterContext(mock.patch.object(watcher, "_timer_generations", {}))
@@ -346,6 +352,15 @@ class QuitWatcherTests(unittest.TestCase):
         self.assertEqual(boss.continued, 1)
         boss.deadlines[1](2)
         self.assertEqual(boss.continued, 1)
+
+    def test_watchdog_setup_failure_cancels_quit_without_launching_a_saver(self) -> None:
+        window = Window()
+        boss = self.boss(window)
+        with mock.patch.object(boss.native, "add_timer", side_effect=RuntimeError("timer failed")):
+            watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertEqual(boss.jobs, [])
+        self.assertIn("timer failed", boss.errors[-1])
 
     def test_quit_deadline_also_covers_manager_close_callbacks(self) -> None:
         window = Window()

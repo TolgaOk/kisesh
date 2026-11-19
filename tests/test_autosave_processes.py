@@ -198,6 +198,60 @@ class AutosaveConcurrencyTests(unittest.TestCase):
             self.assertEqual(len(str(captures[0]["terminal_history"])), watcher.CLOSE_TEXT_LIMIT)
             self.assertTrue(errors.write.called)
 
+    def test_unexpected_transport_failure_still_cleans_up_the_owned_worker(self) -> None:
+        process = mock.Mock()
+        process.communicate.side_effect = UnicodeError("invalid worker output")
+        with mock.patch.object(watcher, "_stop_autosave") as stop:
+            self.assertFalse(watcher._complete_autosave(process, {}))
+        stop.assert_called_once_with(process)
+        process.stdin.close.assert_called_once()
+        process.stdout.close.assert_called_once()
+
+    def test_three_close_captures_share_one_session_slot_and_all_finish(self) -> None:
+        process = mock.Mock()
+        process.wait.return_value = 0
+        process.communicate.return_value = (watcher.AUTOSAVE_ACKNOWLEDGEMENT, "")
+        for index in range(3):
+            window = Window(index, history=f"frame {index}")
+            watcher.on_close(Boss([[window]]), window, {})
+        with mock.patch.object(watcher, "_launch_autosave", return_value=process) as launch:
+            for index in range(3):
+                FakeTimer.instances[-1].fire()
+                self.assertEqual(launch.call_count, index + 1)
+        self.assertEqual(watcher._pending_closes, {})
+        self.assertEqual(watcher._close_environments, {})
+        self.assertEqual(watcher._running_saves, set())
+        self.assertEqual(watcher._timers, {})
+
+    def test_queue_skips_busy_and_stale_requests_without_exceeding_capacity(self) -> None:
+        watcher._running_saves.update({"finished", "busy"})
+        watcher._deferred_saves.update(
+            {name: ({}, 1) for name in ("busy", "stale", "ready", "later")}
+        )
+        watcher._timer_generations.update(busy=1, stale=2, ready=1, later=1)
+        watcher._finish_autosave("finished")
+        self.assertEqual(len(FakeTimer.instances), 1)
+        self.assertEqual(FakeTimer.instances[0].args[0], "ready")
+        self.assertEqual(set(watcher._deferred_saves), {"busy", "later"})
+        watcher._quit_state.phase = watcher.QuitPhase.SAVING
+        watcher._finish_autosave("busy")
+        self.assertEqual(watcher._deferred_saves, {})
+
+    def test_capacity_stays_reserved_until_sigkill_is_reaped(self) -> None:
+        process = mock.Mock(pid=12345)
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired("test", 0.5),
+            subprocess.TimeoutExpired("test", 1),
+            0,
+        ]
+        with mock.patch("kisesh.watcher.os.killpg") as kill:
+            watcher._stop_autosave(process)
+        self.assertEqual(
+            kill.call_args_list,
+            [mock.call(12345, signal.SIGTERM), mock.call(12345, signal.SIGKILL)],
+        )
+        self.assertEqual(process.wait.call_count, 3)
+
     def test_blocked_stdin_is_covered_by_the_process_deadline(self) -> None:
         child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"],

@@ -532,7 +532,8 @@ def _complete_autosave(process: subprocess.Popen[str], payload: AutosavePayload)
             process.wait(timeout=AUTOSAVE_COMPLETION_TIMEOUT_SECONDS) == 0
             and output == AUTOSAVE_ACKNOWLEDGEMENT
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except Exception:
+        print("KiSesh: autosave transport failed; stopping its worker group", file=sys.stderr)
         _stop_autosave(process)
         return False
     finally:
@@ -575,6 +576,8 @@ def _run_autosave(
         if process is not None and _complete_autosave(process, payload):
             _acknowledge_commands(session_id, command_events)
             _saved_close(session_id, closing, environment)
+        else:
+            print("KiSesh: autosave not acknowledged; pending data retained", file=sys.stderr)
     finally:
         _finish_autosave(session_id)
 
@@ -788,16 +791,6 @@ def _closing_pane_capture(
         "last_command_output": _read_window_text(window.cmd_output)[-(64 * 1024) :],
         "command_events": command_events,
     }
-
-
-def _drain_closing_events(session_id: str) -> list[CommandPayload]:
-    """Cancel a delayed save and atomically take its pending command events."""
-    with _timer_lock:
-        timer = _timers.pop(session_id, None)
-        _timer_generations[session_id] = _timer_generations.get(session_id, 0) + 1
-        if timer is not None:
-            timer.cancel()
-        return _pending_commands.pop(session_id, [])
 
 
 def _schedule(

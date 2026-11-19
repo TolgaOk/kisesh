@@ -285,7 +285,11 @@ class WatcherTests(unittest.TestCase):
         launcher = runtime / "bin" / "kisesh"
         launcher.parent.mkdir()
         launcher.touch()
-        environment = mock.patch.dict(os.environ, {"KISESH_INSTALL_ROOT": str(runtime)})
+        environment = mock.patch.dict(
+            os.environ,
+            {"HOME": str(runtime), "KISESH_INSTALL_ROOT": str(runtime), "PATH": os.defpath},
+            clear=True,
+        )
         environment.start()
         self.addCleanup(environment.stop)
         watcher._timers.clear()
@@ -777,7 +781,7 @@ class WatcherTests(unittest.TestCase):
         )
         self.assertEqual([event["command"] for event in later_events], ["echo third"])
 
-    def test_cmd_w_can_drain_commands_while_an_autosave_process_is_in_flight(self) -> None:
+    def test_cmd_w_captures_commands_while_an_autosave_process_is_in_flight(self) -> None:
         """Keep events queued until the isolated writer confirms persistence."""
         boss = Boss()
         with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
@@ -791,7 +795,14 @@ class WatcherTests(unittest.TestCase):
 
         def close_during_wait(timeout: float) -> int:
             self.assertEqual(timeout, watcher.AUTOSAVE_COMPLETION_TIMEOUT_SECONDS)
-            drained.extend(watcher._drain_closing_events("session-id"))
+            window = Window()
+            watcher.on_close(Boss([[window]]), window, {})
+            drained.extend(
+                cast(
+                    list[dict[str, object]],
+                    watcher._pending_closes["session-id"][0]["command_events"],
+                )
+            )
             return 0
 
         with mock.patch("kisesh.watcher.subprocess.Popen") as popen:
@@ -866,7 +877,7 @@ class WatcherTests(unittest.TestCase):
                 ):
                     FakeTimer.instances[-1].fire()
 
-                recovered = watcher._drain_closing_events("session-id")
+                recovered = watcher._pending_commands["session-id"]
                 self.assertEqual([event["command"] for event in recovered], ["pwd"])
 
     def test_cmd_w_captures_pending_history_before_kitty_destroys_the_screen(self) -> None:
@@ -1096,11 +1107,7 @@ class WatcherTests(unittest.TestCase):
             {"id": broken_window.id},
         )
 
-    def test_drain_without_timer_and_unsaved_windows_are_noops(self) -> None:
-        watcher._pending_commands["session-id"] = [{"command": "pwd"}]
-        self.assertEqual(watcher._drain_closing_events("session-id"), [{"command": "pwd"}])
-        self.assertEqual(watcher._drain_closing_events("missing"), [])
-
+    def test_unsaved_windows_do_not_schedule_or_launch_autosaves(self) -> None:
         unstamped = Window(session_id=None)
         with mock.patch("kisesh.watcher.threading.Timer", FakeTimer):
             watcher._schedule(unstamped)

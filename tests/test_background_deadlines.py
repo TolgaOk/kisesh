@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import signal
@@ -10,8 +11,11 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
+from kisesh.cli import main
 from kisesh.deadline import OperationDeadlineExceeded, operation_deadline
 from kisesh.store import SessionStore
 
@@ -28,6 +32,16 @@ class BackgroundDeadlineTests(unittest.TestCase):
                 self.fail("deadline was swallowed as a recoverable operation error")
         self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
         self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0, 0))
+
+    def test_cli_reports_deadline_before_constructing_any_real_kitty_client(self) -> None:
+        errors = io.StringIO()
+        with (
+            mock.patch("kisesh.cli.BACKGROUND_OPERATION_TIMEOUT_SECONDS", 0.01),
+            mock.patch("kisesh.cli._service", side_effect=lambda _config: time.sleep(0.1)),
+            redirect_stderr(errors),
+        ):
+            self.assertEqual(main(["close", "test-session"]), 1)
+        self.assertIn("deadline", errors.getvalue())
 
     def test_nested_deadline_restores_the_enclosing_timer(self) -> None:
         with operation_deadline(10):
