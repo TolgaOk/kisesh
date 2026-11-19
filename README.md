@@ -51,7 +51,9 @@ Background CLI saves and save-and-close operations have a 25-second deadline.
 The ordinary autosave supervisor allows 30 seconds for payload transfer and
 execution, then terminates its isolated worker group and reaps the child before
 reusing the slot. A 60-second native quit watchdog cancels a stalled quit rather
-than claiming that persistence succeeded.
+than claiming that persistence succeeded. A timed-out native worker stays
+reserved until its death notification: retries and new ordinary saves wait
+rather than launching beside it.
 
 Pending events are acknowledged only after a durable-save receipt. Failed
 captures remain queued for a later event or quit attempt; prior snapshots stay

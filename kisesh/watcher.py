@@ -221,6 +221,7 @@ class QuitSaveState:
     closing_managers: set[int] = field(default_factory=set)
     generation: int = 0
     deadline_timer: int | None = None
+    worker: QuitSaveRequest | None = None
 
 
 _quit_state = QuitSaveState()
@@ -556,7 +557,11 @@ def _run_autosave(
         ):
             return
         _timers.pop(session_id, None)
-        if session_id in _running_saves or len(_running_saves) >= MAX_CONCURRENT_AUTOSAVES:
+        if (
+            session_id in _running_saves
+            or len(_running_saves) >= MAX_CONCURRENT_AUTOSAVES
+            or _quit_state.worker is not None
+        ):
             _deferred_saves[session_id] = (environment, generation)
             return
         _running_saves.add(session_id)
@@ -621,12 +626,20 @@ def _stop_autosave(process: subprocess.Popen[str]) -> None:
 
 
 def _finish_autosave(session_id: str) -> None:
-    """Release capacity and retry coalesced requests without creating lock-waiter children."""
-    timers: list[threading.Timer] = []
+    """Release capacity only after the ordinary child has completed or been reaped."""
     with _timer_lock:
         _running_saves.discard(session_id)
+    _dispatch_deferred_saves()
+
+
+def _dispatch_deferred_saves() -> None:
+    """Resume coalesced work only when no native quit writer retains ownership."""
+    timers: list[threading.Timer] = []
+    with _timer_lock:
         if _quit_state.phase is not QuitPhase.IDLE:
             _deferred_saves.clear()
+            return
+        if _quit_state.worker is not None:
             return
         available = MAX_CONCURRENT_AUTOSAVES - len(_running_saves)
         for identity, (environment, generation) in tuple(_deferred_saves.items()):
@@ -822,7 +835,11 @@ def _schedule(
         previous = _timers.pop(session_id, None)
         if previous is not None:
             previous.cancel()
-        if session_id in _running_saves or session_id in _deferred_saves:
+        if (
+            session_id in _running_saves
+            or session_id in _deferred_saves
+            or _quit_state.worker is not None
+        ):
             _deferred_saves[session_id] = (environment, generation)
             return
         timer = threading.Timer(
@@ -1034,7 +1051,9 @@ def _quit_timed_out(boss: QuitBoss, generation: int, timer_id: int | None) -> No
     """Cancel only the matching quit attempt, including a stalled manager dismissal."""
     del timer_id
     if _quit_state.phase is QuitPhase.SAVING and _quit_state.generation == generation:
-        _quit_failed(boss, "The final save exceeded its deadline; quit again to retry.")
+        _quit_failed(
+            boss, "The final save exceeded its deadline. Retry after outstanding saves exit."
+        )
 
 
 def _quit_failed(boss: QuitBoss, message: str) -> None:
@@ -1067,11 +1086,16 @@ def _quit_save_finished(
     exit_status: int,
     error: Exception | None,
 ) -> None:
-    """Acknowledge a durable capture before saving the next session or exiting."""
+    """Release native ownership on death, never merely on a watchdog timeout."""
+    with _timer_lock:
+        if _quit_state.worker is not request:
+            return
+        _quit_state.worker = None
     with request.errors:
         request.errors.seek(0)
         detail = request.errors.read(4096).decode("utf-8", errors="replace").strip()
     if _quit_state.phase is not QuitPhase.SAVING or request.generation != _quit_state.generation:
+        _dispatch_deferred_saves()
         return
     if error is not None or exit_status != 0:
         message = str(error) if error is not None else detail or f"Save exited with {exit_status}."
@@ -1105,6 +1129,9 @@ def _next_quit_task() -> QuitSaveTask | None:
 
 def _save_next_on_quit(boss: QuitBoss) -> None:
     """Launch at most one final saver without blocking Kitty's remote-control loop."""
+    if _quit_state.phase is not QuitPhase.SAVING or _quit_state.worker is not None:
+        return
+    request: QuitSaveRequest | None = None
     try:
         task = _next_quit_task()
         if task is None:
@@ -1125,6 +1152,8 @@ def _save_next_on_quit(boss: QuitBoss) -> None:
         with ExitStack() as resources:
             errors = resources.enter_context(tempfile.TemporaryFile())
             request = QuitSaveRequest(task, errors, _quit_state.generation)
+            with _timer_lock:
+                _quit_state.worker = request
             boss.run_background_process(
                 command,
                 cwd=str(project),
@@ -1136,6 +1165,9 @@ def _save_next_on_quit(boss: QuitBoss) -> None:
             )
             resources.pop_all()
     except Exception as error:
+        with _timer_lock:
+            if _quit_state.worker is request:
+                _quit_state.worker = None
         _quit_failed(boss, str(error))
 
 
@@ -1146,6 +1178,14 @@ def on_quit(boss: QuitBoss, window: WatcherWindow, data: dict[str, object]) -> N
         return
     if _quit_state.phase is QuitPhase.SAVING:
         data["aborted"] = True
+        return
+    if _quit_state.worker is not None:
+        data["aborted"] = True
+        if data.get("confirmed") is True:
+            boss.show_error(
+                "KiSesh save still running",
+                "The previous quit worker has not exited. No replacement will be launched.",
+            )
         return
     if data.get("confirmed") is not True:
         return

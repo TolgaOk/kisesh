@@ -59,6 +59,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.old = Window(11, session_id=self.sid, history="surviving pane")
         self.new = Window(22, session_id=self.sid, history="short-lived pane")
         self.boss = QuitBoss([self.old, self.new])
+        self.addCleanup(self.boss.close_job_resources)
         self.boss.tabs = [[self.old, self.new]]
         self.enterContext(
             mock.patch.dict("sys.modules", {"kitty.fast_data_types": self.boss.native})
