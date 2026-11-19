@@ -380,6 +380,26 @@ class QuitWatcherTests(unittest.TestCase):
         boss.deadlines[1](2)
         self.assertEqual(boss.continued, 1)
 
+    def test_launcher_error_after_an_early_completion_leaves_quit_retryable(self) -> None:
+        window = Window()
+        boss = self.boss(window)
+
+        def fail_after_notification(*_args: object, **kwargs: object) -> None:
+            callback = cast(Callable[[int, Exception | None], None], kwargs["notify_on_death"])
+            callback(1, None)
+            raise RuntimeError("launcher raised after notification")
+
+        with mock.patch.object(boss, "run_background_process", side_effect=fail_after_notification):
+            watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertIsNone(watcher._quit_state.worker)
+        self.assertEqual(watcher._quit_state.phase, watcher.QuitPhase.IDLE)
+        self.assertEqual(boss.continued, 0)
+        self.assertIn("launcher raised after notification", boss.errors[-1])
+        watcher.on_quit(boss, window, {"confirmed": True})
+        self.assertEqual(len(boss.jobs), 1)
+        boss.jobs[0].callback(0, None)
+        self.assertEqual(boss.continued, 1)
+
     def test_watchdog_setup_failure_cancels_quit_without_launching_a_saver(self) -> None:
         window = Window()
         boss = self.boss(window)
